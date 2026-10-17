@@ -65,8 +65,11 @@ prod_continuous_downloader:
   # blind — unknown is not "too big".
   addresses_path: ~/prod-addresses.txt
 
-  # Once a day, at the end of each full pass through the list.
-  sleep_interval_secs: 86400
+  # The cycle starts at this UTC time every day. Offset from the native
+  # profile's 00:00 deliberately: this walks the SAME address list, and two
+  # downloaders fetching the same addresses from the same peers at the same
+  # moment would measure each other as much as the network.
+  daily_at: "02:00"
 
   # ---- binary ----------------------------------------------------------
   # The native `ant` release, named for the record. A WASM run installs nothing

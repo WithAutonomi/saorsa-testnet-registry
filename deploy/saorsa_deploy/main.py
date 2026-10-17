@@ -3,6 +3,20 @@ import sys
 from importlib.metadata import version
 
 
+def _daily_at_arg(value: str) -> str:
+    """argparse type for ``--daily-at``, sharing the manifest's validation.
+
+    One definition for the flag and the manifest key, so a value the manifest
+    refuses cannot be smuggled in on the command line.
+    """
+    from saorsa_deploy.config.models import validate_daily_at
+
+    try:
+        return validate_daily_at(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _add_manifest_args(p):
     """Shared --config/--set/--name args for the manifest-driven commands."""
     p.add_argument(
@@ -4243,22 +4257,15 @@ def main(argv=None):
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
     prod_cd_deploy_parser.add_argument(
-        "--sleep-interval-secs",
-        type=int,
-        default=900,
+        "--daily-at",
+        type=_daily_at_arg,
+        default="00:00",
+        metavar="HH:MM",
         help=(
-            "Seconds to sleep at the end of each full pass through the address "
-            "list before starting the next cycle. Default: 900 (15 minutes). "
-            "Pass 0 to disable inter-cycle sleeping (back-to-back cycling)."
-        ),
-    )
-    prod_cd_deploy_parser.add_argument(
-        "--daily",
-        action="store_true",
-        help=(
-            "Convenience for a permanent once-a-day cadence: sets "
-            "--sleep-interval-secs to 86400 (24h between full passes). "
-            "Overrides --sleep-interval-secs when both are given."
+            "UTC wall-clock time each daily cycle starts at (default: 00:00). "
+            "A fresh deploy runs one cycle immediately, then waits for this "
+            "time every day; a restart after the day's cycle waits rather than "
+            "running an extra one."
         ),
     )
     prod_cd_deploy_parser.add_argument(
@@ -4460,10 +4467,16 @@ def main(argv=None):
         help="Narrow every requested class to files below this size (exclusive), e.g. '50MB'.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--sleep-interval-secs",
-        type=int,
-        default=86400,
-        help="Seconds to sleep at the end of each upload cycle (default: 86400 = once a day).",
+        "--daily-at",
+        type=_daily_at_arg,
+        default="00:00",
+        metavar="HH:MM",
+        help=(
+            "UTC wall-clock time each daily upload cycle starts at (default: "
+            "00:00). A fresh deploy uploads immediately, then waits for this "
+            "time every day; a restart after the day's cycle waits rather than "
+            "running an extra one."
+        ),
     )
     prod_cu_deploy_parser.add_argument(
         "--verify-interval-secs",

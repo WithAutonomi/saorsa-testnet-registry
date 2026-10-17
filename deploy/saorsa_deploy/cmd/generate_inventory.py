@@ -434,6 +434,10 @@ def _build_write_test_config(deploy_args: dict) -> dict:
             "log_level": None if is_wasm else deploy_args.get("log_level"),
             "rust_log": deploy_args.get("rust_log"),
             "readback_verify": deploy_args.get("readback_verify", True),
+            # The anchor, plus the interval every deployment created before it
+            # carries instead. Both are reported as stored: a consumer reading a
+            # permanent monitor's row needs to know which rule it actually runs.
+            "daily_at": deploy_args.get("daily_at"),
             "sleep_interval_secs": deploy_args.get("sleep_interval_secs"),
             "verify_interval_secs": deploy_args.get("verify_interval_secs"),
             "influx_retention_days": deploy_args.get("influx_retention_days"),
@@ -544,7 +548,9 @@ def _build_download_config(deploy_args: dict | None) -> dict | None:
             "clock_skew_seconds": deploy_args.get("clock_skew"),
             "network_profile": deploy_args.get("network"),
             # Only meaningful for the continuous kind; a one-shot run exits
-            # after a single pass.
+            # after a single pass. `sleep_interval_secs` is what deployments
+            # created before the daily anchor carry.
+            "daily_at": deploy_args.get("daily_at"),
             "sleep_interval_secs": deploy_args.get("sleep_interval_secs"),
         },
         # Where the run's artefacts live on the VM. The per-op logs and the

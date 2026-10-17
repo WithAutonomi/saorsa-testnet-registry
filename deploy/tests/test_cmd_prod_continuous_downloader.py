@@ -20,8 +20,7 @@ def _deploy_args(**overrides):
         "monitoring_volume_size": 50,
         "ssh_key_path": "~/.ssh/id_rsa",
         "purpose": "test",
-        "sleep_interval_secs": 900,
-        "daily": False,
+        "daily_at": "00:00",
         "provider": "digitalocean",
         "monitoring_provider": "digitalocean",
         "monitoring_region": None,
@@ -104,6 +103,23 @@ class TestDeployHappyPath:
 
         with pytest.raises(SystemExit):
             cmd_prod_continuous_downloader_deploy(_deploy_args(addresses_path=str(custom_file)))
+
+
+class TestTheRecordedCadence:
+    """What `deploy_args` says the cadence is, which every reader works from."""
+
+    def test_deploy_args_carry_the_anchor_and_not_the_retired_interval(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(_deploy_args(daily_at="02:00"))
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["daily_at"] == "02:00"
+        assert "sleep_interval_secs" not in payload
+
+    def test_the_anchor_defaults_to_midnight_when_the_flag_is_absent(self, deploy_patches):
+        """The one-shot kind reuses this module and never defines the flag."""
+        args = _deploy_args()
+        del args.daily_at
+        cmd_prod_continuous_downloader_deploy(args)
+        assert deploy_patches.record_create.call_args.args[1]["daily_at"] == "00:00"
 
 
 class TestDeployFailure:

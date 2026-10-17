@@ -39,8 +39,8 @@ prod_continuous_uploader:
   # pool_min_size: 5MB       # e.g. "tiny, but at least 5 MB"
   # pool_max_size: 50MB
 
-  # Once-a-day cadence: sleep at the end of each full cycle.
-  sleep_interval_secs: 86400
+  # The cycle starts at this UTC time every day, whatever the cycle itself takes.
+  daily_at: "00:00"
 
   # ---- the verifier VMs ------------------------------------------------
   # Each independently downloads EVERY uploaded address and checks the hash.

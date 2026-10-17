@@ -367,7 +367,7 @@ def test_prod_continuous_downloader_clock_skew_appends_flag():
     assert argv[argv.index("--clock-skew") + 1] == "-90m"
 
 
-def test_prod_continuous_downloader_sleep_interval():
+def test_prod_continuous_downloader_daily_at():
     m = Manifest.model_validate(
         {
             "name": "CD",
@@ -376,7 +376,7 @@ def test_prod_continuous_downloader_sleep_interval():
             "ssh_key_path": SSH,
             "prod_continuous_downloader": {
                 "spec": "lon1",
-                "sleep_interval_secs": 0,
+                "daily_at": "02:00",
                 "binary": {"branch": "feat-x", "repo_owner": "me"},
             },
         }
@@ -386,9 +386,85 @@ def test_prod_continuous_downloader_sleep_interval():
     assert steps[0].argv[:2] == ["build", "ant"]
     argv = steps[1].argv
     assert argv[:3] == ["prod", "continuous-downloader", "deploy"]
-    assert "--sleep-interval-secs" in argv and argv[argv.index("--sleep-interval-secs") + 1] == "0"
+    assert argv[argv.index("--daily-at") + 1] == "02:00"
     # branch binary -> --branch-name/--repo-owner, not --ant-version
     assert "--branch-name" in argv and "--ant-version" not in argv
+
+
+def test_prod_continuous_downloader_daily_at_is_always_emitted():
+    """`plan` must show the anchor even when it is the default.
+
+    The anchor is the deployment's whole cadence, so a plan that does not name
+    it reads as a run with none — and the step journal compares argv, so an
+    explicit value is also what pins it across a resume.
+    """
+    m = Manifest.model_validate(
+        {
+            "name": "CD",
+            "kind": "prod-continuous-downloader",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_continuous_downloader": {"spec": "lon1", "binary": {"version": "0.3.1"}},
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert argv[argv.index("--daily-at") + 1] == "00:00"
+    assert "--sleep-interval-secs" not in argv
+    assert "--daily" not in argv
+
+
+def test_prod_continuous_downloader_refuses_the_retired_sleep_interval():
+    """Interval mode is gone; a manifest still carrying it names the key."""
+    with pytest.raises(ValidationError, match="sleep_interval_secs"):
+        Manifest.model_validate(
+            {
+                "name": "CD",
+                "kind": "prod-continuous-downloader",
+                "purpose": "p",
+                "ssh_key_path": SSH,
+                "prod_continuous_downloader": {
+                    "spec": "lon1",
+                    "sleep_interval_secs": 86400,
+                    "binary": {"version": "0.3.1"},
+                },
+            }
+        )
+
+
+@pytest.mark.parametrize("value", ["00:00", "23:59", "02:00"])
+def test_prod_continuous_downloader_daily_at_accepts_a_strict_hh_mm(value):
+    m = Manifest.model_validate(
+        {
+            "name": "CD",
+            "kind": "prod-continuous-downloader",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_continuous_downloader": {
+                "spec": "lon1",
+                "daily_at": value,
+                "binary": {"version": "0.3.1"},
+            },
+        }
+    )
+    assert m.spec.daily_at == value
+
+
+@pytest.mark.parametrize("value", ["24:00", "0:00", "00:00:00", "0000", "00:60", "ab:cd"])
+def test_prod_continuous_downloader_daily_at_rejects_anything_else(value):
+    with pytest.raises(ValidationError, match="daily_at must be HH:MM"):
+        Manifest.model_validate(
+            {
+                "name": "CD",
+                "kind": "prod-continuous-downloader",
+                "purpose": "p",
+                "ssh_key_path": SSH,
+                "prod_continuous_downloader": {
+                    "spec": "lon1",
+                    "daily_at": value,
+                    "binary": {"version": "0.3.1"},
+                },
+            }
+        )
 
 
 def test_prod_continuous_downloader_permanent_options_map_to_flags():
@@ -407,7 +483,7 @@ def test_prod_continuous_downloader_permanent_options_map_to_flags():
                 "monitoring_volume_type": "high-speed",
                 "influx_retention_days": 7,
                 "log_retention_days": 7,
-                "sleep_interval_secs": 86400,
+                "daily_at": "06:30",
                 "binary": {"version": "0.3.1"},
             },
         }
@@ -425,7 +501,7 @@ def test_prod_continuous_downloader_permanent_options_map_to_flags():
     assert _val("--monitoring-volume-type") == "high-speed"
     assert _val("--influx-retention-days") == "7"
     assert _val("--log-retention-days") == "7"
-    assert _val("--sleep-interval-secs") == "86400"
+    assert _val("--daily-at") == "06:30"
 
 
 def test_prod_continuous_downloader_omits_unset_permanent_options():

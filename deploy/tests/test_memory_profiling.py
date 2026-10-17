@@ -118,7 +118,6 @@ class TestProvisionerWiring:
         p = ProdDownloaderProvisioner(
             downloaders=[{"ip": "1.1.1.1", "region": "lon1"}],
             bootstrap_peers=[],
-            sleep_interval_secs=0,
             memory_profiling=True,
         )
         assert p.memory_profiling is True

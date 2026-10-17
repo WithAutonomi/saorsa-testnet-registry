@@ -182,6 +182,11 @@ def _apply_wasm_pool_cap(args, request: dict, console: Console) -> None:
         )
 
 
+def _daily_at(args) -> str:
+    """The UTC ``HH:MM`` anchor this deployment's upload cycle starts at."""
+    return getattr(args, "daily_at", None) or "00:00"
+
+
 def _preflight_pool(args, request: dict, console: Console) -> None:
     """Refuse to build anything if the pool cannot serve even one cycle.
 
@@ -229,11 +234,11 @@ def _preflight_pool(args, request: dict, console: Console) -> None:
     if runways:
         cycles = min(r[1] for r in runways)
         limiting = min(runways, key=lambda r: r[1])
-        interval = getattr(args, "sleep_interval_secs", 86400) or 86400
-        days = cycles * (interval / 86400)
+        # One cycle a day, by construction: the service is anchored to a UTC
+        # wall-clock time, so cycles and days are the same count.
         console.print(
             f"[bold]Pool runway:[/bold] {cycles} cycles "
-            f"(~{days:.0f} days at this cadence), limited by "
+            f"(~{cycles} days at one cycle a day), limited by "
             f"[bold]{limiting[0]}[/bold] ({limiting[2]} available)."
         )
         console.print(
@@ -469,7 +474,7 @@ def _provision(
         hosts=uploaders,
         pool_request=pool_request,
         wallet_secret_key=args.secret_key,
-        sleep_interval_secs=getattr(args, "sleep_interval_secs", 86400),
+        daily_at=_daily_at(args),
         pool_min_size=getattr(args, "pool_min_size", None),
         pool_max_size=getattr(args, "pool_max_size", None),
         payment_type=getattr(args, "payment", None),
@@ -619,7 +624,7 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
         "pool_request": pool_request,
         "pool_min_size": getattr(args, "pool_min_size", None),
         "pool_max_size": getattr(args, "pool_max_size", None),
-        "sleep_interval_secs": getattr(args, "sleep_interval_secs", 86400),
+        "daily_at": _daily_at(args),
         "verify_interval_secs": getattr(args, "verify_interval_secs", 3600),
         "provider": getattr(args, "provider", None) or "digitalocean",
         "monitoring_provider": getattr(args, "monitoring_provider", None) or "digitalocean",
@@ -681,8 +686,7 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
     console.print()
     console.print("[bold green]Daily write test is running.[/bold green]")
     console.print(
-        f"  Uploads {pool_request} every "
-        f"{getattr(args, 'sleep_interval_secs', 86400)}s; "
+        f"  Uploads {pool_request} daily at {_daily_at(args)} UTC; "
         f"{len(args.verifier or [])} verifier region(s) read every address back."
     )
     if wasm_context:

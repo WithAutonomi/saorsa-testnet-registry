@@ -373,8 +373,7 @@ def _continuous_uploader(manifest: Manifest) -> list[Step]:
     if spec.pool_min_size is not None:
         argv += ["--pool-min-size", str(spec.pool_min_size)]
     argv += _pool_max_size_flag(spec)
-    if spec.sleep_interval_secs is not None:
-        argv += ["--sleep-interval-secs", str(spec.sleep_interval_secs)]
+    argv += ["--daily-at", spec.daily_at]
     if spec.verify_interval_secs is not None:
         argv += ["--verify-interval-secs", str(spec.verify_interval_secs)]
     if spec.pool_database_url_env:
@@ -452,8 +451,7 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
     ]
     if spec.addresses_path is not None:
         argv += ["--addresses-path", spec.addresses_path]
-    if spec.sleep_interval_secs is not None:
-        argv += ["--sleep-interval-secs", str(spec.sleep_interval_secs)]
+    argv += ["--daily-at", spec.daily_at]
     if spec.provider is not None:
         argv += ["--provider", spec.provider]
     if spec.monitoring_provider is not None:

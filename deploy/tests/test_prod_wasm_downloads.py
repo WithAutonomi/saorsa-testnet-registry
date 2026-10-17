@@ -121,10 +121,7 @@ class TestManifestValidation:
                 binary={"version": "0.3.8"},
                 client_kind="wasm",
             )
-        assert (
-            ProdContinuousDownloaderSpec(**_wasm_spec(sleep_interval_secs=120)).sleep_interval_secs
-            == 120
-        )
+        assert ProdContinuousDownloaderSpec(**_wasm_spec(daily_at="02:00")).daily_at == "02:00"
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +236,6 @@ def _env_script(**kwargs) -> str:
             }
         ],
         bootstrap_peers=["1.1.1.1:10000"],
-        sleep_interval_secs=0,
         one_shot=True,
         influx_url="http://influx:8086",
         influx_token="tok",
@@ -286,7 +282,6 @@ class TestTheProvisioner:
             ProdDownloaderProvisioner(
                 downloaders=[{"ip": "1.2.3.4", "region": "lon1"}],
                 bootstrap_peers=[],
-                sleep_interval_secs=0,
                 client_kind="wasm",
                 bootstrap_multiaddrs=[MA],
             )
@@ -298,7 +293,6 @@ class TestTheProvisioner:
             ProdDownloaderProvisioner(
                 downloaders=[{"ip": "1.2.3.4", "region": "lon1"}],
                 bootstrap_peers=[],
-                sleep_interval_secs=0,
                 client_kind="wasm",
                 wasm_bundle_url="https://x/b.tar.gz",
             )
@@ -312,7 +306,6 @@ class TestTheProvisioner:
         provisioner = _Recorder(
             downloaders=[{"ip": "1.2.3.4", "region": "lon1"}],
             bootstrap_peers=[],
-            sleep_interval_secs=0,
             client_kind="wasm",
             wasm_bundle_url="https://x/b.tar.gz",
             bootstrap_multiaddrs=[MA],
@@ -517,7 +510,6 @@ class TestTheServiceWalk:
             "ADDRESSES_FILE": str(addrs),
             "DOWNLOAD_DIR": str(tmp_path / "dl"),
             "ONE_SHOT": "true",
-            "SLEEP_INTERVAL_SECS": "0",
             "INFLUX_URL": "http://influx:8086",
             "INFLUX_TOKEN": "tok",
             "BOOTSTRAP_CACHE": "true",

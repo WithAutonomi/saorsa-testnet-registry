@@ -3309,8 +3309,7 @@ Arguments (for `prod continuous-downloader deploy`):
 | `--bootstrap-cache` / `--no-bootstrap-cache` | flag | on | Ant peer cache mode. On (default): `ant` runs **without** `--bootstrap` and reads a `bootstrap_peers.toml` (production list) written to `/root/.config/ant/` by the provisioner — the cache is enabled. Off: legacy explicit `--bootstrap` invocation (cache disabled). |
 | `--purpose` | string | — | Free-text description; persisted into `deploy_args` and shown by `deployments slack-post` |
 | `--addresses-path` | path | shipped default | Local file of newline-separated addresses |
-| `--sleep-interval-secs` | int | `900` | Seconds to sleep at the **end of each full pass** through the address list before starting the next cycle. `0` disables the sleep (back-to-back cycling). Persisted in `deploy_args.sleep_interval_secs`. |
-| `--daily` | flag | off | Convenience for a permanent once-a-day cadence: sets `--sleep-interval-secs` to `86400` (24h between full passes). Overrides `--sleep-interval-secs` when both are given. |
+| `--daily-at` | `HH:MM` | `00:00` | UTC wall-clock time each daily cycle starts at. One cycle a day, anchored — see "Cadence" below. Persisted in `deploy_args.daily_at`. |
 | `--provider` | `{digitalocean,hetzner,vultr,ovh}` | `digitalocean` | Cloud provider for the downloader **client** VM. Non-DO providers are cheaper for a permanent run and cut DigitalOcean egress (which is pooled and overage-billed). Requires the provider's credentials in the environment (`HCLOUD_TOKEN` / `VULTR_API_KEY` / the four `OVH_*` vars). The client TF module is selected automatically. |
 | `--monitoring-provider` | `{digitalocean,ovh}` | `digitalocean` | Cloud provider for the paired **monitoring** VM (InfluxDB/Grafana). Only DigitalOcean and OVH have monitoring Terraform modules. |
 | `--monitoring-region` | string | `lon1` (DO) / provider default (OVH) | Region for the monitoring VM. |
@@ -3329,7 +3328,7 @@ The monitoring VM defaults to region `lon1` on DigitalOcean; with `--monitoring-
 
 This command is designed to be left running indefinitely to measure production download performance over time (and correlate it with releases). The defaults above make that safe out of the box:
 
-- **Cadence** — pass `--daily` (≈ once-a-day; sleeps 24h after each full pass through the address list). Use `--sleep-interval-secs N` for any other interval.
+- **Cadence** — one cycle a day, anchored to `--daily-at HH:MM` (UTC, default `00:00`). The anchor is a wall-clock time, not an interval: a sleep taken at the end of each cycle would move the start by the cycle's own duration every day (PROD-DL-01's cycle takes 33–44 minutes, so its start walked from 11:28 to 15:00 UTC over seven days), and every `systemctl restart` would re-anchor it to the restart moment. The service keeps the instant the last cycle **completed** in `/var/lib/ant-prod-downloader/last-cycle` and runs a cycle whenever that instant is older than the most recent anchor. So: a fresh deploy runs one cycle immediately (proof of life); a restart after the day's cycle waits for the next anchor rather than running an extra one; a crash mid-cycle re-runs as soon as systemd brings the service back; and a cycle that overran the next anchor is followed by a wait for the one after. Delete the state file to force a cycle on the next start.
 - **Cheaper provider** — pass `--provider hetzner` (or `ovh`/`vultr`) for the client VM, and `--monitoring-provider ovh` to also move the monitoring box off DigitalOcean.
 - **Log retention** — per-op logs are pruned after 7 days by default (`--log-retention-days`).
 - **Influx retention** — the InfluxDB bucket is capped at 7 days by default (`--influx-retention-days`); metrics older than that expire.
@@ -3340,7 +3339,7 @@ uv run saorsa-deploy prod continuous-downloader deploy \
   --name PROD-DL-01 \
   --spec fsn1:cpx41 --provider hetzner \
   --monitoring-provider ovh \
-  --daily \
+  --daily-at 00:00 \
   --purpose "Permanent prod download soak"
 ```
 
@@ -3530,13 +3529,16 @@ Every cycle writes one `prod_upload_cycle` point carrying `attempted`,
 `produced_signal` boolean. A day when every source fetch failed and a day when
 every upload was rejected are otherwise indistinguishable, and only the second
 is an incident. Because the point is unconditional it doubles as a heartbeat:
-no `prod_upload_cycle` in 25 hours means the service itself is down.
+exactly one `prod_upload_cycle` point a day, shortly after `--daily-at` plus the
+cycle's own length. None by `--daily-at` + 2h means the service itself is down.
 
 #### Running out of files
 
 A cycle that cannot claim what it asked for records a shortfall to the
 `prod_upload_pool_shortfall` measurement — its own measurement, so "the pool
-ran dry" can never be misread as "the network refused an upload" — and sleeps.
+ran dry" can never be misread as "the network refused an upload" — and waits for
+the **next anchor**: the shortfall is today's cycle, and retrying sooner would
+only churn claims against a pool that an operator topping it up heals.
 Topping the pool up heals it with no redeploy.
 
 #### Disk sizing
@@ -3560,7 +3562,7 @@ is a real bandwidth cost on metered or pooled providers.
 | `--verifier` | `[]`, repeatable | A verifier as `[provider:]region[:vm_size]` |
 | `--pool` | required | Files per cycle, e.g. `tiny:2,small:1` |
 | `--pool-min-size` / `--pool-max-size` | none | Narrow every class (min inclusive, max exclusive) |
-| `--sleep-interval-secs` | `86400` | Sleep at the end of each cycle |
+| `--daily-at` | `00:00` | UTC `HH:MM` the daily cycle starts at (one cycle a day, anchored — see below) |
 | `--verify-interval-secs` | `3600` | Verifier cycle; epoch-aligned so vantages line up |
 | `--readback-verify` / `--no-readback-verify` | on | Uploader downloads each file straight back |
 | `--pool-database-url-env` | `POOL_DATABASE_URL` | Env var holding the scoped registry URL |
@@ -3577,6 +3579,22 @@ is a real bandwidth cost on metered or pooled providers.
 | `--wasm-bootstrap-multiaddrs-file` | committed list | Override the production bootstrap WebRTC multiaddrs |
 | `--skip-bootstrap-probe` | off | Skip the preflight ICE probe (a just-restarted tier is silent for 2–15 min) |
 | `--purpose` | required | Free text, persisted to the registry |
+
+#### Cadence
+
+One cycle a day, anchored to `--daily-at HH:MM` (UTC, default `00:00`) — the
+same rule the continuous downloader runs, for the same reason: a sleep taken at
+the end of each cycle moves the start by the cycle's own duration every day, and
+a `systemctl restart` re-anchors it to the restart moment. The instant the last
+cycle **completed** is kept in
+`/var/lib/ant-prod-continuous-uploader/last-cycle`, and a cycle is due whenever
+that instant is older than the most recent anchor. A fresh deploy uploads
+immediately (proof of life); a restart after the day's cycle waits for the next
+anchor rather than claiming more files; a crash mid-cycle re-runs as soon as
+systemd brings the service back; a cycle that overran the next anchor is
+followed by a wait for the one after. A cycle the pool could not serve counts as
+today's cycle, so a shortfall waits for the next anchor too. The verifiers are
+unaffected — they run on their own epoch-aligned `--verify-interval-secs`.
 
 #### The browser path on the daily write test (`--client-kind wasm`)
 
@@ -3654,7 +3672,7 @@ which is how a file gets uploaded twice.
 
 ### Running one-shot downloaders against production (`prod downloaders`)
 
-`prod downloaders deploy` is the one-shot sibling of `prod continuous-downloader`. The service walks the address list a **single time** and then exits cleanly; the systemd unit is written with `Restart=no` so the VM can be left alone until destroy. Same provisioner, same `prod_downloader.py` script (toggled by the `ONE_SHOT=true` env var), same monitoring stack, same `record-results` / `slack-post` integrations — the only operator-visible difference is the missing `--sleep-interval-secs` flag.
+`prod downloaders deploy` is the one-shot sibling of `prod continuous-downloader`. The service walks the address list a **single time** and then exits cleanly; the systemd unit is written with `Restart=no` so the VM can be left alone until destroy. Same provisioner, same `prod_downloader.py` script (toggled by the `ONE_SHOT=true` env var), same monitoring stack, same `record-results` / `slack-post` integrations — the only operator-visible difference is the missing `--daily-at` flag.
 
 ```bash
 uv run saorsa-deploy prod downloaders deploy \
@@ -3664,7 +3682,7 @@ uv run saorsa-deploy prod downloaders deploy \
   --addresses-path my-addresses.txt   # optional, defaults to resources/prod_addresses.txt
 ```
 
-Arguments are identical to `prod continuous-downloader deploy` apart from the omitted `--sleep-interval-secs`, `--influx-retention-days` and `--log-retention-days` (a one-shot run needs no retention timers). The deployment row carries `deploy_args.kind = "prod-downloaders"`.
+Arguments are identical to `prod continuous-downloader deploy` apart from the omitted `--daily-at`, `--influx-retention-days` and `--log-retention-days` (a one-shot run needs no anchor and no retention timers). The deployment row carries `deploy_args.kind = "prod-downloaders"`.
 
 **Provider selection.** Like the continuous variant, the client VM and the monitoring VM pick their providers independently:
 
@@ -3702,7 +3720,7 @@ These kinds keep no deployment state of their own — they join production rathe
 | `addresses` / `address_count` / `addresses_file` | The exact address list the run walks |
 | `binary` | The resolved `ant` source (release version, or branch + owner) |
 | `spec` / `provider` / `monitoring_provider` | Where it runs |
-| `settings` | `bootstrap_cache`, `download_diagnostics`, `memory_profiling`, `forward_logs`, `rust_log`, `clock_skew_seconds`, `network_profile`, `sleep_interval_secs` |
+| `settings` | `bootstrap_cache`, `download_diagnostics`, `memory_profiling`, `forward_logs`, `rust_log`, `clock_skew_seconds`, `network_profile`, `daily_at`, `sleep_interval_secs` (the pre-anchor key, still reported for deployments that carry it) |
 | `paths` | On-VM service name, binary, env file, download dir, log dir, and globs for the `.stdout` / `.stderr` / `.diag.jsonl` / heaptrack artefacts |
 
 The `paths` block matters at teardown: nothing collects the per-op logs or the diagnostics JSONL automatically and they die with the VM, so `scp` them off first.
@@ -3789,7 +3807,7 @@ uv run saorsa-deploy deployments upgrade-wasm-client \
 
 **Why the service script goes with the bundle.** The bundle is the half of the path that *performs* a transfer; the service script is the half that *records* it. Upgrading one without the other leaves the recording half behind, and that is not hypothetical: PROD-WUL-01 was provisioned on 2026-09-26, the `client_build` plumbing landed on 2026-09-27 17:43, and its bundle was upgraded 78 minutes later — so from then on its per-op log on the host carried `client_build` while every single one of its `deployment_prod_upload_results` rows had the column empty, because the script writing those rows was still the one from the day before. Redeploying it is cheap (the unit is being restarted anyway) and makes the pairing unbreakable.
 
-**Timing is the operator's.** Run it outside the daily window. A restart that triggers a same-day cycle is acceptable — the uploader claims fresh files, the downloader re-walks its list — but it is a cycle and it costs what a cycle costs. A failure on one deployment is reported and the command carries on with the rest (the alternative is a set left on two builds with nothing recording which is which), exiting non-zero at the end.
+**Timing is the operator's.** Run it outside the daily window. Since the cycle is anchored to `daily_at`, a restart **after** the day's cycle no longer triggers one: the service reads the instant its last cycle completed and waits for the next anchor. A restart *before* the day's cycle still leaves that cycle to run at its anchor, on the new bundle. A failure on one deployment is reported and the command carries on with the rest (the alternative is a set left on two builds with nothing recording which is which), exiting non-zero at the end.
 
 **Recording.** On success, `deploy_args.wasm_build` is replaced with the new bundle's `build-info.json` and a `wasm_client_upgraded` event records `{old_commit, new_commit, ref, repo_owner, upgraded_at}`; the output prints old → new per deployment. A failure records `wasm_client_upgrade_failed` and leaves `deploy_args` alone, so the registry never claims a build that a VM did not take. If the deployment's run manifest under `deploy/manifests/runs/` still pins a different `wasm_binary.branch`, the command warns that the next `deployments up` would roll the upgrade back.
 
@@ -4151,7 +4169,7 @@ reading their own manifest as a description of the run. `rust_log`, `network` an
 
 **The service, unit, logs and restart policy are the native ones.** The same
 `prod_downloader.py` walks the same address list with the same `ONE_SHOT` /
-`SLEEP_INTERVAL_SECS` behaviour, writes the same per-op
+`DAILY_AT` behaviour, writes the same per-op
 `/var/log/ant-prod-downloader/{op:04d}-{addr}.{stdout,stderr}` pair, and runs
 under the same `ant-prod-downloader` unit. It spawns
 `ant-wasm file download <addr> -o <path>` instead of `ant` — **no

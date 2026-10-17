@@ -77,7 +77,8 @@ prod_continuous_uploader:
                              # so a 14 KB file buys no more observation than a
                              # 5 MB one at the same cost of one pool entry.
 
-  sleep_interval_secs: 86400 # once a day
+  # The cycle starts at this UTC time every day, whatever the cycle itself takes.
+  daily_at: "00:00"
 
   # ---- the verifier VMs ------------------------------------------------
   # Deliberately NATIVE, whatever the uploader runs: a digest_mismatch then stays

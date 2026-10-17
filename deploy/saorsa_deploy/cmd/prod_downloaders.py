@@ -281,7 +281,6 @@ def _provision_prod_downloader(
     provisioner = ProdDownloaderProvisioner(
         downloaders=downloaders,
         bootstrap_peers=bootstrap_peers,
-        sleep_interval_secs=0,
         ssh_key_path=args.ssh_key_path,
         binary_url=binary_url,
         binary_is_archive=binary_is_archive,

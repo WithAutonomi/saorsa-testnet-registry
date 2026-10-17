@@ -113,7 +113,6 @@ class TestTheDownloadWalkCarriesTheBuild:
             "ADDRESSES_FILE": str(addrs),
             "DOWNLOAD_DIR": str(tmp_path / "dl"),
             "ONE_SHOT": "true",
-            "SLEEP_INTERVAL_SECS": "0",
             "INFLUX_URL": "http://influx:8086",
             "INFLUX_TOKEN": "tok",
             "BOOTSTRAP_CACHE": "true",

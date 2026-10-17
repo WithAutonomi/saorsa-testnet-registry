@@ -46,7 +46,7 @@ def _manifest(**overrides):
         "provider": "hetzner",
         "volume_size": 40,
         "pool": {"tiny": 2, "small": 1},
-        "sleep_interval_secs": 86400,
+        "daily_at": "00:00",
         "verify_interval_secs": 3600,
         "binary": {"version": "0.3.3"},
         "verifiers": [
@@ -69,6 +69,21 @@ def _manifest(**overrides):
             "prod_continuous_uploader": spec,
         }
     )
+
+
+def _manifest_without_daily_at():
+    """The uploader spec with `daily_at` left out, to read its default."""
+    spec = dict(_manifest().spec.model_dump(exclude_none=True))
+    spec.pop("daily_at")
+    return Manifest.model_validate(
+        {
+            "name": "PROD-UL-DAILY-01",
+            "kind": "prod-continuous-uploader",
+            "purpose": "daily production write test",
+            "ssh_key_path": "~/.ssh/ant_deploy",
+            "prod_continuous_uploader": spec,
+        }
+    ).spec
 
 
 def _deploy_argv(manifest):
@@ -102,7 +117,29 @@ class TestTheSchema:
 
     def test_a_typo_is_a_loud_error(self):
         with pytest.raises(ValidationError):
-            _manifest(sleep_interval_sec=10)
+            _manifest(daily_att="00:00")
+
+    def test_the_retired_sleep_interval_is_refused_by_name(self):
+        """Interval mode is gone, so a manifest still carrying it must not run.
+
+        A drifting daily cadence is the defect this replaced; silently ignoring
+        the old key would leave the operator reading their own manifest as a
+        description of a run that no longer honours it.
+        """
+        with pytest.raises(ValidationError, match="sleep_interval_secs"):
+            _manifest(sleep_interval_secs=86400)
+
+    @pytest.mark.parametrize("value", ["00:00", "23:59", "02:00"])
+    def test_daily_at_accepts_a_strict_hh_mm(self, value):
+        assert _manifest(daily_at=value).spec.daily_at == value
+
+    def test_daily_at_defaults_to_midnight(self):
+        assert _manifest_without_daily_at().daily_at == "00:00"
+
+    @pytest.mark.parametrize("value", ["24:00", "0:00", "00:00:00", "0000", "00:60"])
+    def test_daily_at_rejects_anything_else(self, value):
+        with pytest.raises(ValidationError, match="daily_at must be HH:MM"):
+            _manifest(daily_at=value)
 
 
 class TestTheDiskGuard:
@@ -152,6 +189,16 @@ class TestTheOrchestratorArgv:
         argv = _deploy_argv(_manifest())
         verifiers = [argv[i + 1] for i, a in enumerate(argv) if a == "--verifier"]
         assert verifiers == ["digitalocean:lon1:s-1vcpu-2gb", "ovh:GRA9:b3-8"]
+
+    def test_the_anchor_is_always_emitted(self):
+        """`plan` has to show the anchor, and the journal's argv has to pin it.
+
+        Unconditional rather than omit-when-default: the anchor is the whole
+        cadence, so a plan that does not name it reads as a run with none.
+        """
+        assert _val(_deploy_argv(_manifest()), "--daily-at") == "00:00"
+        assert _val(_deploy_argv(_manifest(daily_at="02:00")), "--daily-at") == "02:00"
+        assert "--sleep-interval-secs" not in _deploy_argv(_manifest())
 
     def test_unset_options_emit_no_flag(self):
         argv = _deploy_argv(_manifest())
@@ -225,10 +272,80 @@ class TestTheCliAcceptsWhatTheOrchestratorEmits:
 
     def test_defaults_are_sensible(self, monkeypatch):
         args = self._run(monkeypatch, _deploy_argv(_manifest()))
-        assert args["sleep_interval_secs"] == 86400
+        assert args["daily_at"] == "00:00"
         assert args["verify_interval_secs"] == 3600
         assert args["readback_verify"] is True
         assert args["pool_database_url_env"] == "POOL_DATABASE_URL"
+
+
+class TestTheRecordedCadenceAndRunway:
+    """`deploy_args` is what every reader works from, and the runway is in days."""
+
+    def test_the_cli_default_and_an_explicit_anchor_both_resolve(self):
+        from saorsa_deploy.cmd.prod_continuous_uploader import _daily_at
+
+        assert _daily_at(SimpleNamespace(daily_at="02:00")) == "02:00"
+        # The attribute is absent on no real parse path, but a None would make
+        # the env file write an empty DAILY_AT and override the script default.
+        assert _daily_at(SimpleNamespace(daily_at=None)) == "00:00"
+        assert _daily_at(SimpleNamespace()) == "00:00"
+
+    def test_deploy_args_carry_the_anchor_and_not_the_retired_interval(self, monkeypatch):
+        """Every reader of the cadence — slack-post, the inventory — uses this."""
+        from saorsa_deploy.cmd import prod_continuous_uploader as module
+
+        captured = {}
+        monkeypatch.setattr(module, "_parse_pool_request", lambda raw, console: {"tiny": 1})
+        monkeypatch.setattr(module, "_check_wasm_options", lambda *a: None)
+        monkeypatch.setattr(module, "_apply_wasm_pool_cap", lambda *a: None)
+        monkeypatch.setattr(module, "apply_wasm_vm_size", lambda *a: None)
+        monkeypatch.setattr(module, "_resolve_pool_database_url", lambda *a: "postgresql://x/y")
+        monkeypatch.setattr(module, "_preflight_pool", lambda *a: None)
+        monkeypatch.setattr(module, "resolve_wasm_context", lambda *a: None)
+        monkeypatch.setattr(module, "record_event", lambda *a, **k: None)
+        monkeypatch.setattr(module, "record_status", lambda *a, **k: None)
+        monkeypatch.setattr(module, "_ensure_monitoring", lambda *a: None)
+        monkeypatch.setattr(module, "_ensure_client_infra", lambda *a: None)
+        monkeypatch.setattr(module, "_provision", lambda *a: None)
+        monkeypatch.setattr(module, "_start", lambda *a: None)
+        monkeypatch.setattr(
+            module,
+            "_resolve_deployment_row",
+            lambda name, deploy_args, console: captured.update(deploy_args) or 1,
+        )
+        module.cmd_prod_continuous_uploader_deploy(
+            SimpleNamespace(
+                name="PROD-UL-01",
+                purpose="daily write test",
+                spec="fsn1:cx23",
+                secret_key="0x" + "11" * 32,
+                daily_at="02:00",
+                verifier=["lon1"],
+                pool="tiny:1",
+                branch_name=None,
+                repo_owner=None,
+                ant_version="0.3.3",
+            )
+        )
+        assert captured["daily_at"] == "02:00"
+        assert "sleep_interval_secs" not in captured
+
+    def test_the_runway_counts_one_cycle_a_day(self, monkeypatch, capsys):
+        """Cycles and days are the same number now the cadence is anchored."""
+        from rich.console import Console
+
+        from saorsa_deploy.cmd import prod_continuous_uploader as module
+
+        class _Repo:
+            def pool_stats(self):
+                return {"url": {"by_class": {"tiny": {"available": 20}, "small": {"available": 7}}}}
+
+        monkeypatch.setattr(module, "get_file_pool_repository", lambda: _Repo())
+        module._preflight_pool(
+            SimpleNamespace(), {"tiny": 2, "small": 1}, Console(width=200, no_color=True)
+        )
+        out = capsys.readouterr().out
+        assert "7 cycles" in out and "~7 days at one cycle a day" in out
 
 
 class TestTheProvisionerEnvironment:

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Daily production write test — the uploader half (V2-837).
 
-Wakes on a cycle, claims a few files from the production file pool, uploads
-them to the production Autonomi network, reads each one straight back, and
-sleeps. Runs forever.
+Wakes at a fixed UTC time each day (``DAILY_AT``), claims a few files from the
+production file pool, uploads them to the production Autonomi network, reads
+each one straight back, and waits for the next anchor. Runs forever.
 
 This is the only VM-side service in this package that talks to the registry
 database. It has to: the whole point is that a file is claimed *as it is
@@ -24,7 +24,8 @@ Three things it is careful about:
   That hash is what every later verification compares against, so it is
   computed from ground truth or not at all.
 * **Running out of files is a signal, not a crash.** The service records the
-  shortfall and sleeps; topping the pool up heals it with no redeploy.
+  shortfall and waits for the next anchor; topping the pool up heals it with no
+  redeploy.
 
 ``CLIENT_KIND=wasm`` swaps the transport for ant-core compiled to WASM over
 WebRTC-Direct, spawned through the ``ant-wasm`` CLI (``ANT_WASM``) instead of the
@@ -48,7 +49,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Emitted for dashboards. The upload measurement deliberately matches the one
@@ -64,7 +65,8 @@ EXHAUSTION_MEASUREMENT = "prod_upload_pool_shortfall"
 #: broken" and "we could not test production today". Without it a day when
 #: every source fetch 503s looks identical to a day when every upload was
 #: rejected, and the second is an incident while the first is weather.
-#: Being unconditional, it doubles as a heartbeat: no point in 25h means
+#: Being unconditional, it doubles as a heartbeat: exactly one point a day,
+#: shortly after DAILY_AT plus the cycle's length. None by DAILY_AT + 2h means
 #: the service itself is down.
 CYCLE_MEASUREMENT = "prod_upload_cycle"
 
@@ -89,6 +91,12 @@ ERROR_KIND_CRASH = "crash"
 
 STDERR_TAIL_LINES = 200
 LOG_DIR = "/var/log/ant-prod-continuous-uploader"
+
+# The instant the last cycle COMPLETED, read on start and rewritten after every
+# cycle — including a cycle the pool could not serve. On disk because the
+# decision has to survive a restart: that is what stops an upgrade from
+# re-anchoring the daily series.
+DEFAULT_LAST_CYCLE_FILE = "/var/lib/ant-prod-continuous-uploader/last-cycle"
 HASH_CHUNK_BYTES = 1 << 20
 
 _LOG_LEVEL_VERBOSITY = {"info": 1, "debug": 2, "trace": 3}
@@ -96,6 +104,157 @@ _LOG_LEVEL_VERBOSITY = {"info": 1, "debug": 2, "trace": 3}
 
 def _log(message: str) -> None:
     print(f"[{datetime.now(timezone.utc).isoformat()}] {message}", flush=True)
+
+
+# --- daily anchor: keep byte-identical in prod_downloader.py and prod_continuous_uploader.py ---
+#
+# The cycle is anchored to a fixed UTC wall-clock time rather than to a sleep
+# taken at the end of the previous cycle. A sleep of 24h after a cycle that
+# itself takes 40 minutes moves the start 40 minutes later every day, and every
+# `systemctl restart` (an upgrade, a crash) re-anchors the series to the restart
+# moment. The results are read day against day, so a start time that walks round
+# the clock is the wrong instrument.
+#
+# One rule covers start, restart, crash and overrun: the instant the last cycle
+# COMPLETED is recorded in a state file, and a cycle is due whenever that
+# instant is older than the most recent anchor. So a fresh deploy runs
+# immediately (proof of life), a restart after today's cycle waits for
+# tomorrow's anchor instead of running an extra cycle, a crash mid-cycle re-runs
+# as soon as systemd brings the service back, and a cycle that overran the next
+# anchor is followed by a wait for the one after it.
+
+#: Anchor used when DAILY_AT is absent or malformed. Midnight UTC, which is what
+#: every profile ships.
+DEFAULT_DAILY_AT = "00:00"
+
+#: Longest single sleep while waiting for an anchor. The arithmetic is
+#: re-evaluated each slice, so a clock step or a suspended VM cannot overshoot
+#: the anchor by more than this.
+ANCHOR_SLEEP_SLICE_SECS = 300
+
+
+def _anchor_log(message: str) -> None:
+    print(f"[{datetime.now(timezone.utc).isoformat()}] {message}", flush=True)
+
+
+def _parse_hh_mm(value):
+    """Split a strict ``HH:MM`` into ``(hour, minute)``, or ``None``."""
+    parts = str(value).split(":")
+    if len(parts) != 2 or len(parts[0]) != 2 or len(parts[1]) != 2:
+        return None
+    hours, minutes = parts
+    if not (hours.isdigit() and minutes.isdigit()):
+        return None
+    if not (0 <= int(hours) <= 23 and 0 <= int(minutes) <= 59):
+        return None
+    return int(hours), int(minutes)
+
+
+def parse_daily_at(raw):
+    """Normalise the DAILY_AT env value, falling back to midnight UTC.
+
+    A malformed value is one logged line and the default, never a crash: this
+    service is permanent, and refusing to start would turn a typo in an env file
+    into a silent gap in a daily series.
+    """
+    value = (raw or "").strip()
+    if _parse_hh_mm(value) is None:
+        _anchor_log(
+            f"WARNING: DAILY_AT={value!r} is not HH:MM (24-hour, UTC); using {DEFAULT_DAILY_AT}"
+        )
+        return DEFAULT_DAILY_AT
+    return value
+
+
+def most_recent_anchor(now, daily_at):
+    """The latest instant at or before ``now`` whose UTC time of day is ``daily_at``."""
+    hour, minute = _parse_hh_mm(daily_at) or _parse_hh_mm(DEFAULT_DAILY_AT)
+    now_utc = now.astimezone(timezone.utc)
+    anchor = now_utc.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if anchor > now_utc:
+        anchor -= timedelta(days=1)
+    return anchor
+
+
+def seconds_until_next_cycle(now, daily_at, last_completed):
+    """Seconds to wait before the next cycle; ``0.0`` means one is due now.
+
+    Due whenever no cycle has completed since the most recent anchor — which is
+    also the "no state file" case, so a fresh deploy proves itself immediately.
+    """
+    anchor = most_recent_anchor(now, daily_at)
+    if last_completed is None or last_completed.astimezone(timezone.utc) < anchor:
+        return 0.0
+    return max(0.0, ((anchor + timedelta(days=1)) - now.astimezone(timezone.utc)).total_seconds())
+
+
+def read_last_cycle(path):
+    """The instant the last cycle completed, or ``None`` if that is unknown.
+
+    Unknown means "run a cycle now", so every failure to read the file lands
+    there rather than raising: a corrupt state file must cost at most one extra
+    cycle, never the service.
+    """
+    try:
+        raw = Path(path).read_text().strip()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        _anchor_log(f"WARNING: could not read {path}: {exc}; treating the last cycle as unknown")
+        return None
+    if not raw:
+        return None
+    try:
+        when = datetime.fromisoformat(raw)
+    except ValueError:
+        _anchor_log(
+            f"WARNING: {path} holds {raw!r}, which is not an ISO-8601 instant; "
+            "treating the last cycle as unknown"
+        )
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def write_last_cycle(path, when):
+    """Record the instant a cycle completed, atomically.
+
+    Written through a temporary file and ``os.replace`` so a crash mid-write
+    leaves the previous instant rather than a half-written one — which would
+    read as unknown and run an extra cycle.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(when.astimezone(timezone.utc).isoformat())
+    os.replace(tmp, target)
+
+
+def wait_for_next_cycle(daily_at, last_cycle_file):
+    """Block until a cycle is due, logging the decision once.
+
+    Sleeps in slices rather than one long call so the decision is re-made
+    against the clock the VM actually has.
+    """
+    announced = None
+    while True:
+        now = datetime.now(timezone.utc)
+        last_completed = read_last_cycle(last_cycle_file)
+        wait = seconds_until_next_cycle(now, daily_at, last_completed)
+        anchor = most_recent_anchor(now, daily_at)
+        if wait <= 0:
+            _anchor_log(f"no cycle completed since {anchor.isoformat()}; starting cycle now")
+            return
+        next_anchor = anchor + timedelta(days=1)
+        if announced != next_anchor:
+            _anchor_log(
+                f"last cycle completed {last_completed.astimezone(timezone.utc).isoformat()}; "
+                f"next cycle at {next_anchor.isoformat()} (sleeping {int(wait)}s)"
+            )
+            announced = next_anchor
+        time.sleep(min(wait, ANCHOR_SLEEP_SLICE_SECS))
+
+
+# --- end daily anchor ---
 
 
 def _require_env(name: str) -> str:
@@ -559,7 +718,8 @@ def main() -> int:
     evm_network = os.environ.get("EVM_NETWORK", "arbitrum-one")
     payment_type = os.environ.get("PAYMENT_TYPE", "").strip()
     log_level = os.environ.get("LOG_LEVEL", "info").strip() or "info"
-    sleep_interval = _env_int("SLEEP_INTERVAL_SECS", 86400)
+    daily_at = parse_daily_at(os.environ.get("DAILY_AT"))
+    last_cycle_file = Path(os.environ.get("LAST_CYCLE_FILE", DEFAULT_LAST_CYCLE_FILE))
     download_timeout = _env_int("DOWNLOAD_TIMEOUT", 1800)
     fetch_attempts = _env_int("SOURCE_FETCH_ATTEMPTS", 5)
     fetch_backoff = _env_int("SOURCE_FETCH_BACKOFF_SECS", 10)
@@ -602,13 +762,14 @@ def main() -> int:
         f"({deployment_id}) region={region} host={host} "
         f"transport={client_kind} "
         f"request={ {k.value: v for k, v in pool_request.items()} } "
-        f"cycle={sleep_interval}s"
+        f"daily_at={daily_at}"
     )
 
     op_counter = 0
     cycle = 0
 
     while True:
+        wait_for_next_cycle(daily_at, last_cycle_file)
         cycle += 1
         pool_repo, deployment_repo, session = _open_repositories(database_url)
         try:
@@ -643,8 +804,11 @@ def main() -> int:
                     ),
                 )
                 session.close()
-                _log(f"sleeping {sleep_interval}s before retrying")
-                time.sleep(sleep_interval)
+                # The pool was dry today, so today's attempt is spent: record
+                # the cycle as completed and try again at the next anchor.
+                # Retrying sooner would churn claims against a pool that only
+                # an operator topping it up can heal.
+                write_last_cycle(last_cycle_file, datetime.now(timezone.utc))
                 continue
 
             _log(f"cycle {cycle}: claimed {len(claims)} file(s)")
@@ -1029,9 +1193,7 @@ def main() -> int:
                 f"{cycle_stats['replacements']} substitution(s)"
             )
 
-        if sleep_interval > 0:
-            _log(f"cycle {cycle} complete; sleeping {sleep_interval}s")
-            time.sleep(sleep_interval)
+        write_last_cycle(last_cycle_file, datetime.now(timezone.utc))
 
 
 def _claim_replacement(

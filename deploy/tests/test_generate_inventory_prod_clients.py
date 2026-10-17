@@ -79,10 +79,18 @@ class TestClientConfig:
     def test_one_shot_is_derived_from_the_kind(self):
         assert build_client_config(_deploy_args())["one_shot"] is True
         continuous = build_client_config(
-            _deploy_args(kind="prod-continuous-downloader", sleep_interval_secs=86400)
+            _deploy_args(kind="prod-continuous-downloader", daily_at="02:00")
         )
         assert continuous["one_shot"] is False
-        assert continuous["settings"]["sleep_interval_secs"] == 86400
+        assert continuous["settings"]["daily_at"] == "02:00"
+
+    def test_a_deployment_predating_the_anchor_reports_its_interval(self):
+        """The live permanent monitors carry only the old key."""
+        legacy = build_client_config(
+            _deploy_args(kind="prod-continuous-downloader", sleep_interval_secs=86400)
+        )
+        assert legacy["settings"]["sleep_interval_secs"] == 86400
+        assert legacy["settings"]["daily_at"] is None
 
     def test_settings_capture_how_ant_is_invoked(self):
         config = build_client_config(

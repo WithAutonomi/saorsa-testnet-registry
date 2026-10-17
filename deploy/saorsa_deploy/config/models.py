@@ -55,6 +55,35 @@ def _validate_pool_size(value: Union[str, int]) -> Union[str, int]:
 # number of bytes. Binary units, matching how sizes are displayed.
 PoolSize = Annotated[Union[str, int], AfterValidator(_validate_pool_size)]
 
+DAILY_AT_MESSAGE = "daily_at must be HH:MM (24-hour, UTC)"
+
+
+def validate_daily_at(value: str) -> str:
+    """Validate a ``daily_at`` anchor — exactly ``HH:MM``, 24-hour, UTC implied.
+
+    Strict about the shape rather than lenient, because the value is the one
+    thing that makes a permanent daily series readable day against day: a
+    quietly-accepted ``"0:00"`` or ``"00:00:00"`` would be a deployment whose
+    cycle starts at a time nobody chose.
+    """
+    text = str(value)
+    parts = text.split(":")
+    if len(parts) != 2 or len(parts[0]) != 2 or len(parts[1]) != 2:
+        raise ValueError(DAILY_AT_MESSAGE)
+    hours, minutes = parts
+    if not (hours.isdigit() and minutes.isdigit()):
+        raise ValueError(DAILY_AT_MESSAGE)
+    if not (0 <= int(hours) <= 23 and 0 <= int(minutes) <= 59):
+        raise ValueError(DAILY_AT_MESSAGE)
+    return text
+
+
+# The UTC wall-clock time a permanent daily cycle starts at. A fixed anchor
+# rather than an interval: a sleep taken after each cycle moves the start time
+# by the cycle's own duration every day, and a restart re-anchors it to the
+# restart moment.
+DailyAt = Annotated[str, AfterValidator(validate_daily_at)]
+
 
 def _check_pool_bounds(spec, label: str, pool_field: str = "pool") -> None:
     """Validate ``pool_min_size``/``pool_max_size`` against their ``pool``.
@@ -1087,7 +1116,11 @@ class ProdDownloadersSpec(_Base):
 
 
 class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
-    sleep_interval_secs: Optional[int] = None
+    # UTC wall-clock time each daily cycle starts at. The service runs a cycle
+    # immediately on a fresh deploy, then waits for this time every day after —
+    # so the series is read day against day at the same hour, whatever the cycle
+    # itself takes and however often the VM is restarted.
+    daily_at: DailyAt = "00:00"
     # InfluxDB bucket retention in days (default 7); 0 = infinite. For a
     # permanent run, periodically archive into Postgres (`deployments archive`).
     influx_retention_days: Optional[int] = None
@@ -1157,8 +1190,9 @@ class ProdContinuousUploaderSpec(_Base):
     # the wallet key.
     pool_database_url_env: str = "POOL_DATABASE_URL"
 
-    # Seconds to sleep at the end of each upload cycle. 86400 = once a day.
-    sleep_interval_secs: Optional[int] = None
+    # UTC wall-clock time each daily cycle starts at — see
+    # ProdContinuousDownloaderSpec.daily_at; the rule is the same on both kinds.
+    daily_at: DailyAt = "00:00"
     # How often a verifier looks for addresses it has not yet checked.
     verify_interval_secs: Optional[int] = None
 
