@@ -664,8 +664,17 @@ What makes this kind unlike every other:
   with no `pool_max_size` is refused because the requirement is then unknowable.
 - Claims resolve inline: success spends, partial marks partial, and a failure to
   fetch the **source releases** — nothing reached the network, so burning it
-  would be a lie. `destroy` stops the services first and **warns** about
-  unresolved claims without releasing them.
+  would be a lie. A `systemctl stop`/`restart` mid-cycle resolves the batch in
+  flight the same way (the running upload by its evidence — WASM by
+  `payment_sent`/marker, native **partial** when killed, since a SIGTERM can
+  land after the payment went out) and **releases the claims it never started**,
+  then exits 0. A batch cut short is **not** recorded as completed, so the
+  restarted service runs the day's cycle; one the stop caught on its last op
+  **is**, because a second batch would pay for files the day has already
+  measured. Without that handler every claim in flight stayed `claimed` forever
+  and had to be settled by auditing the wallet's on-chain nonce (15 of them).
+  `destroy` stops the services first and **warns** about unresolved claims
+  without releasing them — which now means only a SIGKILL or a dead VM.
 
 `generate-inventory` covers the kind; `up` emits it as a `best_effort` final
 step. The address list grows forever, so the inventory names the authoritative

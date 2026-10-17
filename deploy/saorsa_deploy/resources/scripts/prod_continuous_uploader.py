@@ -26,6 +26,11 @@ Three things it is careful about:
 * **Running out of files is a signal, not a crash.** The service records the
   shortfall and waits for the next anchor; topping the pool up heals it with no
   redeploy.
+* **A stop or restart resolves what the cycle was holding.** Every stop path
+  arrives as SIGTERM, and the default disposition would exit part way through a
+  cycle leaving its claims `claimed` forever — nothing sweeps those, by design.
+  The handler resolves the upload in flight by its evidence and releases the
+  claims the cycle never started (see :func:`_install_stop_handler`).
 
 ``CLIENT_KIND=wasm`` swaps the transport for ant-core compiled to WASM over
 WebRTC-Direct, spawned through the ``ant-wasm`` CLI (``ANT_WASM``) instead of the
@@ -38,10 +43,12 @@ failure is classified by whether a payment went out (see
 :func:`_wasm_failure_outcome`).
 """
 
+import contextlib
 import hashlib
 import json
 import os
 import random
+import signal
 import socket
 import subprocess
 import sys
@@ -104,6 +111,120 @@ _LOG_LEVEL_VERBOSITY = {"info": 1, "debug": 2, "trace": 3}
 
 def _log(message: str) -> None:
     print(f"[{datetime.now(timezone.utc).isoformat()}] {message}", flush=True)
+
+
+# --------------------------------------------------------------------------
+# Stopping (SIGTERM) — resolving the claims the cycle is holding
+# --------------------------------------------------------------------------
+
+
+class StopRequested(BaseException):
+    """Raised in the main thread when a stop has been asked for.
+
+    A ``BaseException`` deliberately: the fetch, claim and resolution paths are
+    wrapped in broad ``except Exception`` clauses so that one bad file or one
+    database blip cannot take down a permanent service, and every one of them
+    would swallow this.
+    """
+
+
+#: Set by the signal handler, read by the cycle. Not a plain module global so
+#: the handler can assign to it without a `global` statement.
+STOP = {"requested": False, "signal": None}
+
+#: The transfer child, while one is running. The handler asks it to stop rather
+#: than raising, so the op's own outcome code runs and resolves its claim.
+_CHILD = {"proc": None}
+
+#: What the cycle is holding right now: the claim being worked on, which stage
+#: it reached, whether its claim has been resolved, and the claims still queued.
+#: The handler reads it to say what it interrupted; the cleanup reads it to
+#: decide what each claim deserves.
+_IN_FLIGHT = {
+    "in_cycle": False,
+    "claim": None,
+    "stage": None,
+    "file_name": None,
+    "local_path": None,
+    "resolved": False,
+    "outcome": None,
+}
+
+#: Stages during which the handler sets the flag and returns instead of
+#: raising, because a raise there would lose track of claims that already
+#: exist. ``claiming`` covers the window where ``claim_pool_files`` has
+#: committed its rows but has not returned them yet; ``upload`` covers the
+#: stretch between the child exiting and its claim being resolved, which only
+#: the op's own outcome code can decide. Both are honoured at the top of the
+#: next per-op iteration, or by the check that follows the loop.
+_DEFERRED_STAGES = frozenset({"claiming", "upload"})
+
+#: How often the wait loop re-checks the stop flag. A signal handler cannot
+#: interrupt ``Popen.wait``, so the wait is taken in slices.
+STOP_POLL_SECS = 1.0
+
+#: Grace given to the transfer child after ``terminate()`` before ``kill()``.
+#: systemd SIGTERMs the whole control group, so the child is normally already
+#: going down; this covers an operator signalling this process alone.
+CHILD_STOP_GRACE_SECS = 10.0
+
+
+def _stop_stage_description() -> str:
+    """What the stop interrupted, for the one line that says so."""
+    stage = _IN_FLIGHT.get("stage")
+    if stage == "claiming":
+        # No file yet: the claim call is what was interrupted.
+        return "while claiming files"
+    if stage:
+        return f"during {stage} of {_IN_FLIGHT.get('file_name') or '-'}"
+    if _IN_FLIGHT.get("in_cycle"):
+        return "between ops"
+    return "while idle"
+
+
+def _handle_stop(signum, _frame) -> None:
+    name = signal.Signals(signum).name
+    if STOP["requested"]:
+        # Including every signal that arrives during the cleanup: raising there
+        # could abandon a release half-done, and systemd's SIGKILL at 90s is
+        # the backstop the cleanup is bounded to stay well inside.
+        _log("stop already in progress")
+        return
+    STOP["requested"] = True
+    STOP["signal"] = name
+    _log(f"stop requested ({name}) {_stop_stage_description()}")
+    proc = _CHILD.get("proc")
+    if proc is not None and proc.poll() is None:
+        # Let the op finish on the child's signal exit: its ordinary outcome
+        # code is what decides whether the file was paid for. systemd has
+        # already SIGTERMed the whole control group, so this is usually a
+        # no-op; an operator signalling this process alone needs it.
+        with contextlib.suppress(Exception):
+            proc.terminate()
+        return
+    if _IN_FLIGHT.get("stage") in _DEFERRED_STAGES:
+        # Claims exist that nothing else can account for yet — rows committed
+        # but not returned, or a child whose payment only the outcome code can
+        # judge. The stop is honoured a few statements later instead.
+        return
+    raise StopRequested(name)
+
+
+def _install_stop_handler() -> None:
+    """Make a stop or restart resolve the cycle's claims instead of stranding them.
+
+    Every stop path reaches this process as SIGTERM: `systemctl stop` and
+    `restart`, needrestart after an unattended upgrade, `deployments
+    upgrade-wasm-client`, `deployments upgrade-ant-binary`, and `destroy`, which
+    stops the service before it checks for open claims. The default disposition
+    exits on the spot, part way through a cycle, leaving every claim of that
+    cycle `claimed` forever — and nothing sweeps those, by design: a claim that
+    might correspond to a paid upload must never be freed automatically. Each
+    one therefore cost an operator an on-chain audit of the paying wallet, 15 of
+    them by 2026-10-17.
+    """
+    signal.signal(signal.SIGTERM, _handle_stop)
+    signal.signal(signal.SIGINT, _handle_stop)
 
 
 # --- daily anchor: keep byte-identical in prod_downloader.py and prod_continuous_uploader.py ---
@@ -518,15 +639,52 @@ def _run_ant(cmd: list, secret_key: str, log_base: Path, timeout: int):
     ]
     for thread in threads:
         thread.start()
+    # Recorded so the stop handler can ask this child to go rather than raising
+    # out of the op: the child is the only thing that knows whether a payment
+    # went out, so its exit has to be observed and classified.
+    _CHILD["proc"] = process
     try:
-        process.wait(timeout=timeout)
+        _wait_for_child(process, timeout)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
         _log(f"WARNING: ant exceeded {timeout}s and was killed")
+    finally:
+        _CHILD["proc"] = None
     for thread in threads:
         thread.join(timeout=10)
     return process.returncode, "".join(captured["out"]), "".join(captured["err"])
+
+
+def _wait_for_child(process, timeout) -> None:
+    """Wait for the transfer child, cutting the wait short on a stop request.
+
+    Sliced rather than one ``wait(timeout=...)`` because the stop flag is set
+    from a signal handler, which cannot interrupt a blocking wait. Raises
+    ``TimeoutExpired`` for the caller's existing timeout path, which is
+    unchanged.
+    """
+    deadline = time.monotonic() + timeout
+    while not STOP["requested"]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        try:
+            process.wait(timeout=min(remaining, STOP_POLL_SECS))
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=CHILD_STOP_GRACE_SECS)
+    except subprocess.TimeoutExpired:
+        _log(
+            f"WARNING: the transfer child ignored SIGTERM for {CHILD_STOP_GRACE_SECS}s; killing it"
+        )
+        process.kill()
+        process.wait()
 
 
 def _parse_ant_json(stdout: str):
@@ -700,6 +858,7 @@ def _parse_pool_request(raw: str) -> dict:
 
 
 def main() -> int:
+    _install_stop_handler()
     deployment_id = int(_require_env("DEPLOYMENT_ID"))
     deployment_name = _require_env("DEPLOYMENT_NAME")
     database_url = _require_env("POOL_DATABASE_URL")
@@ -769,10 +928,45 @@ def main() -> int:
     cycle = 0
 
     while True:
-        wait_for_next_cycle(daily_at, last_cycle_file)
+        try:
+            wait_for_next_cycle(daily_at, last_cycle_file)
+        except StopRequested:
+            # Idle: no claim is held, so there is nothing to resolve.
+            _log("stopping (exit 0)")
+            return 0
         cycle += 1
         pool_repo, deployment_repo, session = _open_repositories(database_url)
+        # Reset per cycle so a stop taken while idle cannot be told anything
+        # about the cycle before it.
+        _IN_FLIGHT.update(
+            {
+                "in_cycle": True,
+                "claim": None,
+                "stage": None,
+                "file_name": None,
+                "local_path": None,
+                "resolved": False,
+                "outcome": None,
+            }
+        )
+        in_flight = _IN_FLIGHT
+        interrupted = False
+        drained = False
+        # Named before the claim call so the shutdown cleanup has them whatever
+        # stage the stop lands in.
+        queue = []
+        cycle_stats = {
+            "attempted": 0,
+            "succeeded": 0,
+            "partial": 0,
+            "source_failed": 0,
+            "replacements": 0,
+        }
         try:
+            # The claim rows can be committed before the call returns, so a
+            # stop taken inside it must not raise: it would leave the whole
+            # batch `claimed` with nothing holding a reference to it.
+            in_flight["stage"] = "claiming"
             try:
                 claims = pool_repo.claim_pool_files(
                     kind=PoolFileKind.URL,
@@ -809,20 +1003,39 @@ def main() -> int:
                 # Retrying sooner would churn claims against a pool that only
                 # an operator topping it up can heal.
                 write_last_cycle(last_cycle_file, datetime.now(timezone.utc))
+                if STOP["requested"]:
+                    # A stop deferred during the claim call has nothing left to
+                    # resolve, but it cannot raise any more either — a second
+                    # signal only logs — so `wait_for_next_cycle` would sleep
+                    # straight through it until systemd's SIGKILL.
+                    _log("stopping (exit 0)")
+                    return 0
                 continue
 
             _log(f"cycle {cycle}: claimed {len(claims)} file(s)")
-            cycle_stats = {
-                "attempted": 0,
-                "succeeded": 0,
-                "partial": 0,
-                "source_failed": 0,
-                "replacements": 0,
-            }
 
-            queue = list(claims)
+            queue.extend(claims)
+            # The batch is now referenced by `queue`, so a stop can raise again.
+            in_flight["stage"] = None
             while queue:
+                if STOP["requested"]:
+                    # The op that just finished recorded its own outcome; the
+                    # rest of the batch has not started and goes back.
+                    raise StopRequested(STOP["signal"] or "SIGTERM")
                 claim = queue.pop(0)
+                # In hand from the moment it leaves the queue: the lookups
+                # below are database calls, and a stop taken during one of them
+                # has to release this claim rather than strand it.
+                in_flight.update(
+                    {
+                        "claim": claim,
+                        "stage": "fetch",
+                        "file_name": str(claim.locator_used or claim.file_id),
+                        "local_path": None,
+                        "resolved": False,
+                        "outcome": None,
+                    }
+                )
                 op_counter += 1
                 pool_file = pool_repo.get_pool_file(claim.file_id)
                 locator = claim.locator_used or (pool_file.locator if pool_file else "")
@@ -841,6 +1054,8 @@ def main() -> int:
                 )
 
                 # ---- fetch the source ----
+                in_flight["file_name"] = file_name
+                in_flight["local_path"] = local_path
                 try:
                     cycle_stats["attempted"] += 1
                     size_bytes, source_sha256 = _download(
@@ -925,6 +1140,9 @@ def main() -> int:
                                 f"({cycle_stats['replacements']}/{max_replacements})"
                             )
                             queue.append(replacement)
+                    # Settled: the claim is already back in the pool, so a stop
+                    # arriving now must not try to release it a second time.
+                    in_flight.update({"stage": None, "resolved": True, "outcome": "released"})
                     continue
 
                 # ---- upload ----
@@ -948,6 +1166,7 @@ def main() -> int:
                         file_path=local_path,
                     )
 
+                in_flight["stage"] = "upload"
                 upload_start_ns = time.time_ns()
                 rc, stdout, stderr = _run_ant(cmd, secret_key, log_base, upload_timeout)
                 finished_at = datetime.now(timezone.utc)
@@ -970,6 +1189,7 @@ def main() -> int:
                 # OOM-killed AFTER paying also exits on a signal and prints
                 # nothing, so the payment marker decides instead.
                 error_kind = ""
+                killed_reason = None
                 if _upload_succeeded(parsed, rc):
                     status = ProdUploadStatus.SUCCESS
                     influx_status = STATUS_SUCCESS
@@ -986,9 +1206,20 @@ def main() -> int:
                         else ProdUploadStatus.PARTIAL_UPLOAD
                     )
                 else:
-                    startup_failure = parsed is None and rc != 0
+                    # "No document and a non-zero exit" is only evidence that
+                    # nothing was uploaded for a process that exited on its OWN
+                    # (`rc > 0`). One that was KILLED (`rc < 0`) says nothing of
+                    # the kind: a SIGTERM from a restart, or the OOM killer, can
+                    # land after the payment transaction went out, and the
+                    # native path has no payment marker to ask. So a signal exit
+                    # is held as partial — the side that costs one pool entry
+                    # rather than putting stored chunks in front of a canary.
+                    killed = rc is not None and rc < 0
+                    startup_failure = parsed is None and rc != 0 and not killed
                     status = ProdUploadStatus.PARTIAL_UPLOAD
                     influx_status = STATUS_PARTIAL_UPLOAD
+                    if killed:
+                        killed_reason = f"ant killed by signal {-rc}; payment unknown"
 
                 parsed = parsed or {}
                 # The ant-client commit the transferring binary reported. Only
@@ -1001,8 +1232,13 @@ def main() -> int:
                 chunks_failed = int(parsed.get("chunks_failed") or 0)
                 total_chunks = int(parsed.get("total_chunks") or 0)
                 upload_secs = parsed.get("elapsed_secs")
-                reason = parsed.get("reason") or (
-                    None if status is ProdUploadStatus.SUCCESS else f"ant exit {rc}"
+                # The kill takes precedence over anything the child managed to
+                # print: which signal ended it, and that the payment is
+                # therefore unknown, is what the claim's note has to carry.
+                reason = (
+                    killed_reason
+                    or parsed.get("reason")
+                    or (None if status is ProdUploadStatus.SUCCESS else f"ant exit {rc}")
                 )
                 storage_cost = parsed.get("storage_cost_atto")
                 gas_cost = parsed.get("gas_cost_wei")
@@ -1060,8 +1296,17 @@ def main() -> int:
                 )
 
                 # ---- resolve the claim by what actually happened ----
+                if status is ProdUploadStatus.SUCCESS:
+                    claim_outcome = "uploaded"
+                elif startup_failure:
+                    claim_outcome = "released"
+                else:
+                    claim_outcome = "partial"
+                # Recorded before the call so a stop that interrupts the call
+                # itself knows which outcome to retry rather than guessing.
+                in_flight["outcome"] = claim_outcome
                 try:
-                    if status is ProdUploadStatus.SUCCESS:
+                    if claim_outcome == "uploaded":
                         pool_repo.resolve_pool_claim(
                             claim.id,
                             address=address,
@@ -1072,7 +1317,7 @@ def main() -> int:
                             gas_cost_wei=_decimal_or_none(gas_cost),
                             note="uploaded by prod continuous-uploader",
                         )
-                    elif startup_failure:
+                    elif claim_outcome == "released":
                         # Nothing was written, so releasing keeps a configuration
                         # error from quietly consuming the pool — the files are
                         # as unused as before. Native: no result document at all.
@@ -1098,6 +1343,10 @@ def main() -> int:
                         )
                 except Exception as exc:  # noqa: BLE001
                     _log(f"WARNING: could not resolve claim {claim.id}: {exc}")
+                else:
+                    # The claim is settled, so a stop from here on leaves it
+                    # alone — only the claims that never started go back.
+                    in_flight["resolved"] = True
 
                 _post_influx(
                     influx_url,
@@ -1131,7 +1380,16 @@ def main() -> int:
                 )
 
                 # ---- immediate read-back ----
-                if readback and status is ProdUploadStatus.SUCCESS and address:
+                # Skipped on a stop: the claim is already settled, the
+                # independent verifier VMs check every address anyway, and a
+                # read-back started into a shutdown would be killed and
+                # recorded as a download failure production had no part in.
+                if STOP["requested"]:
+                    in_flight["stage"] = None
+                    if readback and status is ProdUploadStatus.SUCCESS and address:
+                        _log(f"skipping the read-back of {file_name}: stopping")
+                elif readback and status is ProdUploadStatus.SUCCESS and address:
+                    in_flight["stage"] = "readback"
                     _verify_once(
                         ant_path=transfer_path,
                         is_wasm=is_wasm,
@@ -1154,8 +1412,48 @@ def main() -> int:
                     )
 
                 local_path.unlink(missing_ok=True)
+                # The op is over: a stop arriving now is "between ops", and
+                # there is nothing of this file's left to resolve.
+                in_flight["stage"] = None
+
+            # A stop deferred on the LAST op of the batch never reaches the
+            # check at the top of the loop, because there is no next iteration.
+            # Without this the run falls through to the normal tail, records
+            # the cycle and sleeps for the next anchor — where nothing can
+            # raise any more — until systemd's SIGKILL 90s later.
+            if STOP["requested"]:
+                raise StopRequested(STOP["signal"] or "SIGTERM")
+        except StopRequested:
+            interrupted = True
+            drained = _abandon_cycle(
+                pool_repo=pool_repo,
+                session=session,
+                reopen=lambda: _open_repositories(database_url),
+                in_flight=in_flight,
+                queue=queue,
+                cycle=cycle,
+                cycle_stats=cycle_stats,
+                influx=(influx_url, influx_token, influx_org, influx_bucket),
+                host=host,
+                region=region,
+                deployment_name=deployment_name,
+            )
         finally:
+            in_flight["in_cycle"] = False
             session.close()
+
+        if interrupted:
+            # Recorded only when the batch was worked through in full: the
+            # day's measurement is then spent, and a restarted service that ran
+            # a second batch would claim — and PAY for — another set of files.
+            # A batch cut short is not recorded, so the restart finishes the
+            # day's cycle, which is what the anchor rule is for.
+            if drained:
+                write_last_cycle(last_cycle_file, datetime.now(timezone.utc))
+            # Exit 0 because death by SIGTERM is already a clean stop to
+            # systemd, so `Restart=on-failure` behaves exactly as it did.
+            _log("stopping (exit 0)")
+            return 0
 
         # Always emitted, success or not: this is what lets a reader tell
         # "production refused our uploads" from "we never got to try".
@@ -1168,15 +1466,7 @@ def main() -> int:
             _build_line(
                 CYCLE_MEASUREMENT,
                 {"host": host, "region": region, "deployment_name": deployment_name},
-                {
-                    "cycle": cycle,
-                    "attempted": cycle_stats["attempted"],
-                    "succeeded": cycle_stats["succeeded"],
-                    "partial": cycle_stats["partial"],
-                    "source_failed": cycle_stats["source_failed"],
-                    "replacements": cycle_stats["replacements"],
-                    "produced_signal": produced_signal,
-                },
+                _cycle_fields(cycle, cycle_stats),
             ),
         )
         if not produced_signal:
@@ -1194,6 +1484,222 @@ def main() -> int:
             )
 
         write_last_cycle(last_cycle_file, datetime.now(timezone.utc))
+
+
+def _cycle_fields(cycle: int, cycle_stats: dict) -> dict:
+    """The per-cycle heartbeat's fields, shared by the normal and stopped paths."""
+    return {
+        "cycle": cycle,
+        "attempted": cycle_stats["attempted"],
+        "succeeded": cycle_stats["succeeded"],
+        "partial": cycle_stats["partial"],
+        "source_failed": cycle_stats["source_failed"],
+        "replacements": cycle_stats["replacements"],
+        "produced_signal": cycle_stats["succeeded"] > 0 or cycle_stats["partial"] > 0,
+    }
+
+
+#: Notes left on the claims a stop releases. Written out rather than derived so
+#: the reason a file went back in the pool reads the same in the database as in
+#: the journal.
+RELEASE_NOTE_IN_FLIGHT = "interrupted before upload (SIGTERM)"
+RELEASE_NOTE_QUEUED = "interrupted before upload (SIGTERM); released by the shutdown handler"
+
+
+class _StopRepos:
+    """The pool repository the cleanup writes through, recovered if it goes bad.
+
+    `StopRequested` is raised from a signal handler, so it can escape from
+    inside a blocking database call — `get_pool_file` during a fetch, the
+    fetch-failure branch's own release, `_claim_replacement`, the read-back's
+    upsert. That leaves the connection mid-protocol, and SQLAlchemy then
+    refuses further work on the session until it is rolled back, so every
+    release in the cleanup would fail: the failure this handler exists to end,
+    in a narrower window.
+
+    Two steps, in order: roll the session back, and retry a call that still
+    fails on a brand-new session, once.
+    """
+
+    def __init__(self, pool_repo, session, reopen):
+        self.pool = pool_repo
+        self._session = session
+        self._reopen = reopen
+        self._reopened = None
+
+    def rollback(self) -> None:
+        with contextlib.suppress(Exception):
+            if self._session is not None:
+                self._session.rollback()
+
+    def _reopen_once(self) -> bool:
+        """Swap in a fresh session; at most one attempt per cleanup."""
+        if self._reopened is not None or self._reopen is None:
+            return False
+        try:
+            pool_repo, _deployment_repo, session = self._reopen()
+        except Exception as exc:  # noqa: BLE001
+            _log(f"WARNING: could not reopen the registry on stop: {exc}")
+            self._reopened = False
+            return False
+        _log("reopened the registry connection to finish the shutdown")
+        self.pool, self._session, self._reopened = pool_repo, session, True
+        return True
+
+    def run(self, call, description: str) -> bool:
+        """Run one claim resolution, reporting rather than raising.
+
+        Each call is wrapped on its own: one unreachable row must not strand
+        every other claim of the cycle.
+        """
+        try:
+            call(self.pool)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            failure = exc
+        if self._reopen_once():
+            try:
+                call(self.pool)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                failure = exc
+        _log(f"WARNING: {description}: {failure}")
+        return False
+
+    def close_reopened(self) -> None:
+        if self._reopened:
+            with contextlib.suppress(Exception):
+                self._session.close()
+
+
+def _claim_label(repos, claim) -> str:
+    """A human name for a claim, never at the expense of resolving it."""
+    try:
+        pool_file = repos.pool.get_pool_file(claim.file_id)
+        if pool_file is not None and pool_file.name:
+            return pool_file.name
+    except Exception:  # noqa: BLE001
+        pass
+    return str(claim.locator_used or claim.file_id)
+
+
+def _release_on_stop(repos, claim, file_name: str, note: str) -> bool:
+    released = repos.run(
+        lambda pool: pool.release_pool_claim(claim.id, note=note[:500]),
+        f"could not release claim {claim.id} on stop",
+    )
+    if released:
+        _log(f"released claim {claim.id} ({file_name}): interrupted before upload")
+    return released
+
+
+def _mark_partial_on_stop(repos, claim, note: str) -> bool:
+    return repos.run(
+        lambda pool: pool.mark_pool_claim_partial(claim.id, note=note[:500]),
+        f"could not mark claim {claim.id} partial on stop",
+    )
+
+
+def _abandon_cycle(
+    *,
+    pool_repo,
+    session,
+    reopen,
+    in_flight: dict,
+    queue: list,
+    cycle: int,
+    cycle_stats: dict,
+    influx,
+    host: str,
+    region: str,
+    deployment_name: str,
+) -> bool:
+    """Resolve everything the cycle was holding when the stop arrived.
+
+    The rule is the one the script already applies to an upload that failed: a
+    file that was never handed to the transport goes back in the pool, and one
+    whose upload ran keeps whatever its outcome code decided — partial whenever
+    a payment may have gone out, because a wrongly-released paid-for file puts
+    already-stored chunks in front of a canary while a wrongly-partial one costs
+    a single pool entry.
+
+    Returns whether the batch was **drained**: nothing left queued and the last
+    op's own outcome code settled its claim. The day's measurement is then
+    spent, so the caller records the cycle as completed and the restarted
+    service does not claim — and pay for — a second batch.
+    """
+    repos = _StopRepos(pool_repo, session, reopen)
+    # Before any write: a StopRequested that escaped a blocking database call
+    # leaves the session needing this, and without it every release below fails.
+    repos.rollback()
+    claim = in_flight.get("claim")
+    stage = in_flight.get("stage")
+    file_name = in_flight.get("file_name") or "-"
+    disposition = "none"
+    settled_by_the_op = False
+    if claim is None:
+        disposition = "none"
+    elif in_flight.get("resolved"):
+        # The op's own code already recorded the row and resolved the claim.
+        disposition = in_flight.get("outcome") or "resolved"
+        settled_by_the_op = True
+    elif stage == "fetch":
+        # Nothing was attempted against the network, so no result row is
+        # written and the file is as unused as it was before the cycle.
+        disposition = (
+            "released"
+            if _release_on_stop(repos, claim, file_name, RELEASE_NOTE_IN_FLIGHT)
+            else "unresolved"
+        )
+        local_path = in_flight.get("local_path")
+        if local_path is not None:
+            Path(local_path).unlink(missing_ok=True)
+    else:
+        # The upload ran but its claim was never resolved — the outcome code
+        # could not be reached, or its database call failed. Retry whatever it
+        # had decided on, and fall back to partial when even that is unknown:
+        # the native path has no payment marker, so an interrupted upload may
+        # have paid.
+        intended = in_flight.get("outcome")
+        if intended == "released":
+            disposition = (
+                "released"
+                if _release_on_stop(repos, claim, file_name, RELEASE_NOTE_IN_FLIGHT)
+                else "unresolved"
+            )
+        else:
+            note = f"interrupted mid-upload (SIGTERM) for {file_name}; payment unknown"
+            disposition = "partial" if _mark_partial_on_stop(repos, claim, note) else "unresolved"
+
+    drained = not queue and (claim is None or settled_by_the_op)
+    released = 0
+    for queued in list(queue):
+        label = _claim_label(repos, queued)
+        if _release_on_stop(repos, queued, label, RELEASE_NOTE_QUEUED):
+            released += 1
+    queue.clear()
+    repos.close_reopened()
+
+    influx_url, influx_token, influx_org, influx_bucket = influx
+    _post_influx(
+        influx_url,
+        influx_token,
+        influx_org,
+        influx_bucket,
+        _build_line(
+            CYCLE_MEASUREMENT,
+            {"host": host, "region": region, "deployment_name": deployment_name},
+            # The field set is schemaless, so the extra flag leaves every
+            # existing point — and every panel over them — untouched.
+            {**_cycle_fields(cycle, cycle_stats), "interrupted": True},
+        ),
+    )
+    _log(
+        f"cycle {cycle} interrupted by {STOP['signal'] or 'SIGTERM'}: "
+        f"in-flight {file_name} -> {disposition}, {released} queued claim(s) released"
+        + ("; the batch was finished, so it counts as today's cycle" if drained else "")
+    )
+    return drained
 
 
 def _claim_replacement(
@@ -1372,4 +1878,11 @@ def _verify_once(
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except StopRequested:
+        # A stop that landed somewhere holding nothing — during startup, or
+        # between the cleanup and the return — is still a clean stop, and must
+        # not exit non-zero into `Restart=on-failure`.
+        _log("stopping (exit 0)")
+        sys.exit(0)
