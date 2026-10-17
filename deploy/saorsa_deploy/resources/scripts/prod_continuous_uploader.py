@@ -150,6 +150,15 @@ _IN_FLIGHT = {
     "outcome": None,
 }
 
+#: Stages during which the handler sets the flag and returns instead of
+#: raising, because a raise there would lose track of claims that already
+#: exist. ``claiming`` covers the window where ``claim_pool_files`` has
+#: committed its rows but has not returned them yet; ``upload`` covers the
+#: stretch between the child exiting and its claim being resolved, which only
+#: the op's own outcome code can decide. Both are honoured at the top of the
+#: next per-op iteration, or by the check that follows the loop.
+_DEFERRED_STAGES = frozenset({"claiming", "upload"})
+
 #: How often the wait loop re-checks the stop flag. A signal handler cannot
 #: interrupt ``Popen.wait``, so the wait is taken in slices.
 STOP_POLL_SECS = 1.0
@@ -163,6 +172,9 @@ CHILD_STOP_GRACE_SECS = 10.0
 def _stop_stage_description() -> str:
     """What the stop interrupted, for the one line that says so."""
     stage = _IN_FLIGHT.get("stage")
+    if stage == "claiming":
+        # No file yet: the claim call is what was interrupted.
+        return "while claiming files"
     if stage:
         return f"during {stage} of {_IN_FLIGHT.get('file_name') or '-'}"
     if _IN_FLIGHT.get("in_cycle"):
@@ -190,11 +202,10 @@ def _handle_stop(signum, _frame) -> None:
         with contextlib.suppress(Exception):
             proc.terminate()
         return
-    if _IN_FLIGHT.get("stage") == "upload":
-        # The child has run and its outcome is being recorded. Whether the
-        # money went out is known only to that code, and the result row plus
-        # the claim are the only record of it, so the stop waits for the top of
-        # the next iteration rather than abandoning the op half-recorded.
+    if _IN_FLIGHT.get("stage") in _DEFERRED_STAGES:
+        # Claims exist that nothing else can account for yet — rows committed
+        # but not returned, or a child whose payment only the outcome code can
+        # judge. The stop is honoured a few statements later instead.
         return
     raise StopRequested(name)
 
@@ -940,6 +951,7 @@ def main() -> int:
         )
         in_flight = _IN_FLIGHT
         interrupted = False
+        drained = False
         # Named before the claim call so the shutdown cleanup has them whatever
         # stage the stop lands in.
         queue = []
@@ -951,6 +963,10 @@ def main() -> int:
             "replacements": 0,
         }
         try:
+            # The claim rows can be committed before the call returns, so a
+            # stop taken inside it must not raise: it would leave the whole
+            # batch `claimed` with nothing holding a reference to it.
+            in_flight["stage"] = "claiming"
             try:
                 claims = pool_repo.claim_pool_files(
                     kind=PoolFileKind.URL,
@@ -987,11 +1003,20 @@ def main() -> int:
                 # Retrying sooner would churn claims against a pool that only
                 # an operator topping it up can heal.
                 write_last_cycle(last_cycle_file, datetime.now(timezone.utc))
+                if STOP["requested"]:
+                    # A stop deferred during the claim call has nothing left to
+                    # resolve, but it cannot raise any more either — a second
+                    # signal only logs — so `wait_for_next_cycle` would sleep
+                    # straight through it until systemd's SIGKILL.
+                    _log("stopping (exit 0)")
+                    return 0
                 continue
 
             _log(f"cycle {cycle}: claimed {len(claims)} file(s)")
 
             queue.extend(claims)
+            # The batch is now referenced by `queue`, so a stop can raise again.
+            in_flight["stage"] = None
             while queue:
                 if STOP["requested"]:
                     # The op that just finished recorded its own outcome; the
@@ -1390,10 +1415,20 @@ def main() -> int:
                 # The op is over: a stop arriving now is "between ops", and
                 # there is nothing of this file's left to resolve.
                 in_flight["stage"] = None
+
+            # A stop deferred on the LAST op of the batch never reaches the
+            # check at the top of the loop, because there is no next iteration.
+            # Without this the run falls through to the normal tail, records
+            # the cycle and sleeps for the next anchor — where nothing can
+            # raise any more — until systemd's SIGKILL 90s later.
+            if STOP["requested"]:
+                raise StopRequested(STOP["signal"] or "SIGTERM")
         except StopRequested:
             interrupted = True
-            _abandon_cycle(
+            drained = _abandon_cycle(
                 pool_repo=pool_repo,
+                session=session,
+                reopen=lambda: _open_repositories(database_url),
                 in_flight=in_flight,
                 queue=queue,
                 cycle=cycle,
@@ -1408,11 +1443,15 @@ def main() -> int:
             session.close()
 
         if interrupted:
-            # Deliberately NOT write_last_cycle: the day's cycle did not
-            # complete, so the restarted service runs one, which is what the
-            # anchor rule is for. Exit 0 because death by SIGTERM is already a
-            # clean stop to systemd, so `Restart=on-failure` behaves exactly as
-            # it did before.
+            # Recorded only when the batch was worked through in full: the
+            # day's measurement is then spent, and a restarted service that ran
+            # a second batch would claim — and PAY for — another set of files.
+            # A batch cut short is not recorded, so the restart finishes the
+            # day's cycle, which is what the anchor rule is for.
+            if drained:
+                write_last_cycle(last_cycle_file, datetime.now(timezone.utc))
+            # Exit 0 because death by SIGTERM is already a clean stop to
+            # systemd, so `Restart=on-failure` behaves exactly as it did.
             _log("stopping (exit 0)")
             return 0
 
@@ -1467,10 +1506,76 @@ RELEASE_NOTE_IN_FLIGHT = "interrupted before upload (SIGTERM)"
 RELEASE_NOTE_QUEUED = "interrupted before upload (SIGTERM); released by the shutdown handler"
 
 
-def _claim_label(pool_repo, claim) -> str:
+class _StopRepos:
+    """The pool repository the cleanup writes through, recovered if it goes bad.
+
+    `StopRequested` is raised from a signal handler, so it can escape from
+    inside a blocking database call — `get_pool_file` during a fetch, the
+    fetch-failure branch's own release, `_claim_replacement`, the read-back's
+    upsert. That leaves the connection mid-protocol, and SQLAlchemy then
+    refuses further work on the session until it is rolled back, so every
+    release in the cleanup would fail: the failure this handler exists to end,
+    in a narrower window.
+
+    Two steps, in order: roll the session back, and retry a call that still
+    fails on a brand-new session, once.
+    """
+
+    def __init__(self, pool_repo, session, reopen):
+        self.pool = pool_repo
+        self._session = session
+        self._reopen = reopen
+        self._reopened = None
+
+    def rollback(self) -> None:
+        with contextlib.suppress(Exception):
+            if self._session is not None:
+                self._session.rollback()
+
+    def _reopen_once(self) -> bool:
+        """Swap in a fresh session; at most one attempt per cleanup."""
+        if self._reopened is not None or self._reopen is None:
+            return False
+        try:
+            pool_repo, _deployment_repo, session = self._reopen()
+        except Exception as exc:  # noqa: BLE001
+            _log(f"WARNING: could not reopen the registry on stop: {exc}")
+            self._reopened = False
+            return False
+        _log("reopened the registry connection to finish the shutdown")
+        self.pool, self._session, self._reopened = pool_repo, session, True
+        return True
+
+    def run(self, call, description: str) -> bool:
+        """Run one claim resolution, reporting rather than raising.
+
+        Each call is wrapped on its own: one unreachable row must not strand
+        every other claim of the cycle.
+        """
+        try:
+            call(self.pool)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            failure = exc
+        if self._reopen_once():
+            try:
+                call(self.pool)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                failure = exc
+        _log(f"WARNING: {description}: {failure}")
+        return False
+
+    def close_reopened(self) -> None:
+        if self._reopened:
+            with contextlib.suppress(Exception):
+                self._session.close()
+
+
+def _claim_label(repos, claim) -> str:
     """A human name for a claim, never at the expense of resolving it."""
     try:
-        pool_file = pool_repo.get_pool_file(claim.file_id)
+        pool_file = repos.pool.get_pool_file(claim.file_id)
         if pool_file is not None and pool_file.name:
             return pool_file.name
     except Exception:  # noqa: BLE001
@@ -1478,34 +1583,28 @@ def _claim_label(pool_repo, claim) -> str:
     return str(claim.locator_used or claim.file_id)
 
 
-def _release_on_stop(pool_repo, claim, file_name: str, note: str) -> bool:
-    """Release one claim as part of the shutdown, reporting rather than raising.
-
-    Each call is wrapped on its own: one unreachable row must not strand every
-    other claim of the cycle, which is the whole failure this handler exists to
-    end.
-    """
-    try:
-        pool_repo.release_pool_claim(claim.id, note=note[:500])
-    except Exception as exc:  # noqa: BLE001
-        _log(f"WARNING: could not release claim {claim.id} on stop: {exc}")
-        return False
-    _log(f"released claim {claim.id} ({file_name}): interrupted before upload")
-    return True
+def _release_on_stop(repos, claim, file_name: str, note: str) -> bool:
+    released = repos.run(
+        lambda pool: pool.release_pool_claim(claim.id, note=note[:500]),
+        f"could not release claim {claim.id} on stop",
+    )
+    if released:
+        _log(f"released claim {claim.id} ({file_name}): interrupted before upload")
+    return released
 
 
-def _mark_partial_on_stop(pool_repo, claim, note: str) -> bool:
-    try:
-        pool_repo.mark_pool_claim_partial(claim.id, note=note[:500])
-    except Exception as exc:  # noqa: BLE001
-        _log(f"WARNING: could not mark claim {claim.id} partial on stop: {exc}")
-        return False
-    return True
+def _mark_partial_on_stop(repos, claim, note: str) -> bool:
+    return repos.run(
+        lambda pool: pool.mark_pool_claim_partial(claim.id, note=note[:500]),
+        f"could not mark claim {claim.id} partial on stop",
+    )
 
 
 def _abandon_cycle(
     *,
     pool_repo,
+    session,
+    reopen,
     in_flight: dict,
     queue: list,
     cycle: int,
@@ -1514,7 +1613,7 @@ def _abandon_cycle(
     host: str,
     region: str,
     deployment_name: str,
-) -> None:
+) -> bool:
     """Resolve everything the cycle was holding when the stop arrived.
 
     The rule is the one the script already applies to an upload that failed: a
@@ -1523,22 +1622,33 @@ def _abandon_cycle(
     a payment may have gone out, because a wrongly-released paid-for file puts
     already-stored chunks in front of a canary while a wrongly-partial one costs
     a single pool entry.
+
+    Returns whether the batch was **drained**: nothing left queued and the last
+    op's own outcome code settled its claim. The day's measurement is then
+    spent, so the caller records the cycle as completed and the restarted
+    service does not claim — and pay for — a second batch.
     """
+    repos = _StopRepos(pool_repo, session, reopen)
+    # Before any write: a StopRequested that escaped a blocking database call
+    # leaves the session needing this, and without it every release below fails.
+    repos.rollback()
     claim = in_flight.get("claim")
     stage = in_flight.get("stage")
     file_name = in_flight.get("file_name") or "-"
     disposition = "none"
+    settled_by_the_op = False
     if claim is None:
         disposition = "none"
     elif in_flight.get("resolved"):
         # The op's own code already recorded the row and resolved the claim.
         disposition = in_flight.get("outcome") or "resolved"
+        settled_by_the_op = True
     elif stage == "fetch":
         # Nothing was attempted against the network, so no result row is
         # written and the file is as unused as it was before the cycle.
         disposition = (
             "released"
-            if _release_on_stop(pool_repo, claim, file_name, RELEASE_NOTE_IN_FLIGHT)
+            if _release_on_stop(repos, claim, file_name, RELEASE_NOTE_IN_FLIGHT)
             else "unresolved"
         )
         local_path = in_flight.get("local_path")
@@ -1554,21 +1664,21 @@ def _abandon_cycle(
         if intended == "released":
             disposition = (
                 "released"
-                if _release_on_stop(pool_repo, claim, file_name, RELEASE_NOTE_IN_FLIGHT)
+                if _release_on_stop(repos, claim, file_name, RELEASE_NOTE_IN_FLIGHT)
                 else "unresolved"
             )
         else:
             note = f"interrupted mid-upload (SIGTERM) for {file_name}; payment unknown"
-            disposition = (
-                "partial" if _mark_partial_on_stop(pool_repo, claim, note) else "unresolved"
-            )
+            disposition = "partial" if _mark_partial_on_stop(repos, claim, note) else "unresolved"
 
+    drained = not queue and (claim is None or settled_by_the_op)
     released = 0
     for queued in list(queue):
-        label = _claim_label(pool_repo, queued)
-        if _release_on_stop(pool_repo, queued, label, RELEASE_NOTE_QUEUED):
+        label = _claim_label(repos, queued)
+        if _release_on_stop(repos, queued, label, RELEASE_NOTE_QUEUED):
             released += 1
     queue.clear()
+    repos.close_reopened()
 
     influx_url, influx_token, influx_org, influx_bucket = influx
     _post_influx(
@@ -1587,7 +1697,9 @@ def _abandon_cycle(
     _log(
         f"cycle {cycle} interrupted by {STOP['signal'] or 'SIGTERM'}: "
         f"in-flight {file_name} -> {disposition}, {released} queued claim(s) released"
+        + ("; the batch was finished, so it counts as today's cycle" if drained else "")
     )
+    return drained
 
 
 def _claim_replacement(

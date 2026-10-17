@@ -3610,22 +3610,34 @@ cycle had not started is **released** with the note `interrupted before upload
 (SIGTERM)`. The service then exits 0, which is already what SIGTERM means to
 systemd, so `Restart=on-failure` behaves exactly as before.
 
-The cycle is **not** recorded as completed, so the restarted service runs one
-immediately — the anchor rule's intent. The journal lines are fixed, because the
+A batch that was **cut short** is not recorded as completed, so the restarted
+service runs the day's cycle immediately — the anchor rule's intent. A batch the
+stop caught on its **last** op is recorded, because every file of it was already
+worked through: a second batch would claim, and pay for, another set of files
+for a measurement the day has had. The journal lines are fixed, because the
 maintenance runbooks grep for them:
 
 ```
 stop requested (SIGTERM) during upload of <file>
 released claim <id> (<file>): interrupted before upload
-cycle <N> interrupted by SIGTERM: in-flight <file> -> partial, 2 queued claim(s) released
+cycle <N> interrupted by SIGTERM: in-flight <file> -> partial, <m> queued claim(s) released
 stopping (exit 0)
 ```
 
 A stop taken while the service is waiting for the next anchor logs `stop
-requested (SIGTERM) while idle` and writes nothing — it holds no claims. The
-per-cycle heartbeat point carries an extra `interrupted=true` field.
-`destroy`'s open-claims warning therefore now fires only when the handler could
-not run at all: a SIGKILL, power loss, or a VM that was already dead.
+requested (SIGTERM) while idle` and writes nothing — it holds no claims. One
+taken inside the claim call logs `… while claiming files` and releases the whole
+batch, since the rows can be committed before the call returns. The per-cycle
+heartbeat point carries an extra `interrupted=true` field. `destroy`'s
+open-claims warning therefore now fires only when the handler could not run at
+all: a SIGKILL, power loss, or a VM that was already dead.
+
+The cleanup **rolls its own session back first, and retries once on a fresh
+one**. The stop is raised from a signal handler, so it can escape from inside a
+blocking driver call and leave the connection mid-protocol, after which
+SQLAlchemy refuses further work on that session — and the cleanup writes through
+the same session, so without this every release would fail, which is the failure
+the handler exists to end.
 
 Before this, a restart left every claim of the cycle `claimed` forever. Nothing
 sweeps those, by design — a claim that might correspond to a paid upload must

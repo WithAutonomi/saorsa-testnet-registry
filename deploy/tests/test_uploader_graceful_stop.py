@@ -94,22 +94,46 @@ class _FakePool:
         self.calls = []
         self.claim_requests = []
         self.on_get_pool_file = None
+        self.on_claim_pool_files = None
+        #: Stands in for a session left mid-protocol by a raise inside a
+        #: blocking driver call: SQLAlchemy refuses further work until the
+        #: session is rolled back.
+        self.needs_rollback = False
+        #: False stands in for the connection itself being broken, where a
+        #: rollback does not help and only a new session does.
+        self.rollback_is_enough = True
+        self.session = None
 
     def claim_pool_files(self, **kwargs):
         self.claim_requests.append(kwargs)
-        return list(self._claims)
+        rows = list(self._claims)
+        if self.on_claim_pool_files is not None:
+            self.on_claim_pool_files(rows)
+        return rows
 
     def get_pool_file(self, file_id):
         if self.on_get_pool_file is not None:
             self.on_get_pool_file(file_id)
         return self._files[file_id]
 
+    def _check_session(self):
+        if not self.needs_rollback:
+            return
+        if self.rollback_is_enough and self.session and self.session.rolled_back:
+            return
+        raise RuntimeError(
+            "PendingRollbackError: this session is in 'prepared' state; no "
+            "further SQL can be emitted"
+        )
+
     def release_pool_claim(self, claim_id, note=None):
+        self._check_session()
         if claim_id in self._release_raises_for:
             raise RuntimeError("connection reset by peer")
         self.calls.append(("released", claim_id, note))
 
     def mark_pool_claim_partial(self, claim_id, note=None, **_):
+        self._check_session()
         self.calls.append(("partial", claim_id, note))
 
     def resolve_pool_claim(self, claim_id, note=None, **_):
@@ -143,9 +167,13 @@ class _FakeDeployments:
 class _FakeSession:
     def __init__(self):
         self.closed = 0
+        self.rolled_back = False
 
     def close(self):
         self.closed += 1
+
+    def rollback(self):
+        self.rolled_back = True
 
 
 class _LoopEnded(Exception):
@@ -172,11 +200,15 @@ class _Harness:
         self.pool = _FakePool(self.claims, self.files)
         self.deployments = _FakeDeployments()
         self.session = _FakeSession()
+        self.pool.session = self.session
         self.spawned = []
         self.posted = []
         self.state_file = tmp_path / "last-cycle"
         self.run_ant = None
         self.on_download = None
+        #: Repository tuples `_open_repositories` hands out in order, the last
+        #: one repeating. A second entry is what the cleanup's reopen gets.
+        self.repos = [(self.pool, self.deployments, self.session)]
 
     def _download(self, url, destination, timeout, **_):
         Path(destination).parent.mkdir(parents=True, exist_ok=True)
@@ -185,18 +217,27 @@ class _Harness:
             self.on_download(url)
         return 1234, "a" * 64
 
+    def _default_sleep(self, _secs):
+        """End the endless loop — but never let a stop reach the anchor sleep.
+
+        A deferred stop that falls through to the anchor is a hang: nothing can
+        raise there any more (a second signal only logs), so systemd waits out
+        `TimeoutStopSec` and SIGKILLs the service. Failing here keeps that from
+        reading as a normal end of run.
+        """
+        if self.service.STOP["requested"]:
+            pytest.fail("the anchor sleep was entered after a stop was requested")
+        raise _LoopEnded()
+
+    def _open_repositories(self, _url):
+        return self.repos[0] if len(self.repos) == 1 else self.repos.pop(0)
+
     def run(self, *, wasm=False, readback=False, env=None, sleep=None):
         service, monkeypatch = self.service, self.monkeypatch
         # The loop is `while True`, so a run that is never stopped has to be
         # ended by the wait for the next anchor.
-        monkeypatch.setattr(
-            service.time,
-            "sleep",
-            sleep or (lambda _secs: (_ for _ in ()).throw(_LoopEnded())),
-        )
-        monkeypatch.setattr(
-            service, "_open_repositories", lambda _url: (self.pool, self.deployments, self.session)
-        )
+        monkeypatch.setattr(service.time, "sleep", sleep or self._default_sleep)
+        monkeypatch.setattr(service, "_open_repositories", self._open_repositories)
         monkeypatch.setattr(
             service,
             "_post_influx",
@@ -427,6 +468,158 @@ class TestAStopBetweenOps:
     def test_the_cycle_summary_names_the_in_flight_outcome(self, run):
         _rc, harness, journal = run
         assert "in-flight a2.bin -> released, 1 queued claim(s) released" in journal
+
+
+class TestAStopOnTheLastOpOfTheBatch:
+    """The deferred paths rely on the next iteration — and there isn't one.
+
+    A stop that defers (live child, or the outcome being recorded) is honoured
+    at the top of the next `while queue:` pass. On the last op of the batch
+    that pass never comes, so without the check that follows the loop the run
+    falls through to the normal tail and into the anchor sleep, where nothing
+    can raise any more: systemd waits out `TimeoutStopSec` and SIGKILLs it.
+    """
+
+    @pytest.fixture
+    def run(self, harness, capsys):
+        uploads = {"n": 0}
+
+        def _run_ant(cmd, log_base):
+            uploads["n"] += 1
+            if uploads["n"] < 3:
+                return 0, '{"address": "abc", "chunks_stored": 4, "total_chunks": 4}', ""
+            return _killed_during_upload(harness)(cmd, log_base)
+
+        harness.run_ant = _run_ant
+        rc = harness.run()
+        return rc, harness, capsys.readouterr().out
+
+    def test_the_process_actually_stops(self, run):
+        # The harness's sleep stub fails the test if the anchor is reached, so
+        # arriving here at all is half the assertion.
+        rc, _harness, journal = run
+        assert rc == 0
+        assert "stopping (exit 0)" in journal
+
+    def test_every_claim_of_the_batch_is_settled(self, run):
+        _rc, harness, _journal = run
+        assert harness.pool.outcome(1) == "uploaded"
+        assert harness.pool.outcome(2) == "uploaded"
+        assert harness.pool.outcome(3) == "partial"
+
+    def test_a_finished_batch_counts_as_the_days_cycle(self, run):
+        # Nothing is left queued and the last op resolved its own claim, so the
+        # day's measurement is spent. Leaving the state file unwritten would
+        # have the restarted service claim — and pay for — a second batch.
+        _rc, harness, journal = run
+        assert harness.state_file.exists()
+        assert "the batch was finished, so it counts as today's cycle" in journal
+
+    def test_it_is_still_reported_as_interrupted(self, run):
+        _rc, harness, journal = run
+        assert "cycle 1 interrupted by SIGTERM: in-flight a3.bin -> partial" in journal
+        assert "interrupted=true" in harness.cycle_point
+
+
+class TestAStopInsideTheClaimCall:
+    """The rows can be committed before the call returns."""
+
+    @pytest.fixture
+    def run(self, harness, capsys):
+        # Delivered once the fake has produced its rows: the claims exist and
+        # nothing in the cycle holds a reference to them yet.
+        harness.pool.on_claim_pool_files = lambda _rows: _deliver()
+        harness.run_ant = lambda cmd, log_base: pytest.fail("no upload may be spawned")
+        rc = harness.run()
+        return rc, harness, capsys.readouterr().out
+
+    def test_the_whole_batch_goes_back(self, run):
+        _rc, harness, _journal = run
+        assert [harness.pool.outcome(i) for i in (1, 2, 3)] == ["released"] * 3
+
+    def test_nothing_is_recorded_and_the_exit_is_clean(self, run):
+        rc, harness, _journal = run
+        assert rc == 0
+        assert harness.deployments.rows == []
+        # Nothing was uploaded, so the day's cycle is still owed.
+        assert not harness.state_file.exists()
+
+    def test_the_line_names_the_claim_call(self, run):
+        _rc, _harness, journal = run
+        assert "stop requested (SIGTERM) while claiming files" in journal
+        assert "3 queued claim(s) released" in journal
+
+    def test_a_dry_pool_follows_through_too(self, harness, capsys):
+        # The shortfall branch `continue`s into the anchor wait, where a
+        # deferred stop can no longer raise.
+        def _dry(**_kwargs):
+            _deliver()
+            raise RuntimeError("InsufficientPoolInventory: no tiny files available")
+
+        harness.pool.claim_pool_files = _dry
+        harness.run_ant = lambda cmd, log_base: pytest.fail("no upload may be spawned")
+        assert harness.run() == 0
+        assert harness.pool.calls == []
+        # The pool being dry is still today's attempt, spent.
+        assert harness.state_file.exists()
+        assert "stopping (exit 0)" in capsys.readouterr().out
+
+
+class TestTheCleanupRecoversItsOwnSession:
+    """A raise from inside a blocking driver call leaves the session unusable.
+
+    `StopRequested` comes from a signal handler, so it can escape from within
+    psycopg's own wait — and SQLAlchemy then refuses further work on that
+    session. The cleanup writes through the same session, so without a recovery
+    step every release would fail: the failure this handler exists to end.
+    """
+
+    def test_the_session_is_rolled_back_before_any_release(self, harness, capsys):
+        def _on_download(_url):
+            harness.pool.needs_rollback = True
+            _deliver()
+
+        harness.on_download = _on_download
+        harness.run_ant = lambda cmd, log_base: pytest.fail("no upload may be spawned")
+        assert harness.run() == 0
+        assert harness.session.rolled_back
+        assert [harness.pool.outcome(i) for i in (1, 2, 3)] == ["released"] * 3
+        assert "could not release claim" not in capsys.readouterr().out
+
+    def test_a_broken_connection_is_retried_on_a_fresh_session(self, harness, capsys):
+        # A rollback cannot revive a connection that is gone, so the cleanup
+        # opens one new session and retries the call on it.
+        fresh_session = _FakeSession()
+        fresh_pool = _FakePool(harness.claims, harness.files)
+        fresh_pool.session = fresh_session
+        harness.repos.append((fresh_pool, harness.deployments, fresh_session))
+
+        def _on_download(_url):
+            harness.pool.needs_rollback = True
+            harness.pool.rollback_is_enough = False
+            _deliver()
+
+        harness.on_download = _on_download
+        harness.run_ant = lambda cmd, log_base: pytest.fail("no upload may be spawned")
+        assert harness.run() == 0
+        assert [fresh_pool.outcome(i) for i in (1, 2, 3)] == ["released"] * 3
+        assert harness.pool.calls == []
+        journal = capsys.readouterr().out
+        assert "reopened the registry connection to finish the shutdown" in journal
+        assert fresh_session.closed == 1, "the session the cleanup opened must be closed"
+
+    def test_one_reopen_at_most_and_the_rest_is_reported(self, harness, capsys):
+        # Nothing works: the run must still exit 0 and name every claim it
+        # could not resolve, rather than hang or raise.
+        harness.pool.needs_rollback = True
+        harness.pool.rollback_is_enough = False
+
+        harness.on_download = lambda _url: _deliver()
+        harness.run_ant = lambda cmd, log_base: pytest.fail("no upload may be spawned")
+        assert harness.run() == 0
+        journal = capsys.readouterr().out
+        assert journal.count("WARNING: could not release claim") == 3
+        assert "stopping (exit 0)" in journal
 
 
 class TestAStopWhileIdle:
