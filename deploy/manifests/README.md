@@ -124,9 +124,10 @@ prod_canary:
   keep_monitoring: true                       # preserve InfluxDB on destroy — the dataset is the product
 ```
 
-The other kinds are `prod-continuous-downloader` (like `prod-downloaders` plus
-`sleep_interval_secs`), `prod-local-uploads`, `prod-local-downloads`, and
-`testnet-extension` (set `extension.source:` to the source testnet).
+The other kinds are `prod-continuous-downloader` (like `prod-downloaders` but
+walking the list once a day, anchored to `daily_at`), `prod-local-uploads`,
+`prod-local-downloads`, and `testnet-extension` (set `extension.source:` to the
+source testnet).
 
 ## Reuse
 

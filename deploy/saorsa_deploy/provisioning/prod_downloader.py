@@ -1,18 +1,18 @@
 """Pyinfra provisioner for prod-continuous-downloader client VMs.
 
 Sister of :mod:`saorsa_deploy.provisioning.prod_uploader` but targets the
-download role: it runs a continuous loop over a per-host address list,
-keeps per-op stdout/stderr logs on disk, and sleeps a configurable
-interval between full cycles. None of the testnet ``downloader.sh`` /
-S3-rotating address feed / shared ``ant-client.service`` machinery is
-involved — production downloaders get their own service so changes here
-never leak into testnet runs.
+download role: it walks a per-host address list once a day, anchored to a
+fixed UTC wall-clock time, and keeps per-op stdout/stderr logs on disk.
+None of the testnet ``downloader.sh`` / S3-rotating address feed / shared
+``ant-client.service`` machinery is involved — production downloaders get
+their own service so changes here never leak into testnet runs.
 
 Per host the provisioner:
 
 * installs the ``ant`` binary (release archive or custom build)
-* writes ``/etc/ant-prod-downloader.env`` with bootstrap args, region,
-  sleep interval, addresses-file path, and Influx config
+* writes ``/etc/ant-prod-downloader.env`` with bootstrap args, region, the
+  daily anchor and its state-file path, the addresses-file path, and Influx
+  config
 * writes the per-host address list to
   ``/var/lib/ant-prod-downloader/addresses.txt``
 * deploys ``prod_downloader.py`` to ``/root/ant-prod-downloader/``
