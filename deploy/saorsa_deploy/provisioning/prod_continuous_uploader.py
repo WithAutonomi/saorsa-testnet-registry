@@ -390,7 +390,7 @@ class ProdContinuousUploaderProvisioner(_BaseProvisioner):
         *,
         pool_request: dict,
         wallet_secret_key: str,
-        sleep_interval_secs: int = 86400,
+        daily_at: str = "00:00",
         pool_min_size: str | None = None,
         pool_max_size: str | None = None,
         payment_type: str | None = None,
@@ -403,7 +403,9 @@ class ProdContinuousUploaderProvisioner(_BaseProvisioner):
         super().__init__(**kwargs)
         self.pool_request = pool_request
         self.wallet_secret_key = wallet_secret_key
-        self.sleep_interval_secs = sleep_interval_secs
+        # UTC HH:MM the daily cycle starts at, with the instant the last cycle
+        # completed kept in the data dir so a restart does not re-anchor it.
+        self.daily_at = daily_at
         self.pool_min_size = pool_min_size
         self.pool_max_size = pool_max_size
         self.payment_type = payment_type
@@ -486,7 +488,8 @@ class ProdContinuousUploaderProvisioner(_BaseProvisioner):
                 "POOL_REQUEST": json.dumps(self.pool_request, separators=(",", ":")),
                 "POOL_MIN_SIZE": self.pool_min_size or "",
                 "POOL_MAX_SIZE": self.pool_max_size or "",
-                "SLEEP_INTERVAL_SECS": self.sleep_interval_secs,
+                "DAILY_AT": self.daily_at,
+                "LAST_CYCLE_FILE": f"{self.data_dir}/last-cycle",
                 "PAYMENT_TYPE": self.payment_type or "",
                 "READBACK_VERIFY": str(self.readback_verify).lower(),
             }

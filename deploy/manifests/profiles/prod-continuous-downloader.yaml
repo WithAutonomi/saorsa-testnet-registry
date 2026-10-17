@@ -26,8 +26,8 @@ prod_continuous_downloader:
   binary:
     version: "0.3.1"
 
-  # Once-a-day cadence: sleep 24h at the end of each full pass through the list.
-  sleep_interval_secs: 86400
+  # The cycle starts at this UTC time every day, whatever the pass itself takes.
+  daily_at: "00:00"
 
   # Monitoring VM (independent of the client provider).
   monitoring_provider: ovh   # digitalocean | ovh (only these have modules)

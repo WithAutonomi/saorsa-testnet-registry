@@ -6,7 +6,6 @@ internal helpers directly. Mirrors ``test_prod_uploader_service.py``.
 """
 
 import importlib.util
-import os
 from pathlib import Path
 
 import pytest
@@ -128,24 +127,6 @@ class TestTailLines:
 
     def test_no_trailing_newline_preserved(self, service):
         assert service._tail_lines("x\ny\nz", 1) == "z"
-
-
-class TestSleepEnvSemantics:
-    """The script reads SLEEP_INTERVAL_SECS from the environment in main();
-    here we exercise the parsing + branching without invoking main itself.
-    """
-
-    def test_zero_value_means_no_sleep(self, service, monkeypatch):
-        monkeypatch.setenv("SLEEP_INTERVAL_SECS", "0")
-        # Only the parsing logic — defensive int() cast is what lives in
-        # main(). Verifies the env var is honourable.
-        assert int(os.environ["SLEEP_INTERVAL_SECS"]) == 0
-
-    def test_default_when_unset(self, service, monkeypatch):
-        monkeypatch.delenv("SLEEP_INTERVAL_SECS", raising=False)
-        # The default lives in main(); we just verify the fallback string
-        # is what we expect downstream code to use when env is missing.
-        assert int(os.environ.get("SLEEP_INTERVAL_SECS", "900")) == 900
 
 
 class TestResolveBootstrapArgs:

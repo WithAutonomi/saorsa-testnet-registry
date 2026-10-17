@@ -322,6 +322,31 @@ def _format_size(num_bytes: int | None) -> str:
     return f"{val:.1f} TB"
 
 
+def _cadence_label(deploy_args: dict) -> str | None:
+    """How often this deployment runs a cycle, or None if it does not say.
+
+    ``daily_at`` is read first and the legacy ``sleep_interval_secs`` second:
+    every deployment created before the anchor existed carries only the old key,
+    and those rows are the permanent monitors whose reports must keep rendering.
+    """
+    daily_at = deploy_args.get("daily_at")
+    if daily_at:
+        return f"daily at {daily_at} UTC"
+    return None
+
+
+def _cadence_blocks(deploy_args: dict) -> list:
+    """A cadence section for whichever of the two keys the deployment carries."""
+    cadence = _cadence_label(deploy_args)
+    if cadence:
+        return [_section(f"*Cadence:* {cadence}")]
+    interval = deploy_args.get("sleep_interval_secs")
+    if interval:
+        legacy = "once a day" if interval == 86400 else f"every {interval}s"
+        return [_section(f"*Cadence:* {legacy}")]
+    return []
+
+
 def _prod_continuous_uploader_blocks(deploy_args: dict) -> list:
     """Summarise the daily write test.
 
@@ -334,10 +359,7 @@ def _prod_continuous_uploader_blocks(deploy_args: dict) -> list:
     if pool:
         summary = ", ".join(f"{count} {name}" for name, count in pool.items())
         blocks.append(_section(f"*Uploads each cycle:* {summary}"))
-    interval = deploy_args.get("sleep_interval_secs")
-    if interval:
-        cadence = "once a day" if interval == 86400 else f"every {interval}s"
-        blocks.append(_section(f"*Cadence:* {cadence}"))
+    blocks.extend(_cadence_blocks(deploy_args))
     verifiers = deploy_args.get("verifiers") or []
     if verifiers:
         blocks.append(
@@ -468,7 +490,10 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
     if deploy_args.get("memory_profiling"):
         fields.append(("Memory profiling", "heaptrack 🧠"))
 
-    if "sleep_interval_secs" in deploy_args:
+    cadence = _cadence_label(deploy_args)
+    if cadence:
+        fields.append(("Cadence", cadence))
+    elif "sleep_interval_secs" in deploy_args:
         sleep_interval_secs = deploy_args.get("sleep_interval_secs")
         if sleep_interval_secs is None:
             sleep_label = "_unset_"

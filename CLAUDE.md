@@ -293,8 +293,14 @@ override).
   rejected.
 - Keeps a per-op stdout/stderr log under `/var/log/ant-prod-downloader/` (this is
   why it is Python, not the shared `downloader.sh`, which keeps none).
-- `--sleep-interval-secs` sleeps at the end of each full cycle (default 900;
-  `0` = back-to-back; `--daily` = 86400).
+- **`daily_at` (`--daily-at HH:MM`, UTC, default `00:00`) anchors the cycle to a
+  wall-clock time, and interval mode is GONE** — a sleep taken after each cycle
+  moved the start by the cycle's own duration every day (PROD-DL-01 walked 11:28
+  → 15:00 UTC in a week) and every restart re-anchored it. The instant the last
+  cycle **completed** is kept in `/var/lib/ant-prod-downloader/last-cycle` and a
+  cycle is due whenever that is older than the most recent anchor: a fresh deploy
+  runs one immediately, a restart after the day's cycle waits, a crash re-runs,
+  and an overrunning cycle waits for the anchor after the one it passed.
 - Client and monitoring VM providers are **independent** (`--provider` across all
   four; `--monitoring-provider` DO/OVH only). Destroy reads both back from state.
 - **Retention is bounded, so archive to Postgres**: `--log-retention-days`
@@ -314,7 +320,7 @@ can be left alone until destroy. Same provisioner and script, toggled by
 `ONE_SHOT=true`; same monitoring, `record-results` and `slack-post` paths.
 `deploy_args.kind = "prod-downloaders"`.
 
-- Same arguments as the continuous variant **except** `--sleep-interval-secs` and
+- Same arguments as the continuous variant **except** `--daily-at` and
   the two retention flags.
 - **`--download-diagnostics` is off by default**: the flag exists only on
   instrumented `ant` builds, and a stock binary rejects it and fails every
@@ -519,8 +525,10 @@ the common WASM rules above.)
   78 minutes later — and from then on its per-op log carried `client_build` while
   **every** `deployment_prod_upload_results` row had the column empty. One
   definition (`provisioning/service_script.py`) shared with both provisioners.
-- Timing is the operator's — run it outside the daily window. A failure on one
-  deployment is reported and the rest still upgrade, exiting non-zero at the end.
+- Timing is the operator's — run it outside the daily window; since the cycle is
+  anchored, a restart after the day's cycle no longer triggers one. A failure on
+  one deployment is reported and the rest still upgrade, exiting non-zero at the
+  end.
 - On success `deploy_args.wasm_build` is replaced and a `wasm_client_upgraded`
   event records `{old_commit, new_commit, ref, repo_owner, upgraded_at}`; a
   failure records `wasm_client_upgrade_failed` and leaves `deploy_args` alone, so
@@ -644,8 +652,12 @@ What makes this kind unlike every other:
   bounded, so reading the address list from it would make a verifier offline >7
   days miss those addresses permanently. **`record-results` is a no-op for this
   kind** (it says so) — use `print-recorded-results`.
+- **The cycle is anchored to `daily_at`**, exactly as on the continuous
+  downloader — one cycle a day at a fixed UTC time, surviving restarts via the
+  completed-cycle state file, with interval mode removed.
 - **Pool exhaustion is a signal, not a crash**: its own measurement, so "the pool
-  ran dry" is never misread as "the network refused", then sleep and retry.
+  ran dry" is never misread as "the network refused", then wait for the **next
+  anchor** (the shortfall was today's cycle; retrying sooner only churns claims).
   Topping up the pool heals it with no redeploy.
 - **Disk must exceed the largest drawable file on every VM** (the uploader writes
   the source to disk, each verifier downloads it back before hashing); `xlarge`

@@ -667,10 +667,12 @@ class TestOneCycle:
             "REGION": "lon1",
             "SECRET_KEY": "0x" + "11" * 32,
             "WORK_DIR": str(tmp_path / "files"),
+            # Named explicitly: the default is under /var/lib, and the cycle
+            # writes its completion instant there before the next wait.
+            "LAST_CYCLE_FILE": str(tmp_path / "last-cycle"),
             "INFLUX_URL": "http://influx:8086",
             "INFLUX_TOKEN": "tok",
             "INFLUX_BUCKET": "wasm-client-metrics" if wasm else "testnet-metrics",
-            "SLEEP_INTERVAL_SECS": "600",
         }
         if wasm:
             env["CLIENT_KIND"] = "wasm"

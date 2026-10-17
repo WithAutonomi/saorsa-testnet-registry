@@ -1,18 +1,18 @@
 """Pyinfra provisioner for prod-continuous-downloader client VMs.
 
 Sister of :mod:`saorsa_deploy.provisioning.prod_uploader` but targets the
-download role: it runs a continuous loop over a per-host address list,
-keeps per-op stdout/stderr logs on disk, and sleeps a configurable
-interval between full cycles. None of the testnet ``downloader.sh`` /
-S3-rotating address feed / shared ``ant-client.service`` machinery is
-involved — production downloaders get their own service so changes here
-never leak into testnet runs.
+download role: it walks a per-host address list once a day, anchored to a
+fixed UTC wall-clock time, and keeps per-op stdout/stderr logs on disk.
+None of the testnet ``downloader.sh`` / S3-rotating address feed / shared
+``ant-client.service`` machinery is involved — production downloaders get
+their own service so changes here never leak into testnet runs.
 
 Per host the provisioner:
 
 * installs the ``ant`` binary (release archive or custom build)
-* writes ``/etc/ant-prod-downloader.env`` with bootstrap args, region,
-  sleep interval, addresses-file path, and Influx config
+* writes ``/etc/ant-prod-downloader.env`` with bootstrap args, region, the
+  daily anchor and its state-file path, the addresses-file path, and Influx
+  config
 * writes the per-host address list to
   ``/var/lib/ant-prod-downloader/addresses.txt``
 * deploys ``prod_downloader.py`` to ``/root/ant-prod-downloader/``
@@ -78,6 +78,10 @@ SCRIPT_NAME = "prod_downloader.py"
 LOG_DIR = "/var/log/ant-prod-downloader"
 ADDRESSES_PATH = f"{DATA_DIR}/addresses.txt"
 DOWNLOAD_DIR = f"{DATA_DIR}/downloads"
+# The instant the last cycle COMPLETED. Lives in the data dir (created by the
+# env op below) so the daily anchor survives a restart: without it every
+# `systemctl restart` would start a fresh cycle and re-anchor the series.
+LAST_CYCLE_PATH = f"{DATA_DIR}/last-cycle"
 SERVICE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 ENV_PATH = "/etc/ant-prod-downloader.env"
 # heaptrack memory-profile output dir (shared with the testnet --heaptrack path).
@@ -134,7 +138,7 @@ class ProdDownloaderProvisioner:
         self,
         downloaders: list[dict],
         bootstrap_peers: list[str],
-        sleep_interval_secs: int,
+        daily_at: str = "00:00",
         ssh_key_path: str = "~/.ssh/id_rsa",
         binary_url: str | None = None,
         binary_is_archive: bool = True,
@@ -156,7 +160,9 @@ class ProdDownloaderProvisioner:
     ):
         self.downloaders = downloaders
         self.bootstrap_peers = bootstrap_peers
-        self.sleep_interval_secs = sleep_interval_secs
+        # UTC HH:MM the daily cycle starts at. Inert under one_shot, which exits
+        # after a single pass without ever consulting the anchor.
+        self.daily_at = daily_at
         self.one_shot = one_shot
         self.ssh_key_path = ssh_key_path
         self.binary_url = binary_url
@@ -537,7 +543,8 @@ ANT={ANT_INSTALL_PATH}
 ADDRESSES_FILE={ADDRESSES_PATH}
 DOWNLOAD_DIR={DOWNLOAD_DIR}
 EVM_NETWORK={self.evm_network}
-SLEEP_INTERVAL_SECS={self.sleep_interval_secs}
+DAILY_AT={self.daily_at}
+LAST_CYCLE_FILE={LAST_CYCLE_PATH}
 ONE_SHOT={"true" if self.one_shot else "false"}
 RUST_LOG={self.rust_log or ""}
 MEMORY_PROFILING={"true" if self.memory_profiling else "false"}

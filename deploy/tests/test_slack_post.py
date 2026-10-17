@@ -476,6 +476,60 @@ def test_prod_continuous_downloader_renders_addresses_inline_when_persisted():
     assert "Sleep interval" in text
 
 
+def test_prod_continuous_downloader_renders_the_daily_anchor():
+    deployment = _deployment(
+        name="PROD-CD-03",
+        deploy_args={
+            "kind": "prod-continuous-downloader",
+            "spec": "lon1",
+            "addresses": ["abc123"],
+            "daily_at": "02:00",
+            "ant_binary": {"kind": "release", "version": "0.3.11"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "Cadence" in text and "daily at 02:00 UTC" in text
+    assert "Sleep interval" not in text
+
+
+def test_prod_continuous_uploader_renders_the_daily_anchor():
+    deployment = _deployment(
+        name="PROD-UL-01",
+        deploy_args={
+            "kind": "prod-continuous-uploader",
+            "spec": "fsn1:cx23",
+            "pool_request": {"tiny": 2},
+            "verifiers": ["lon1"],
+            "daily_at": "00:00",
+            "ant_binary": {"kind": "release", "version": "0.3.11"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "Cadence:" in text and "daily at 00:00 UTC" in text
+
+
+def test_a_deployment_predating_the_anchor_still_renders_its_interval():
+    """Every live permanent monitor carries only the old key.
+
+    Those rows are the reason the fallback exists: a report that stopped
+    naming their cadence would be a regression for exactly the deployments
+    this change is about.
+    """
+    deployment = _deployment(
+        name="PROD-UL-00",
+        deploy_args={
+            "kind": "prod-continuous-uploader",
+            "spec": "fsn1:cx23",
+            "pool_request": {"tiny": 2},
+            "verifiers": ["lon1"],
+            "sleep_interval_secs": 86400,
+            "ant_binary": {"kind": "release", "version": "0.3.8"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "Cadence:" in text and "once a day" in text
+
+
 def test_prod_downloaders_kind_renders_without_sleep_interval():
     deployment = _deployment(
         name="PROD-DL-OS-01",

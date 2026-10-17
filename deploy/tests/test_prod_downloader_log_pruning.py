@@ -45,7 +45,6 @@ class TestProvisionerThreadsRetention:
         prov = ProdDownloaderProvisioner(
             downloaders=[],
             bootstrap_peers=[],
-            sleep_interval_secs=900,
         )
         assert prov.log_retention_days == 7
 
@@ -57,7 +56,6 @@ class TestProvisionerThreadsRetention:
         prov = ProdDownloaderProvisioner(
             downloaders=[],
             bootstrap_peers=[],
-            sleep_interval_secs=900,
             log_retention_days=0,
         )
         assert prov.log_retention_days == 0

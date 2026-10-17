@@ -303,7 +303,7 @@ def _provision_prod_downloader(
     provisioner = ProdDownloaderProvisioner(
         downloaders=downloaders,
         bootstrap_peers=bootstrap_peers,
-        sleep_interval_secs=args.sleep_interval_secs,
+        daily_at=_daily_at(args),
         ssh_key_path=args.ssh_key_path,
         binary_url=binary_url,
         binary_is_archive=binary_is_archive,
@@ -395,6 +395,17 @@ def _resolve_clock_skew(args):
     return parse_skew_duration(raw)
 
 
+def _daily_at(args) -> str:
+    """The UTC ``HH:MM`` anchor this deployment's cycle starts at.
+
+    Defaulted here as well as on the parser, because the one-shot
+    ``prod downloaders`` path reuses this module's provisioner and never defines
+    the flag — a one-shot run exits after a single pass and never consults the
+    anchor, but the env file still has to render.
+    """
+    return getattr(args, "daily_at", None) or "00:00"
+
+
 def _resolve_network(args):
     """Resolve ``--network PROFILE`` into a NetworkProfile (or None when unset).
 
@@ -410,15 +421,6 @@ def _resolve_network(args):
 def cmd_prod_continuous_downloader_deploy(args):
     """Deploy a prod continuous-downloader testbed against the Autonomi prod network."""
     console = Console()
-
-    # --daily is a convenience for the permanent once-a-day cadence; it wins
-    # over an explicit --sleep-interval-secs so `--daily` always means 24h.
-    if getattr(args, "daily", False):
-        args.sleep_interval_secs = 86400
-
-    if args.sleep_interval_secs < 0:
-        console.print("[bold red]Error:[/bold red] --sleep-interval-secs must be >= 0.")
-        sys.exit(1)
 
     try:
         clock_skew_seconds = _resolve_clock_skew(args)
@@ -460,10 +462,7 @@ def cmd_prod_continuous_downloader_deploy(args):
         "wasm (browser path, WebRTC-Direct)" if is_wasm_kind(args) else "native (ant over QUIC)"
     )
     console.print(f"  Transport: {transport}")
-    sleep_label = (
-        "disabled — back-to-back cycling" if args.sleep_interval_secs == 0 else "between cycles"
-    )
-    console.print(f"  Sleep interval: {args.sleep_interval_secs}s ({sleep_label})")
+    console.print(f"  Daily cycle at: {_daily_at(args)} UTC")
     console.print()
 
     deploy_args_payload = {
@@ -481,7 +480,7 @@ def cmd_prod_continuous_downloader_deploy(args):
         "memory_profiling": getattr(args, "memory_profiling", False),
         "download_diagnostics": getattr(args, "download_diagnostics", False),
         "purpose": args.purpose,
-        "sleep_interval_secs": args.sleep_interval_secs,
+        "daily_at": _daily_at(args),
         "provider": getattr(args, "provider", "digitalocean"),
         "monitoring_provider": getattr(args, "monitoring_provider", "digitalocean"),
         "influx_retention_days": getattr(args, "influx_retention_days", 0) or 0,

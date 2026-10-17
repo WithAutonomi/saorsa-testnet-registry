@@ -240,7 +240,6 @@ class TestTheProvisionerRecordsTheToggle:
                 }
             ],
             bootstrap_peers=["/ip4/1.1.1.1/udp/1/quic-v1"],
-            sleep_interval_secs=0,
             one_shot=True,
             **kwargs,
         )

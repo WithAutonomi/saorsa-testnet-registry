@@ -18,7 +18,7 @@ Generate an executable bash runbook that runs a production continuous-downloader
 
 `prod continuous-downloader deploy` is a single high-level command, but every run still requires a few decisions that are easy to forget:
 
-- It's **single-VM by design** — exactly one `--spec region[:vm_size]`, no list, no provider mix. The download service then loops indefinitely against a fixed list of public mainnet addresses.
+- It's **single-VM by design** — exactly one `--spec region[:vm_size]`, no list, no provider mix. The download service then walks a fixed list of public mainnet addresses once a day, forever, anchored to the UTC time `--daily-at` names.
 - The address list defaults to a curated file shipped inside the deploy package; the user may want to override it with their own list (e.g. to test a specific corpus).
 - A paired monitoring stack is created in-flight; for runs longer than a day, the default 50 GB volume needs bumping.
 - The companion command `deployments record-results --name X --monitoring-name X --window -1h` is the standard way to roll the InfluxDB measurements into Postgres for after-the-fact analysis, but it runs on the user's own cadence, not from this runbook.
@@ -86,15 +86,16 @@ Ask once: "Default 50 GB monitoring volume, or larger?"
 - For runs expected to stretch beyond a day, suggest `100`–`250` GB. Continuous downloads emit one Influx record per file per cycle, so the measurement table grows quickly on long runs.
 - Only emit `--monitoring-volume-size N` when the user picks a value other than 50.
 
-### 5b. Inter-cycle sleep interval
+### 5b. Daily cycle anchor
 
-Each pass through the address list is followed by a configurable sleep before the next cycle starts. Default is **900 seconds (15 minutes)** — keeps the network from being hammered by a single test rig. Pass `0` to disable the sleep entirely (back-to-back cycling, the way the legacy bash downloader behaved).
+The service runs **one cycle a day, anchored to a fixed UTC wall-clock time** — `--daily-at HH:MM`, default `00:00`. There is no interval mode: `--sleep-interval-secs` and `--daily` were removed (V2-1604), and the CLI now rejects them at argument parsing.
 
-Ask: "Use the default 15-minute sleep between cycles, a different interval, or disable it (back-to-back cycling)?"
+Ask: "What UTC time of day should the cycle start — the default 00:00, or another `HH:MM`?"
 
-- Only emit `--sleep-interval-secs N` when the user picks a non-default value (including `0`).
-- For very long soak runs, the default is almost always right — the per-op logs accumulate quickly and a tighter cycle will fill `/var/log` faster.
-- Disabling (i.e. `0`) is reserved for short performance-stress runs where the goal is to find the maximum sustainable rate.
+- Always emit `--daily-at HH:MM`. Writing it explicitly is what makes the runbook state the cadence instead of implying one.
+- The start rule: the service records the instant the last cycle **completed** and runs a cycle whenever that instant is older than the most recent anchor — so a fresh deploy runs one immediately (proof of life), a restart after the day's cycle waits for the next anchor rather than running an extra one, and a crash mid-cycle re-runs as soon as systemd brings the service back.
+- **Offset a second downloader from an existing one.** Two deployments walking the same address list at the same anchor hit the same peers at the same moment and measure each other; PROD-WDL-01 sits on `02:00` against PROD-DL-01's `00:00` for that reason.
+- `HH:MM` is validated strictly — two digits each, `00`–`23` / `00`–`59`. `9:00`, `09:00:00` and `0900` are all refused with `daily_at must be HH:MM (24-hour, UTC)`.
 
 ### 6. SSH key path
 
@@ -128,7 +129,7 @@ Once the interview is done, before writing the files:
 - Binary selection is mutually exclusive: either `--ant-version X` or `--branch-name Y --repo-owner Z`. Never both.
 - Only emit `--addresses-file PATH` when the user picked a custom list.
 - Only emit `--monitoring-volume-size N` when the user picked a non-default value.
-- Only emit `--sleep-interval-secs N` when the user picked a non-default value (`0` disables; the default is 900).
+- Always emit `--daily-at HH:MM` (UTC; default `00:00`). `--sleep-interval-secs` and `--daily` no longer exist — emitting either makes the deploy exit at argument parsing.
 - Only emit `--keep-monitoring` on destroy when the user explicitly asked for it.
 - Spec is a single string; no repeatable form. Refuse to generate a runbook for more than one VM.
 
@@ -174,14 +175,14 @@ uv run saorsa-deploy prod continuous-downloader deploy \
   --name "$NAME" \
   --spec '{{SPEC_STRING}}' \
   {{#if custom_addresses}}--addresses-file "{{ADDRESSES_FILE}}" \
-  {{/if}}{{#if sleep_interval_overridden}}--sleep-interval-secs {{SLEEP_INTERVAL_SECS}} \
-  {{/if}}{{BINARY_FLAGS_ANT}} \
+  {{/if}}--daily-at {{DAILY_AT}} \
+  {{BINARY_FLAGS_ANT}} \
   {{#if monitoring_volume_override}}--monitoring-volume-size {{MONITORING_VOLUME_SIZE}} \
   {{/if}}--ssh-key-path "$SSH_KEY"
 
 echo ""
 echo "Prod continuous-downloader run $NAME has been deployed."
-echo "The download service will loop until the runbook's destroy script is invoked."
+echo "One cycle has started now; after that it runs daily at {{DAILY_AT}} UTC until the runbook's destroy script is invoked."
 ```
 
 `{{BINARY_FLAGS_ANT}}` expands to either:
@@ -226,6 +227,7 @@ echo "Monitoring VM was kept; remember to tear it down separately when you're do
 - **Monitoring is implicit.** Don't emit a separate `monitoring infra` / `monitoring provision` chain — `prod continuous-downloader deploy` does it in one shot. The only knob exposed at this level is `--monitoring-volume-size`.
 - **Destroy takes `--ssh-key-path`.** Unlike testnet destroy commands, the prod destroy commands SSH into VMs for clean teardown, so the key is required.
 - **The companion command isn't in the runbook.** `deployments record-results --name X --monitoring-name X --window -1h` runs at the user's chosen cadence (the `--window` slot maps neatly to a cron job). Mention it in the closing message; don't bake it into the script.
+- **The cadence is an anchor, not an interval.** A sleep taken at the end of each cycle moved the start by the cycle's own duration every day and every `systemctl restart` re-anchored it — PROD-DL-01's start walked from 11:28 to 15:00 UTC in a week, which made its day-against-day results unreadable. That is why interval mode is gone rather than defaulted; don't reintroduce it in a runbook.
 - **Don't add retry loops or sleeps.** If a command fails, the user wants to see it and decide what to do — `set -e` is the contract.
 - **Don't confuse this with the testnet downloader.** Testnet `clients infra --downloader region[:vm_size]` is repeatable and pulls addresses uploaders just published. Prod `--spec region[:vm_size]` is single-VM, consumes a fixed mainnet address list, and runs a **dedicated `prod_downloader.py` Python service** (not the shared `downloader.sh`) so every download leaves a per-op log on disk under `/var/log/ant-prod-downloader/`. Different shapes; don't conflate them.
 - **Per-op logs accumulate forever.** No log rotation is wired in. For runs of weeks/months you may need to set up logrotate manually or otherwise prune `/var/log/ant-prod-downloader/`.
