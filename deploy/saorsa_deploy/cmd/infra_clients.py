@@ -1,6 +1,5 @@
 import os
 import sys
-from pathlib import Path
 
 from rich.console import Console
 
@@ -31,6 +30,7 @@ from saorsa_deploy.client_roles import (  # noqa: F401  (re-exported for callers
     is_pointer,
 )
 from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.paths import state_dir
 from saorsa_deploy.providers import CLIENT_PROVIDERS, resolve_client_provider
 from saorsa_deploy.provisioning.clock_skew import format_skew_offset, parse_skew_duration
 from saorsa_deploy.provisioning.network_profile import NetworkProfileError, resolve_network
@@ -886,7 +886,7 @@ def cmd_infra_clients(args):
             sys.exit(1)
 
     resources_dir = get_resources_dir()
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+    workspace_base = state_dir() / "workspaces"
 
     configs = []
     for spec in client_specs:

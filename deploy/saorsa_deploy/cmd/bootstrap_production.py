@@ -19,6 +19,7 @@ from saorsa_deploy.binary_source import (
     get_release_url,
 )
 from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.paths import state_dir
 from saorsa_deploy.prod_bootstrap_upgrade import peers_for
 from saorsa_deploy.provisioning.hardening import (
     build_systemd_unit,
@@ -122,7 +123,7 @@ def _build_terraform_configs(
 ) -> list[TerraformRunConfig]:
     """Build Terraform configs for all production nodes."""
     resources_dir = get_resources_dir()
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+    workspace_base = state_dir() / "workspaces"
     configs = []
 
     for node in nodes:

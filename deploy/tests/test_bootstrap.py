@@ -173,7 +173,7 @@ class TestPurgeStaleBootstrapState:
             purge_stale_bootstrap_state("DEV-02")
             mock_exec.assert_not_called()
 
-    def test_runs_destroy_then_deletes_each_state(self, tmp_path):
+    def test_runs_destroy_then_deletes_each_state(self):
         from saorsa_deploy.terraform import TerraformResult
 
         with (
@@ -183,10 +183,6 @@ class TestPurgeStaleBootstrapState:
             patch(
                 "saorsa_deploy.bootstrap.load_terraform_state",
                 side_effect=Exception("no tfstate"),
-            ),
-            patch(
-                "saorsa_deploy.bootstrap.Path.cwd",
-                return_value=tmp_path,
             ),
         ):
             mock_list.return_value = [
@@ -207,7 +203,7 @@ class TestPurgeStaleBootstrapState:
             assert [c.region for c in configs] == ["lon1", "nyc1"]
             assert mock_delete.call_count == 2
 
-    def test_raises_when_destroy_fails(self, tmp_path):
+    def test_raises_when_destroy_fails(self):
         from saorsa_deploy.terraform import TerraformResult
 
         with (
@@ -217,10 +213,6 @@ class TestPurgeStaleBootstrapState:
             patch(
                 "saorsa_deploy.bootstrap.load_terraform_state",
                 side_effect=Exception("no tfstate"),
-            ),
-            patch(
-                "saorsa_deploy.bootstrap.Path.cwd",
-                return_value=tmp_path,
             ),
         ):
             mock_list.return_value = [

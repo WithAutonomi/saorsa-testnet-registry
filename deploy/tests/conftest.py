@@ -1,6 +1,12 @@
 """Shared fixtures for the `saorsa-deploy` test suite.
 
-Two autouse fixtures, and both are safety belts rather than conveniences.
+Three autouse fixtures, and all three are safety belts rather than conveniences.
+
+`SAORSA_DEPLOY_STATE_DIR` is pointed at a tmp dir for every test, so nothing can
+write a Terraform workspace or a lane log into the operator's real
+`~/.local/share/saorsa-deploy`. Deployment names are reused between the tests
+and the operator's own runs, so the paths collide by construction — exactly as
+they do for the local inventory below.
 
 The local inventory root is redirected into a tmp dir for every test. The real
 `~/.autonomi/testnets/<name>/inventory.json` files describe the operator's own
@@ -18,7 +24,15 @@ caller, which is not a test guarantee at all.
 
 import pytest
 
-from saorsa_deploy import local_inventory, state
+from saorsa_deploy import local_inventory, paths, state
+
+
+@pytest.fixture(autouse=True)
+def state_dir_root(tmp_path, monkeypatch):
+    """Point the tool's state dir at a per-test tmp dir. Returns its root."""
+    root = tmp_path / "saorsa-deploy-state"
+    monkeypatch.setenv(paths.STATE_DIR_ENV_VAR, str(root))
+    return root
 
 
 @pytest.fixture(autouse=True)

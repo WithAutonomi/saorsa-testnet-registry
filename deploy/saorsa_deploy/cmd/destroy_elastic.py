@@ -1,6 +1,5 @@
 import shutil
 import sys
-from pathlib import Path
 
 from rich.console import Console
 
@@ -10,6 +9,7 @@ from saorsa_deploy.cmd.obs_provider import (
 )
 from saorsa_deploy.contabo import require_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.paths import state_dir
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     delete_elastic_state,
@@ -54,7 +54,7 @@ def cmd_destroy_elastic(args):
     resources_dir = get_resources_dir()
     tf_source = resources_dir / f"{provider}-elastic"
     abbrev = state_key_abbrev(provider)
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+    workspace_base = state_dir() / "workspaces"
     workspace_dir = workspace_base / f"{provider}-elastic-{args.name}-{region}"
     state_key = f"saorsa-deploy/{abbrev}-elastic-{args.name}-{region}.tfstate"
 

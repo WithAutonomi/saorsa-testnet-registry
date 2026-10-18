@@ -38,6 +38,7 @@ from rich.live import Live
 from rich.table import Table
 
 from saorsa_deploy.orchestrator.steps import Step, StepGroup
+from saorsa_deploy.paths import state_dir
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -47,9 +48,15 @@ def _format_elapsed(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
-def _log_dir() -> Path:
-    """Per-run-independent directory for lane logs (cwd-relative, like workspaces)."""
-    return Path.cwd() / ".saorsa" / "infra-logs"
+def _log_dir(deployment_name: str) -> Path:
+    """Directory for one deployment's lane logs, under the tool's state dir.
+
+    Keyed by deployment name: a lane log is named after the lane index and the
+    step only, so two concurrent (or successive) ``up`` runs would otherwise
+    overwrite each other's logs. The Terraform workspaces need no such key —
+    they already carry the deployment name.
+    """
+    return state_dir() / "infra-logs" / deployment_name
 
 
 def _log_path(log_dir: Path, lane_idx: int, step: Step) -> Path:
@@ -61,8 +68,8 @@ def _run_step_subprocess(step: Step, log_path: Path) -> int:
     """Run one step as a fresh ``saorsa-deploy`` process, teeing output to a log.
 
     Returns the process exit code. Isolated as a module function so tests can
-    stub it without spawning real subprocesses. cwd is inherited (the infra
-    commands resolve their terraform workspaces relative to it).
+    stub it without spawning real subprocesses. The environment is inherited, so
+    a ``SAORSA_DEPLOY_STATE_DIR`` set for the parent applies to every lane.
     """
     with open(log_path, "w") as fh:
         proc = subprocess.Popen(
@@ -169,18 +176,27 @@ def _print_failure(console: Console, result: LaneResult) -> None:
     console.print()
 
 
-def run_parallel_group(console: Console, group: StepGroup, *, log_dir: Path | None = None) -> None:
+def run_parallel_group(
+    console: Console,
+    group: StepGroup,
+    *,
+    deployment_name: str,
+    log_dir: Path | None = None,
+) -> None:
     """Run every lane of ``group`` concurrently; abort the deploy on any failure.
 
     Returns normally only when all lanes succeed (the caller then records the
     group in the journal). On any lane failure this prints the failed lanes'
     captured output and raises ``SystemExit`` to halt the deploy.
+
+    ``deployment_name`` names the log directory, so the lane logs of two
+    deployments never share a path.
     """
     lanes = group.lanes
     if not lanes:
         return
 
-    log_dir = log_dir or _log_dir()
+    log_dir = log_dir or _log_dir(deployment_name)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     console.print(

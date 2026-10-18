@@ -70,6 +70,7 @@ uv sync
 | `AWS_SECRET_ACCESS_KEY` | AWS credentials for Terraform state backend and deployment state |
 | `ANT_BUILD_AWS_ACCESS_KEY_ID` | AWS credentials for uploading custom-built binaries (only for `build ant-node`) |
 | `ANT_BUILD_AWS_SECRET_ACCESS_KEY` | AWS credentials for uploading custom-built binaries (only for `build ant-node`) |
+| `SAORSA_DEPLOY_STATE_DIR` | Override the local state directory (default `~/.local/share/saorsa-deploy`) — see "The local state directory" |
 
 Terraform state and deployment metadata are stored in the `maidsafe-org-infra-tfstate` S3 bucket (region `eu-west-2`). AWS credentials are resolved via the standard boto3 credential chain (environment variables, `~/.aws/credentials`, or IAM roles).
 
@@ -118,6 +119,40 @@ or kind-specific — an operator who never deploys to OVH is not misconfigured f
 having none of the four OVH values — so there is no set whose absence is a
 failure for every command. Read the report.
 
+## The local state directory
+
+Everything the tool writes locally — the Terraform working copies and the
+parallel-lane logs — lives under **one** directory per machine:
+
+```
+~/.local/share/saorsa-deploy/
+  workspaces/        # one per tier/region: do-bootstrap-DEV-01-lon1, digitalocean-DEV-01-lon1, ...
+  infra-logs/<NAME>/ # lane00-nodes-infra.log, lane01-elastic-infra.log, ...
+```
+
+`SAORSA_DEPLOY_STATE_DIR` overrides the location. Nothing else about a command
+depends on where it is invoked from: `deployments up` from one directory and
+`deployments down --name X` from another use the same workspaces. That is the
+point — these paths used to be `<cwd>/.saorsa/...`, so the working state of a
+deployment was a property of whichever directory created it, every directory a
+run was launched from grew its own multi-gigabyte set of Terraform copies, and a
+`destroy` from elsewhere re-copied and re-`init`ed all of them.
+
+The lane logs are keyed by deployment name because a log is named after its lane
+index and the step only (`lane00-nodes-infra.log`), so two `up` runs sharing a
+directory used to overwrite each other's. The workspaces need no such key: they
+already carry the deployment name, the tier and the region. A client extension's
+logs go under its journal key, `<deployment>--<extension>`.
+
+**Nothing is migrated.** A deployment whose workspaces exist only under an old
+`<cwd>/.saorsa/workspaces/` is simply re-initialised at the new location on its
+next command: `prepare_workspace` copies the module's `.tf` files in and
+`terraform init -reconfigure -backend-config=key=<state key>` fetches the state
+from the `maidsafe-org-infra-tfstate` S3 backend, which **every** tier's module
+uses — there is no local `terraform.tfstate` anywhere. It costs one `init` and
+changes no infrastructure, exactly as running a command from a different
+directory already did. The old `.saorsa` directories are then dead weight and
+can be deleted.
 
 ## Declarative manifests (`deployments up` / `down` / `plan`)
 
@@ -184,8 +219,9 @@ tiers built in its shadow.
 
 `plan` still lists all five commands (annotated `(parallel)`) so you can read the
 exact argv. During `up`, each lane runs as its own `saorsa-deploy` subprocess
-with its combined output tee'd to `.saorsa/infra-logs/lane<NN>-<cmd>.log` (the
-paths are printed up front for `tail -f`), while the parent shows one live status
+with its combined output tee'd to
+`<state dir>/infra-logs/<NAME>/lane<NN>-<cmd>.log` (the paths are printed up
+front for `tail -f`), while the parent shows one live status
 table — one row per lane. A lane stops at its first failing step (so `nodes
 infra` is skipped if `bootstraps infra` fails); in-flight lanes are allowed to
 finish (a running `terraform apply` is never killed mid-flight), and once every
@@ -6549,7 +6585,7 @@ than guessing.
 
 `volume_size` is the knob to watch, and it grows **online** on DigitalOcean:
 bump it in the manifest and `terraform apply -var=volume_size=N` in
-`.saorsa/workspaces/digitalocean-elastic-<NAME>-<region>` plans
+`<state dir>/workspaces/digitalocean-elastic-<NAME>-<region>` plans
 `0 add / 1 change / 0 destroy`, then `resize2fs /dev/sda` on the VM. No
 Elasticsearch restart, state stays consistent.
 

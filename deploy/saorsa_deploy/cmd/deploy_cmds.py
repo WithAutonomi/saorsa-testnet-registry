@@ -131,8 +131,18 @@ def _print_timing_summary(console: Console, timings: list[tuple[str, float]]) ->
 
 
 def _execute(
-    console: Console, steps: list[Step], journal: dict | None = None, start: int = 0
+    console: Console,
+    steps: list[Step],
+    *,
+    deployment_name: str,
+    journal: dict | None = None,
+    start: int = 0,
 ) -> None:
+    """Run ``steps`` in order, dispatching parallel groups to the lane runner.
+
+    ``deployment_name`` is only used to name the lane-log directory, so that two
+    deployments' logs never share a path.
+    """
     from saorsa_deploy import parallel_infra
     from saorsa_deploy.main import main as run_cli
 
@@ -145,7 +155,7 @@ def _execute(
             # run_parallel_group prints failures and raises SystemExit on any
             # lane failure, so reaching the next line means every lane succeeded.
             t0 = time.monotonic()
-            parallel_infra.run_parallel_group(console, unit)
+            parallel_infra.run_parallel_group(console, unit, deployment_name=deployment_name)
             elapsed = time.monotonic() - t0
             timings.append((unit.label, elapsed))
             console.print(
@@ -318,7 +328,7 @@ def cmd_up(args):
     _prepare_secret_env(manifest, console)
     _print_plan(console, manifest.name, manifest.kind, steps, "Deploy", done=resume_index)
     console.print()
-    _execute(console, steps, journal=journal, start=resume_index)
+    _execute(console, steps, deployment_name=manifest.name, journal=journal, start=resume_index)
     # The run completed: the journal has served its purpose. Leaving it around
     # would trip the resume prompt on the next deployment to reuse this name.
     delete_step_journal(manifest.name)
@@ -445,7 +455,7 @@ def cmd_down(args):
         return
     _print_plan(console, name, kind, steps, "Destroy")
     console.print()
-    _execute(console, steps)
+    _execute(console, steps, deployment_name=name)
     # Any step journal left by a failed `up` is now moot: the deployment is
     # gone, so a future run reusing this name must start from scratch.
     delete_step_journal(name)
