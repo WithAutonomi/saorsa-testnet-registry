@@ -6,9 +6,10 @@
 # Node.js program. `ant-cli` cannot substitute — it links native ant-core, so it
 # takes the native transport however it is invoked.
 #
-# Run it:
-#   saorsa-deploy deployments plan --config deploy/manifests/profiles/webrtc-wasm.yaml
-#   saorsa-deploy deployments up   --config deploy/manifests/profiles/webrtc-wasm.yaml
+# Run it (as a run manifest of your own: `extends: profile:webrtc-wasm`, plus a
+# `name:`), or directly from this checkout:
+#   saorsa-deploy deployments plan --config deploy/saorsa_deploy/resources/profiles/webrtc-wasm.yaml
+#   saorsa-deploy deployments up   --config deploy/saorsa_deploy/resources/profiles/webrtc-wasm.yaml
 #
 # The sequence gains two steps over a normal testnet:
 #   build ant-wasm             (alongside build ant-node, in the parallel build group)

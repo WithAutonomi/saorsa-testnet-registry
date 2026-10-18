@@ -15,7 +15,7 @@ kind: prod-uploaders
 purpose: "Merkle uploads after node update + deferred-retry change"
 ssh_key_path: ~/.ssh/ant_deploy           # absolute or ~; default ~/.ssh/id_rsa
 slack_post: true                           # default false; append a `deployments slack-post` step to `up`
-# extends: ../profiles/some-base.yaml      # optional loader directive: deep-merge a base manifest (lists REPLACE)
+# extends: profile:<name>                 # optional loader directive: deep-merge a bundled profile (lists REPLACE)
 
 prod_uploaders:
   # Binary: choose EITHER a pinned release ({ version }) OR a branch build

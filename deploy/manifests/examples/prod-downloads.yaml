@@ -3,7 +3,7 @@
 # an address list ONCE and then exits (Type=simple, Restart=no), with a paired
 # InfluxDB monitoring VM. This is the one-shot sibling of
 # prod-continuous-downloader (which loops forever); see
-# ../profiles/prod-continuous-downloader.yaml for the permanent variant.
+# the bundled `prod-continuous-downloader` profile for the permanent variant.
 #
 # A standalone, copy-me template showing EVERY available field. Required fields
 # are live; optional fields are shown commented with their defaults. Copy into
@@ -19,7 +19,7 @@ kind: prod-downloaders
 purpose: "One-shot prod download performance check"
 ssh_key_path: ~/.ssh/ant_deploy           # absolute or ~; default ~/.ssh/id_rsa
 slack_post: true                           # default false; append a `deployments slack-post` step to `up`
-# extends: ../profiles/some-base.yaml      # optional loader directive: deep-merge a base manifest (lists REPLACE)
+# extends: profile:<name>                 # optional loader directive: deep-merge a bundled profile (lists REPLACE)
 
 prod_downloaders:
   # Single client VM doing the downloads.

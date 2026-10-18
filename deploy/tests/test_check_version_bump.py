@@ -147,8 +147,12 @@ def test_parse_declared_type_rejects_a_typo(check_version_bump):
         # Documentation and run manifests live in the tool's trees but are not
         # the tool.
         (["deploy/README.md"], False),
-        (["deploy/manifests/profiles/staging.yaml"], False),
+        (["deploy/manifests/README.md"], False),
         (["db/README.md"], False),
+        # The profiles, though, ship inside the wheel as package data, so a
+        # profile edit IS a change to the tool — that is the point of them
+        # living there.
+        (["deploy/saorsa_deploy/resources/profiles/staging.yaml"], True),
         (["deploy/README.md", "deploy/saorsa_deploy/state.py"], True),
         ([""], False),
         ([], False),

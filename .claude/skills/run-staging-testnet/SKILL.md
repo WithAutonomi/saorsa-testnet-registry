@@ -123,7 +123,7 @@ forward an old `-rc` tag. Two things about the key that differ from `ant`:
 Result for the 2026-07-21 train:
 
 ```yaml
-extends: ../../profiles/staging.yaml
+extends: profile:staging
 
 name: STG-01
 purpose: "Release Train 2026-07-21: staging run"
@@ -140,14 +140,16 @@ testnet:
       repo_owner: WithAutonomi
 ```
 
-Leave `extends`, `name` and `slack_post` alone. The profile
-(`deploy/manifests/profiles/staging.yaml`) holds the network shape and is not
-edited here — a change to it is a re-baselining event and needs the RM.
+Leave `extends`, `name` and `slack_post` alone. `profile:staging` is the profile
+bundled in the saorsa-deploy wheel
+(`deploy/saorsa_deploy/resources/profiles/staging.yaml` in this checkout); it holds
+the network shape and is not edited here — a change to it is a re-baselining event
+and needs the RM.
 
 Record the profile version. Comparisons are only valid within one profile version:
 
 ```bash
-git log -1 --format=%h -- deploy/manifests/profiles/staging.yaml
+git log -1 --format=%h -- deploy/saorsa_deploy/resources/profiles/staging.yaml
 ```
 
 If the profile file has uncommitted changes, stop. The run would not be attributable
@@ -193,7 +195,8 @@ On exit 2, stop and hand back to the RM with the command's output. Two different
 fixes, and neither is yours to make unilaterally:
 
 - **An uploader is under-funded.** The command prints the exact `eth:` value for each
-  uploader, in manifest order. Raising them edits `deploy/manifests/profiles/staging.yaml`,
+  uploader, in manifest order. Raising them edits
+  `deploy/saorsa_deploy/resources/profiles/staging.yaml`,
   which changes the profile SHA — a re-baselining event that needs the RM, exactly as
   a shape change would.
 - **The funding wallet is short.** No profile edit helps; the wallet needs topping up

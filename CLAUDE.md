@@ -171,8 +171,13 @@ What will bite you:
 - **Monitoring (InfluxDB) defaults ON** for testnet/extension kinds; the
   **Grafana VM is opt-in and OFF** (`monitoring: {grafana: true}`). Elasticsearch
   log-forwarding is opt-in.
-- **`extends: <path>` deep-merges a base profile, but lists REPLACE, not
-  append.** Also `--set dotted.key=value` and `--name`.
+- **`extends: profile:<name>` deep-merges one of the profiles bundled in the
+  wheel**, resolved from the installed package and so working from any
+  directory — including a run directory outside the checkout. `<name>` is bare:
+  a `/` or `..` is refused and an unknown name lists what is available.
+  `extends: <relative-path>` still works for an operator's own base manifest.
+  Either way **lists REPLACE, not append.** Also `--set dotted.key=value` and
+  `--name`.
 - **Secrets are never in a manifest** — prod kinds name an env var
   (`secret_key_env`, default `ARBITRUM_ONE_SECRET_KEY`).
 - **Never run two `up`/`down` for one name concurrently** (S3 + Terraform races).
@@ -205,10 +210,15 @@ testnet skill's ceiling bounds the measurement phases only: once recording has
 started it runs to completion, and no tier a recording reads from (ES,
 monitoring, the S3 client state) is destroyed before that recording exits.
 
-Reusable profiles are committed under `deploy/manifests/profiles/`
-(`reference.yaml` = every option, `staging.yaml` = THE staging profile every
-release train extends). Concrete run manifests live in the git-ignored
-`deploy/manifests/runs/`.
+Reusable profiles are **package data shipped inside the `saorsa-deploy` wheel**,
+at `deploy/saorsa_deploy/resources/profiles/` (`reference.yaml` = every option,
+`staging.yaml` = THE staging profile every release train extends), reached as
+`extends: profile:<name>`. They are therefore **versioned with the tool** —
+`saorsa-deploy==1.3.0` carries the `staging` profile as it was at 1.3.0 — which
+is what lets a run whose manifest is written outside the checkout reach them at
+all. `deployments config profiles` lists what the installed version ships, with
+the first line of each profile's leading comment as its description. Concrete
+run manifests live in the git-ignored `deploy/manifests/runs/`.
 
 `slack_post: true` (valid for every kind) appends a `deployments slack-post`
 step; it is best-effort and never fails the run. `record-results --update-slack`
@@ -289,7 +299,7 @@ driven by `clients up|down|plan|ls|config --config` mirroring `deployments
 up`/`down` (journal, `--resume`, the lot). The five primitives take
 `--extension <name>` directly. Unrelated to `deployments extend`, which creates
 a second NODE fleet. Example:
-`deploy/manifests/profiles/clients-extension-example.yaml`. The
+`deploy/saorsa_deploy/resources/profiles/clients-extension-example.yaml`. The
 `browser_downloaders` tier (below) is the one most often added this way — a hot
 file only exists once the deployment's uploaders have published one.
 
@@ -499,7 +509,7 @@ foundation), `provisioning/wasm_client.py`, `resources/wasm-client/src/cli.ts`.
 Both remote download kinds take **`client_kind: native|wasm`**, measuring what a
 browser client experiences against the REAL production network. See "rules common
 to every kind" above for the transport, results, cap, sizing and probe rules.
-Example: `deploy/manifests/profiles/prod-wasm-downloaders.yaml`.
+Example: `deploy/saorsa_deploy/resources/profiles/prod-wasm-downloaders.yaml`.
 
 What is specific to the download kinds:
 
@@ -763,7 +773,7 @@ The WASM series is its own deployment alongside the native one. See "rules commo
 to every kind" above. Everything around the spawn is unchanged — the per-cycle
 `claim_pool_files`, the SHA-256, the Postgres writes, the replacement logic, the
 unit names and restart policies. Example:
-`deploy/manifests/profiles/prod-wasm-continuous-uploader.yaml`.
+`deploy/saorsa_deploy/resources/profiles/prod-wasm-continuous-uploader.yaml`.
 
 What is specific to this kind:
 
@@ -824,7 +834,7 @@ See `deploy/README.md` §"Running uploaders against production".
 
 `--wasm-uploader` / manifest `prod_uploaders.wasm_uploaders[]` makes an
 uploader's `ant-prod-uploader` service spawn `ant-wasm`. See "rules common to
-every kind" above. Example: `deploy/manifests/profiles/prod-wasm-uploaders.yaml`.
+every kind" above. Example: `deploy/saorsa_deploy/resources/profiles/prod-wasm-uploaders.yaml`.
 
 - **The transport is per uploader, not per deployment** — the one kind where that
   is true. A native and a browser-path uploader in one run share the wallet, the
@@ -1234,7 +1244,7 @@ The testnet-side browser tier: roles `wasm-upload` / `wasm-download`, manifest
 keys `clients.wasm_uploaders[]` / `clients.wasm_downloaders[]`, independent of
 the native pair (a testnet may run either or both side by side). See "rules
 common to every kind" above for transport, results, cap, build and `client_build`.
-Example: `deploy/manifests/profiles/webrtc-wasm.yaml`.
+Example: `deploy/saorsa_deploy/resources/profiles/webrtc-wasm.yaml`.
 
 They are **distinct roles, not a flag on the native ones**, because the role
 names the VM, its Terraform workspace and its S3 state key. The role-to-unit map
@@ -1506,7 +1516,7 @@ forever, and every write — create AND update — is one paid single-node quote
 tier exercises them for the life of a testnet, so the behaviour is measured before
 it reaches production, the way the WASM tier did for WebRTC. Role `pointer`, unit
 `ant-pointer`, manifest `clients.pointers[]`. Example:
-`deploy/manifests/profiles/pointers.yaml`.
+`deploy/saorsa_deploy/resources/profiles/pointers.yaml`.
 
 **A role of its own, and an upload-type role.** Its own because the role names the
 VM, its Terraform workspace and its S3 state key; upload-type because it carries a
@@ -2350,7 +2360,7 @@ by the `beta-health-verdict` skill and the beta rollout watch. It reuses the
 existing `elastic infra`/`provision`/`destroy` commands and the same state key;
 the kind adds `--standalone` (which registers the `Deployment` row, since no
 `bootstraps infra` runs to do it) and the public-ingest shape. Example:
-`deploy/manifests/profiles/elasticsearch.yaml`.
+`deploy/saorsa_deploy/resources/profiles/elasticsearch.yaml`.
 
 - **`public_ingest: true` is a different posture, not a flag.** A testnet's ES is
   reachable only by our own VMs for hours, so it runs **plaintext on 9200 with
@@ -2464,8 +2474,9 @@ See `deploy/README.md` §"Elasticsearch" for the full argument tables.
 
 ## Key Commands
 
-- `uv run saorsa-deploy deployments plan --config deploy/manifests/profiles/reference.yaml` - Preview a manifest's command sequence
+- `uv run saorsa-deploy deployments plan --config deploy/saorsa_deploy/resources/profiles/reference.yaml` - Preview a manifest's command sequence
 - `uv run saorsa-deploy deployments up --config <manifest>` / `deployments down --config <manifest>` - Deploy/destroy from a manifest
+- `uv run saorsa-deploy deployments config profiles` - List the profiles this version of the tool ships (for `extends: profile:<name>`)
 - `uv run flask --app saorsa_web.app run` - Dev server
 - `cd db && uv run alembic revision --autogenerate -m "description"` - New migration
 - `cd db && uv run alembic upgrade head` - Apply migrations

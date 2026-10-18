@@ -7,9 +7,10 @@
 # is answered by a quorum of its close group, and whether that quorum agrees is
 # not a property one client alone can observe.
 #
-# Run it:
-#   saorsa-deploy deployments plan --config deploy/manifests/profiles/pointers.yaml
-#   saorsa-deploy deployments up   --config deploy/manifests/profiles/pointers.yaml
+# Run it (as a run manifest of your own: `extends: profile:pointers`, plus a
+# `name:`), or directly from this checkout:
+#   saorsa-deploy deployments plan --config deploy/saorsa_deploy/resources/profiles/pointers.yaml
+#   saorsa-deploy deployments up   --config deploy/saorsa_deploy/resources/profiles/pointers.yaml
 #
 # Read the results:
 #   saorsa-deploy deployments print-pointers --name PTR-01            # live, Influx

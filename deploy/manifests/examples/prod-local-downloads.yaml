@@ -15,7 +15,7 @@ kind: prod-local-downloads
 purpose: "Smoke-test prod downloads from home connection"
 # ssh_key_path: ~/.ssh/ant_deploy          # unused for local-downloads (nothing is provisioned); may be omitted
 slack_post: true                           # default false; append a `deployments slack-post` step to `up`
-# extends: ../profiles/some-base.yaml      # optional loader directive: deep-merge a base manifest (lists REPLACE)
+# extends: profile:<name>                 # optional loader directive: deep-merge a bundled profile (lists REPLACE)
 
 prod_local_downloads:
   # Binary: a pinned release ({ version }) OR a branch build ({ branch, repo_owner }).

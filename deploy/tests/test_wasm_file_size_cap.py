@@ -83,7 +83,7 @@ class TestShippedProfiles:
         import yaml
 
         offenders = []
-        for path in glob.glob("deploy/manifests/profiles/*.yaml"):
+        for path in glob.glob("deploy/saorsa_deploy/resources/profiles/*.yaml"):
             with open(path) as fh:
                 doc = yaml.safe_load(fh) or {}
             clients = (doc.get("testnet") or {}).get("clients") or {}

@@ -1972,7 +1972,7 @@ wheels = [
 
 [[package]]
 name = "saorsa-db"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "db" }
 dependencies = [
     { name = "alembic" },
@@ -1993,7 +1993,7 @@ requires-dist = [
 
 [[package]]
 name = "saorsa-deploy"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "deploy" }
 dependencies = [
     { name = "boto3" },
@@ -2022,7 +2022,7 @@ requires-dist = [
 
 [[package]]
 name = "saorsa-deploy-mcp"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "mcp" }
 dependencies = [
     { name = "mcp", extra = ["cli"] },
@@ -2039,7 +2039,7 @@ requires-dist = [
 
 [[package]]
 name = "saorsa-web"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "web" }
 dependencies = [
     { name = "flask" },

@@ -20,12 +20,14 @@ Generate a declarative **YAML manifest** that deploys a saorsa testnet end-to-en
 
 Write **one** manifest to the git-ignored `deploy/manifests/runs/<NAME>.yaml` (e.g.
 `deploy/manifests/runs/STG-05.yaml`) — concrete run manifests are not committed (the
-committed profiles live in `deploy/manifests/profiles/`). No separate destroy file —
+reusable profiles ship inside the saorsa-deploy wheel; list them with
+`saorsa-deploy deployments config profiles`). No separate destroy file —
 `saorsa-deploy deployments down --config <file>` derives the teardown sequence from the
 same manifest.
 
-If a suitable base profile already exists under `deploy/manifests/profiles/` (e.g.
-`staging.yaml`), prefer `extends:` it and override only what changes
+If a suitable base profile already exists (check
+`saorsa-deploy deployments config profiles`, e.g. `staging`), prefer
+`extends: profile:<name>` and override only what changes
 (name, purpose, binaries). That is the whole point — reuse the shape, edit the run.
 
 After writing, **do not run it**. Validate it (`saorsa-deploy deployments config validate
@@ -100,8 +102,11 @@ to a manifest field — see the schema in `deploy/README.md` §"Declarative mani
 
 ## Reuse mechanisms (mention to the user)
 
-- `extends: ../profiles/<base>.yaml` — deep-merge a base; **lists replace** (redefine
-  `clients` to swap it wholesale). Path is relative to the run manifest in `runs/`.
+- `extends: profile:<name>` — deep-merge one of the profiles bundled with the tool
+  (`saorsa-deploy deployments config profiles` lists them); **lists replace** (redefine
+  `clients` to swap it wholesale). Resolved from the installed package, so it works
+  wherever the run manifest lives. A relative path still works for a base manifest of
+  your own.
 - `saorsa-deploy deployments up --config <file> --set testnet.nodes.nat_percent=0` — one-off override.
 - `saorsa-deploy deployments up --config <file> --name STG-09` — reuse a manifest under a new name.
 

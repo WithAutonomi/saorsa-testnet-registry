@@ -3,8 +3,10 @@
 Resolution order for ``load_manifest``:
 
 1. Read the YAML file.
-2. Resolve ``extends:`` (a path, relative to the file) by deep-merging the base
-   under the child. Bases may themselves ``extends:`` another file.
+2. Resolve ``extends:`` by deep-merging the base under the child. The value is
+   either ``profile:<name>`` — one of the profiles bundled in the wheel under
+   ``saorsa_deploy/resources/profiles/`` — or a path relative to the file.
+   Bases may themselves ``extends:`` another manifest.
 3. Apply ``--set dotted.key=value`` overrides.
 4. Apply a ``--name`` override.
 5. Validate into a :class:`~saorsa_deploy.config.models.Manifest`.
@@ -22,6 +24,7 @@ from typing import Any
 import yaml
 
 from saorsa_deploy.config.models import Manifest
+from saorsa_deploy.resources import get_resources_dir
 
 
 class ManifestError(Exception):
@@ -55,6 +58,49 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+PROFILE_PREFIX = "profile:"
+
+
+def profiles_dir() -> Path:
+    """Return the directory of profiles bundled in this version of the package."""
+    return get_resources_dir() / "profiles"
+
+
+def list_profiles() -> list[str]:
+    """Return the bundled profile names (no directory, no extension), sorted."""
+    directory = profiles_dir()
+    if not directory.is_dir():
+        return []
+    return sorted(p.stem for p in directory.glob("*.yaml"))
+
+
+def _resolve_profile(name: str) -> Path:
+    """Resolve ``profile:<name>`` to a bundled profile path.
+
+    The name is bare on purpose: the point of the form is that a run manifest
+    living anywhere — including outside the checkout, which is where the antops
+    runner writes it — reaches the profiles that ship with the pinned wheel. A
+    value with a separator in it would be a path into the package, so it is
+    refused rather than normalised.
+    """
+    if not name:
+        raise ManifestError(
+            f"`extends: {PROFILE_PREFIX}` needs a profile name; "
+            f"available profiles: {', '.join(list_profiles())}"
+        )
+    if "/" in name or "\\" in name or ".." in name or name != Path(name).name:
+        raise ManifestError(
+            f"`extends: {PROFILE_PREFIX}{name}` must be a bare profile name "
+            "(no directory, no extension)"
+        )
+    path = profiles_dir() / f"{name}.yaml"
+    if not path.is_file():
+        raise ManifestError(
+            f"unknown profile '{name}'; available profiles: {', '.join(list_profiles())}"
+        )
+    return path
+
+
 def _resolve_extends(data: dict, base_dir: Path, _seen: set[Path]) -> dict:
     """Pop ``extends`` and deep-merge the (recursively-resolved) base under ``data``."""
     extends = data.pop("extends", None)
@@ -63,7 +109,10 @@ def _resolve_extends(data: dict, base_dir: Path, _seen: set[Path]) -> dict:
     if not isinstance(extends, str):
         raise ManifestError("`extends` must be a string path to another manifest")
 
-    base_path = (base_dir / extends).resolve()
+    if extends.startswith(PROFILE_PREFIX):
+        base_path = _resolve_profile(extends[len(PROFILE_PREFIX) :].strip()).resolve()
+    else:
+        base_path = (base_dir / extends).resolve()
     if base_path in _seen:
         chain = " -> ".join(str(p) for p in _seen) + f" -> {base_path}"
         raise ManifestError(f"circular `extends` chain: {chain}")

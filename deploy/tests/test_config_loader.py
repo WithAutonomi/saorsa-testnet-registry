@@ -4,7 +4,13 @@ import textwrap
 
 import pytest
 
-from saorsa_deploy.config import ManifestError, load_manifest, merge_manifest_dict
+from saorsa_deploy.config import (
+    ManifestError,
+    list_profiles,
+    load_manifest,
+    merge_manifest_dict,
+    profiles_dir,
+)
 from saorsa_deploy.config.models import (
     DEFAULT_LOG_LEVEL,
     VALID_LOG_LEVELS,
@@ -444,3 +450,101 @@ def test_keep_on_destroy_on_extension(tmp_path):
     m = load_manifest(_write(tmp_path, "ext.yaml", body))
     assert m.extension.elastic.keep_on_destroy is True
     assert m.extension.monitoring.keep_on_destroy is True
+
+
+# --------------------------------------------------------------------------- #
+# extends: profile:<name> — the profiles bundled in the wheel
+# --------------------------------------------------------------------------- #
+# Unindented on purpose: it is concatenated after an `extends:` line, and
+# ``_write``'s dedent would then leave the rest of the body indented.
+CHILD_OF_SMALL = """\
+name: VERIFY-V2-1625
+purpose: "profile: resolution"
+testnet:
+  binaries:
+    ant_node: { version: "0.21.0" }
+    ant:      { version: "0.3.11" }
+  nodes:
+    nat_percent: 0
+"""
+
+
+def test_profile_prefix_matches_the_equivalent_relative_path(tmp_path):
+    """`profile:small` merges exactly as pointing at the same file by path does.
+
+    Written as an equality against the relative form because the whole value of
+    the prefix is that it changes WHERE the base is found, nothing about how it
+    is merged.
+    """
+    by_prefix = merge_manifest_dict(
+        _write(tmp_path, "prefix.yaml", "extends: profile:small\n" + CHILD_OF_SMALL)
+    )
+    by_path = merge_manifest_dict(
+        _write(
+            tmp_path,
+            "relative.yaml",
+            f"extends: {profiles_dir() / 'small.yaml'}\n" + CHILD_OF_SMALL,
+        )
+    )
+    assert by_prefix == by_path
+    # and it is really the profile's content, not an empty merge
+    assert by_prefix["testnet"]["nodes"]["per_vm"] == 5
+    assert by_prefix["testnet"]["nodes"]["nat_percent"] == 0  # child override
+
+
+def test_profile_resolves_from_a_directory_outside_the_checkout(tmp_path):
+    """The point of the form: a manifest anywhere reaches the bundled profile."""
+    manifest = _write(tmp_path, "run.yaml", "extends: profile:small\n" + CHILD_OF_SMALL)
+    m = load_manifest(manifest)
+    assert m.name == "VERIFY-V2-1625"
+    assert m.testnet.nodes.per_vm == 5
+
+
+def test_unknown_profile_lists_the_available_names(tmp_path):
+    manifest = _write(tmp_path, "run.yaml", "extends: profile:nope\n" + CHILD_OF_SMALL)
+    with pytest.raises(ManifestError) as excinfo:
+        load_manifest(manifest)
+    message = str(excinfo.value)
+    assert "unknown profile 'nope'" in message
+    for name in ("small", "staging", "reference"):
+        assert name in message
+
+
+@pytest.mark.parametrize("value", ["profile:../x", "profile:a/b", "profile:", "profile:.."])
+def test_profile_name_must_be_bare(tmp_path, value):
+    # quoted: a bare `extends: profile:` is not even valid YAML
+    manifest = _write(tmp_path, "run.yaml", f'extends: "{value}"\n' + CHILD_OF_SMALL)
+    with pytest.raises(ManifestError, match="profile name"):
+        load_manifest(manifest)
+
+
+def test_relative_extends_still_works_alongside_the_prefix(tmp_path):
+    _write(tmp_path, "base.yaml", BASE)
+    child = """\
+        extends: base.yaml
+        name: PROD-UL-11
+    """
+    m = load_manifest(_write(tmp_path, "child.yaml", child))
+    assert m.prod_uploaders.monitoring_volume_size == 50
+
+
+def test_profile_extending_another_profile(tmp_path):
+    """A base that is itself `profile:<other>` resolves through both levels."""
+    middle = tmp_path / "middle.yaml"
+    middle.write_text("extends: profile:small\ntestnet:\n  nodes:\n    per_vm: 9\n")
+    child = _write(
+        tmp_path,
+        "run.yaml",
+        f"extends: {middle}\n" + CHILD_OF_SMALL,
+    )
+    m = load_manifest(child)
+    assert m.testnet.nodes.per_vm == 9  # the middle layer's override
+    assert m.testnet.bootstraps.count == 7  # inherited from the profile
+
+
+def test_every_bundled_profile_is_listed_and_readable():
+    names = list_profiles()
+    assert "staging" in names and "small" in names and "reference" in names
+    assert names == sorted(names)
+    for name in names:
+        assert (profiles_dir() / f"{name}.yaml").is_file()
