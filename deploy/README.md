@@ -1447,8 +1447,8 @@ which source it read. Preferred rather than merely a fallback because a
 selection that was `--replace`d since says nothing about the rounds in hand, and
 because the S3 object is deleted by the deployment's own `clients destroy`.
 
-Eight sections, fixed format: **1 hot files** (the selection, fetched from S3 at
-report time, and the rounds that read each file), **2 per round** (boundary,
+Eight sections, fixed format: **1 hot files** (the selection and the rounds that
+read each file), **2 per round** (boundary,
 instances reporting vs expected, completion, p50/p95, failures by kind, and a
 flag on a round whose instances started more than 10 s apart), **3 per region**,
 **4 per chunk**, **5 stalls**, **6 refusals**, **7 bootstrap load** and **8
