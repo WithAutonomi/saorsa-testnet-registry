@@ -8,6 +8,7 @@ that saorsa-deploy can still function as a standalone CLI.
 import logging
 import os
 from datetime import datetime
+from importlib.metadata import version
 
 from saorsa_db.db import get_session_factory
 from saorsa_db.models import Deployment, DeploymentStatus
@@ -22,6 +23,11 @@ from saorsa_db.repositories import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Whether the "could not read the tool version" warning has already been
+#: emitted. One warning per process: a `deployments up` run creates one row, but
+#: the same import is live for every recording call that follows it.
+_TOOL_VERSION_WARNED = False
 
 
 def _try_get_repository() -> DeploymentRepository | None:
@@ -65,6 +71,29 @@ def get_file_pool_repository() -> ProdFilePoolRepository | None:
         return None
 
 
+def _tool_version() -> str | None:
+    """The running `saorsa-deploy` version, or None if it cannot be read.
+
+    antops pins a tool version per job, so the row has to be able to name the
+    version that started the run. There is no sane fallback for a tree whose
+    metadata is missing — a guess would be worse than a null, because a wrong
+    version is read as a fact — so the column is left null and the reason is
+    warned about once per process.
+    """
+    global _TOOL_VERSION_WARNED
+    try:
+        return version("saorsa-deploy")
+    except Exception as exc:  # noqa: BLE001 - any metadata failure is the same answer
+        if not _TOOL_VERSION_WARNED:
+            _TOOL_VERSION_WARNED = True
+            logger.warning(
+                "Could not read the saorsa-deploy version (%s); recording the "
+                "deployment without one",
+                exc,
+            )
+        return None
+
+
 def record_deployment_created(
     name: str,
     deploy_args: dict,
@@ -74,7 +103,15 @@ def record_deployment_created(
     if repo is None:
         return None
     try:
-        deployment = repo.create(name=name, deploy_args=deploy_args)
+        # Written at creation only. Every command that re-provisions, resumes or
+        # records against an existing row goes through `record_event` and friends,
+        # which never touch this column, so the row keeps naming the version that
+        # STARTED the run rather than the last one to touch it.
+        deployment = repo.create(
+            name=name,
+            deploy_args=deploy_args,
+            saorsa_deploy_version=_tool_version(),
+        )
         logger.info("Recorded deployment '%s' (id=%d) in registry", name, deployment.id)
         return deployment.id
     except Exception:

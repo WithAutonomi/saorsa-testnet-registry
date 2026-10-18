@@ -646,6 +646,11 @@ class RunMetrics:
     window_label: str
     window_start: datetime | None = None
     window_end: datetime | None = None
+    #: The `saorsa-deploy` version that created the run's registry row.
+    #: Reported in the header and nothing else: two runs produced by different
+    #: tool versions are still compared, because the tool version is context
+    #: for reading a difference, not itself a gate.
+    saorsa_deploy_version: str | None = None
     upload_records: list = field(default_factory=list)
     download_records: list = field(default_factory=list)
     host_metrics: list[dict] = field(default_factory=list)
@@ -1222,6 +1227,7 @@ def compare_runs(
             "window_start": _iso(candidate.window_start),
             "window_end": _iso(candidate.window_end),
             "activity_coverage": cand_coverage,
+            "saorsa_deploy_version": candidate.saorsa_deploy_version,
         },
         "new_baseline": new_baseline,
         "baseline": (
@@ -1231,6 +1237,7 @@ def compare_runs(
                 "window_start": None,
                 "window_end": None,
                 "activity_coverage": None,
+                "saorsa_deploy_version": None,
             }
             if new_baseline
             else {
@@ -1239,6 +1246,7 @@ def compare_runs(
                 "window_start": _iso(baseline.window_start),
                 "window_end": _iso(baseline.window_end),
                 "activity_coverage": base_coverage,
+                "saorsa_deploy_version": baseline.saorsa_deploy_version,
             }
         ),
         "warnings": warnings,

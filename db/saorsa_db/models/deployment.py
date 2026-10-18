@@ -41,6 +41,15 @@ class Deployment(Base):
     )
     workflow_run_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     deploy_args: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # The `saorsa-deploy` version that CREATED this row, written once at
+    # creation and never updated: antops pins a tool version per job, so the
+    # question a reader has months later is which version started the run, not
+    # which one last touched it. Nullable because every row predating the
+    # column has no answer, and because the web app creates rows too and knows
+    # nothing about the CLI's version.
+    saorsa_deploy_version: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
     # Reference to the Slack message created by `deployments slack-post` via
     # the Web API (chat.postMessage). Stored so `deployments record-results
     # --update-slack` can post a results summary as a threaded reply. Both are

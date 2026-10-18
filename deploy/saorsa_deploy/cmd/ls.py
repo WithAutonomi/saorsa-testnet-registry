@@ -128,6 +128,14 @@ def _derive_node_version(deploy_args: dict) -> str:
     return "N/A"
 
 
+def _derive_tool_version(deployment) -> str:
+    # The `saorsa-deploy` version that created the row. `-` rather than `N/A`:
+    # unlike the node version there is no kind for which a tool version is
+    # non-applicable, so a blank cell only ever means "created before the
+    # column existed" (or by something other than the CLI).
+    return getattr(deployment, "saorsa_deploy_version", None) or "-"
+
+
 def _filter_by_name(deployments: list, substring: str) -> list:
     needle = substring.lower()
     return [d for d in deployments if needle in d.name.lower()]
@@ -197,6 +205,7 @@ def cmd_ls(args):
     table.add_column("Status")
     table.add_column("Nodes", justify="right")
     table.add_column("Node Version")
+    table.add_column("Tool")
     table.add_column("Has Results")
     table.add_column("Created")
 
@@ -211,6 +220,7 @@ def cmd_ls(args):
             status_cell,
             _derive_node_count(d.deploy_args),
             _derive_node_version(d.deploy_args),
+            _derive_tool_version(d),
             has_results,
             d.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         )
