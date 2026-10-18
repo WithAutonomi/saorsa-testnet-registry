@@ -17,6 +17,14 @@ def _daily_at_arg(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+#: Help for ``--name`` on the `clients` MANIFEST commands. A `kind: clients`
+#: manifest's `name:` is the extension's, not the deployment's — the deployment
+#: is the manifest's `deployment:` key — so the shared wording would be wrong.
+_CLIENTS_NAME_HELP = (
+    "Override the manifest's EXTENSION name (`name:`). The deployment comes "
+    "from the manifest's `deployment:` key and cannot be overridden here."
+)
+
 #: Help for the ``--extension`` flag shared by the `clients` lifecycle commands.
 _CLIENT_EXTENSION_HELP = (
     "Scope this command to a client EXTENSION of the deployment — a client "
@@ -27,8 +35,14 @@ _CLIENT_EXTENSION_HELP = (
 )
 
 
-def _add_manifest_args(p):
-    """Shared --config/--set/--name args for the manifest-driven commands."""
+def _add_manifest_args(p, name_help: str = "Override the manifest's deployment name."):
+    """Shared --config/--set/--name args for the manifest-driven commands.
+
+    ``name_help`` exists because a manifest's `name:` is not always a deployment
+    name: on a `kind: clients` manifest it is the EXTENSION's name, and the
+    deployment is a separate `deployment:` key. One help string for both would
+    describe the wrong thing for one of them.
+    """
     p.add_argument(
         "--config",
         type=str,
@@ -47,7 +61,7 @@ def _add_manifest_args(p):
         "--name",
         type=str,
         default=None,
-        help="Override the manifest's deployment name.",
+        help=name_help,
     )
 
 
@@ -1021,12 +1035,12 @@ def main(argv=None):
         "show",
         help="Print the fully-merged, validated client-extension manifest as YAML.",
     )
-    _add_manifest_args(clients_config_show_parser)
+    _add_manifest_args(clients_config_show_parser, name_help=_CLIENTS_NAME_HELP)
     clients_config_validate_parser = clients_config_subparsers.add_parser(
         "validate",
         help="Validate a client-extension manifest; exit 2 if invalid.",
     )
-    _add_manifest_args(clients_config_validate_parser)
+    _add_manifest_args(clients_config_validate_parser, name_help=_CLIENTS_NAME_HELP)
 
     # clients plan
     clients_plan_parser = clients_subparsers.add_parser(
@@ -1037,7 +1051,7 @@ def main(argv=None):
             "Does not need the deployment to exist."
         ),
     )
-    _add_manifest_args(clients_plan_parser)
+    _add_manifest_args(clients_plan_parser, name_help=_CLIENTS_NAME_HELP)
 
     # clients up
     clients_up_parser = clients_subparsers.add_parser(
@@ -1047,7 +1061,7 @@ def main(argv=None):
             "deployment: clients infra -> provision -> start. Resumable."
         ),
     )
-    _add_manifest_args(clients_up_parser)
+    _add_manifest_args(clients_up_parser, name_help=_CLIENTS_NAME_HELP)
     clients_up_parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -1091,14 +1105,16 @@ def main(argv=None):
         "--name",
         type=str,
         default=None,
-        help="Deployment name. With --extension, destroys by state; with "
-        "--config, overrides the manifest's extension name.",
+        help="Deployment name, paired with --extension to destroy from S3 "
+        "state. REFUSED with --config: the manifest already names both the "
+        "deployment and the extension.",
     )
     clients_down_parser.add_argument(
         "--extension",
         type=str,
         default=None,
-        help="Extension name to destroy (with --name, instead of --config).",
+        help="Extension name to destroy, paired with --name instead of "
+        "--config. Refused with --config.",
     )
     clients_down_parser.add_argument(
         "--ssh-key-path",

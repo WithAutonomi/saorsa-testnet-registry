@@ -337,6 +337,107 @@ class TestClientIndexContinuation:
         _tiers(monkeypatch, own=None, extensions={})
         assert client_extension.highest_client_indexes("DEV-01") == {}
 
+    def test_a_failed_extension_scan_raises_rather_than_allocating_blind(self, monkeypatch):
+        # The collision this function exists to prevent: with the scan swallowed,
+        # the deployment's own index 1 is the only floor, and a second extension
+        # gets index 2 — which the FIRST extension's uploader already owns, and
+        # whose address object every flush then overwrites whole.
+        import saorsa_deploy.state as state
+
+        monkeypatch.setattr(
+            state, "load_client_state", lambda name, extension=None: {"clients": []}
+        )
+
+        def boom(name):
+            raise OSError("s3 unreachable")
+
+        monkeypatch.setattr(state, "list_client_extensions", boom)
+        with pytest.raises(OSError, match="s3 unreachable"):
+            client_extension.highest_client_indexes("DEV-01")
+
+    def test_an_unreadable_extension_state_raises(self, monkeypatch):
+        import saorsa_deploy.state as state
+
+        def load(name, extension=None):
+            if extension is None:
+                return {"clients": []}
+            raise OSError("s3 unreachable")
+
+        monkeypatch.setattr(state, "load_client_state", load)
+        monkeypatch.setattr(state, "list_client_extensions", lambda name: ["first"])
+        with pytest.raises(OSError, match="s3 unreachable"):
+            client_extension.highest_client_indexes("DEV-01")
+
+    def test_an_extension_torn_down_mid_scan_holds_no_index(self, monkeypatch):
+        # RuntimeError is the missing-key case only: the key went away between
+        # the list and the get, so that extension is gone and owns nothing.
+        import saorsa_deploy.state as state
+
+        def load(name, extension=None):
+            if extension is None:
+                return {"clients": [{"role": "download", "client_index": 1}]}
+            raise RuntimeError("No client state found")
+
+        monkeypatch.setattr(state, "load_client_state", load)
+        monkeypatch.setattr(state, "list_client_extensions", lambda name: ["gone"])
+        assert client_extension.highest_client_indexes("DEV-01") == {"download": 1}
+
+    def test_a_non_runtime_failure_on_the_own_tier_raises(self, monkeypatch):
+        import saorsa_deploy.state as state
+
+        def load(name, extension=None):
+            raise OSError("credentials")
+
+        monkeypatch.setattr(state, "load_client_state", load)
+        monkeypatch.setattr(state, "list_client_extensions", lambda name: [])
+        with pytest.raises(OSError, match="credentials"):
+            client_extension.highest_client_indexes("DEV-01")
+
+    def test_infra_exits_2_rather_than_allocate_from_a_failed_scan(self, monkeypatch):
+        from saorsa_deploy.cmd import infra_clients
+
+        def boom(name, exclude=None):
+            raise OSError("s3 unreachable")
+
+        monkeypatch.setattr(infra_clients, "highest_client_indexes", boom)
+        monkeypatch.setattr(
+            infra_clients,
+            "save_client_state",
+            lambda *a, **k: pytest.fail("saved state after a failed scan"),
+        )
+        monkeypatch.setattr(
+            infra_clients,
+            "execute_terraform_runs",
+            lambda configs: pytest.fail("created VMs after a failed scan"),
+        )
+        with pytest.raises(SystemExit) as exc:
+            infra_clients.cmd_infra_clients(
+                SimpleNamespace(
+                    name="DEV-01",
+                    extension="browsers",
+                    uploader=[],
+                    downloader=["digital_ocean:lon1"],
+                    wasm_uploader=[],
+                    wasm_downloader=[],
+                    pointer=[],
+                    force=False,
+                )
+            )
+        assert exc.value.code == 2
+
+    def test_reporting_tiers_stay_tolerant_of_a_failed_scan(self, monkeypatch):
+        # The opposite choice to the index scan, and deliberately so: a tier
+        # missing from a report costs an annotation, where one missing from the
+        # index scan costs a live uploader its address list.
+        import saorsa_deploy.state as state
+
+        monkeypatch.setattr(
+            state,
+            "list_client_extensions",
+            lambda name: (_ for _ in ()).throw(OSError("s3 unreachable")),
+        )
+        assert client_extension.client_extension_tiers("DEV-01") == []
+
     def test_infra_allocates_continued_indexes(self, monkeypatch):
         from saorsa_deploy.cmd import infra_clients
 
@@ -401,6 +502,38 @@ class TestTeardownGuard:
         out = capsys.readouterr().out
         assert "browsers" in out and "extra" in out
         assert "clients down --name DEV-01 --extension browsers" in out
+
+    def test_a_failed_scan_also_refuses(self, monkeypatch, capsys):
+        # "Could not look" is not "nothing there", and what the guard protects
+        # (an extension's VMs, and the address pool its downloaders read) is
+        # not recoverable once the teardown has run.
+        from rich.console import Console
+
+        import saorsa_deploy.state as state
+
+        monkeypatch.setattr(
+            state,
+            "list_client_extensions",
+            lambda name: (_ for _ in ()).throw(OSError("s3 unreachable")),
+        )
+        with pytest.raises(SystemExit) as exc:
+            client_extension.refuse_while_client_extensions_exist(
+                "DEV-01", Console(width=200), "tear down"
+            )
+        assert exc.value.code == 2
+        out = capsys.readouterr().out
+        assert "could not determine" in out
+        assert "clients ls --name DEV-01" in out
+
+    def test_an_empty_prefix_is_not_a_failure(self, monkeypatch):
+        from rich.console import Console
+
+        import saorsa_deploy.state as state
+
+        monkeypatch.setattr(state, "list_client_extensions", lambda name: [])
+        client_extension.refuse_while_client_extensions_exist(
+            "DEV-01", Console(), "tear down"
+        )  # does not raise
 
     def test_no_extensions_is_a_no_op(self, monkeypatch):
         _patch_extension_names(monkeypatch, [])
@@ -505,6 +638,9 @@ class TestDestroyLeavesTheAddressPool:
                 "saorsa_deploy.cmd.destroy_clients.delete_client_addresses_prefix"
             ) as p_delete_addrs,
             patch("saorsa_deploy.cmd.destroy_clients.run_terraform_destroy") as p_destroy,
+            patch(
+                "saorsa_deploy.cmd.destroy_clients.refuse_while_client_extensions_exist"
+            ) as p_guard,
         ):
             p_load.return_value = {
                 "name": "DEV-01",
@@ -534,7 +670,10 @@ class TestDestroyLeavesTheAddressPool:
                 )
             )
             return SimpleNamespace(
-                destroy=p_destroy, delete_addrs=p_delete_addrs, delete_state=p_delete_state
+                destroy=p_destroy,
+                delete_addrs=p_delete_addrs,
+                delete_state=p_delete_state,
+                guard=p_guard,
             )
 
     def test_extension_destroy_never_deletes_the_address_prefix(self):
@@ -555,6 +694,44 @@ class TestDestroyLeavesTheAddressPool:
         result = self._run_destroy(None)
         result.delete_addrs.assert_called_once_with("DEV-01")
         assert result.destroy.call_args.args[0].variables["name"] == "DEV-01"
+
+    def test_the_deployments_own_destroy_consults_the_guard(self):
+        # It is the path that wipes the pool an extension's downloaders read,
+        # and the one an operator is most likely to run by hand mid-run.
+        result = self._run_destroy(None)
+        assert result.guard.call_count == 1
+        assert result.guard.call_args.args[0] == "DEV-01"
+
+    def test_an_extensions_own_destroy_is_never_guarded(self):
+        # It is the way out of the guard; guarding it would be a deadlock.
+        result = self._run_destroy("browsers")
+        result.guard.assert_not_called()
+
+    def test_the_deployments_own_destroy_stops_when_an_extension_stands(self, monkeypatch):
+        from saorsa_deploy.cmd import destroy_clients as mod
+
+        def refuse(name, console, what):
+            raise SystemExit(2)
+
+        monkeypatch.setattr(mod, "refuse_while_client_extensions_exist", refuse)
+        monkeypatch.setattr(
+            mod,
+            "delete_client_addresses_prefix",
+            lambda name: pytest.fail("wiped the pool under a live extension"),
+        )
+        with pytest.raises(SystemExit) as exc:
+            mod.cmd_destroy_clients(
+                SimpleNamespace(
+                    name="DEV-01",
+                    extension=None,
+                    force=True,
+                    wallet_secret_key=None,
+                    skip_drain_failures=False,
+                    ssh_key_path="/k",
+                    skip_stop_services=True,
+                )
+            )
+        assert exc.value.code == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -782,3 +959,138 @@ class TestBinaryReuse:
         # The WASM owner/branch fall back to the native pair, exactly as
         # `_resolve_wasm_bundle` does when only --branch-name is given.
         assert written["client_binaries"]["ant_wasm"]["repo_owner"] == "myorg"
+
+
+# --------------------------------------------------------------------------- #
+# `clients down`: --name means the deployment, and only on the state path
+# --------------------------------------------------------------------------- #
+class TestDownFlagCombinations:
+    def _down(self, monkeypatch, **args):
+        from saorsa_deploy.cmd import clients_cmds as mod
+
+        monkeypatch.setattr(mod, "_execute", lambda *a, **k: pytest.fail("ran a step"))
+        defaults = {
+            "config": None,
+            "set": [],
+            "name": None,
+            "extension": None,
+            "ssh_key_path": None,
+            "dry_run": True,
+            "skip_drain_failures": False,
+        }
+        defaults.update(args)
+        return mod.cmd_clients_down(SimpleNamespace(**defaults))
+
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            ({"name": "DEV-01"}, "--name"),
+            ({"extension": "browsers"}, "--extension"),
+            ({"name": "DEV-01", "extension": "browsers"}, "--name and --extension"),
+        ],
+    )
+    def test_name_and_extension_are_refused_with_config(
+        self, monkeypatch, tmp_path, capsys, extra, expected
+    ):
+        # `--name` is the DEPLOYMENT on the state path but overrides the
+        # manifest's `name:` — the EXTENSION — with --config. Typed out of
+        # habit it would aim the teardown at an extension called "DEV-01",
+        # report "Nothing to destroy", and leave the real cohort billing.
+        path = _write(tmp_path, "ext.yaml", EXTENSION)
+        with pytest.raises(SystemExit) as exc:
+            self._down(monkeypatch, config=str(path), **extra)
+        assert exc.value.code == 2
+        out = capsys.readouterr().out
+        assert expected in out
+        assert "cannot be combined with --config" in out
+
+    def test_config_alone_is_accepted(self, monkeypatch, tmp_path, capsys):
+        path = _write(tmp_path, "ext.yaml", EXTENSION)
+        self._down(monkeypatch, config=str(path))
+        assert "extra-downloaders (extension of DEV-01)" in capsys.readouterr().out
+
+    def test_name_and_extension_without_config_destroy_from_state(self, monkeypatch, capsys):
+        from saorsa_deploy.cmd import clients_cmds as mod
+
+        monkeypatch.setattr(
+            mod, "load_client_state", lambda name, ext: {"clients": [], "ssh_key_path": "/k"}
+        )
+        self._down(monkeypatch, name="DEV-01", extension="browsers")
+        out = capsys.readouterr().out
+        assert "browsers (extension of DEV-01)" in out
+
+    def test_name_alone_is_refused(self, monkeypatch, capsys):
+        with pytest.raises(SystemExit) as exc:
+            self._down(monkeypatch, name="DEV-01")
+        assert exc.value.code == 2
+        assert "--name <deployment> --extension <name>" in capsys.readouterr().out
+
+
+def test_clients_manifest_name_help_describes_the_extension():
+    # `--name` on a `kind: clients` manifest command overrides the EXTENSION
+    # name; the shared wording ("deployment name") describes the wrong thing.
+    from saorsa_deploy.main import _CLIENTS_NAME_HELP
+
+    assert "EXTENSION" in _CLIENTS_NAME_HELP
+    assert "deployment" in _CLIENTS_NAME_HELP
+
+
+class TestPlanIsReadOnlyAndNeverRaises:
+    """`clients plan` is advertised as working without the deployment being up.
+
+    So neither a missing deployment nor an unreachable bucket may raise at the
+    operator: each is a note on the plan, and the indexes shown are flagged as
+    probably wrong. `clients up` makes the opposite choice on the same failures.
+    """
+
+    def _note(self, monkeypatch, loader):
+        from saorsa_deploy.cmd import clients_cmds as mod
+
+        monkeypatch.setattr(mod, "load_deployment_state", loader)
+        manifest = SimpleNamespace(deployment="DEV-01", name="browsers")
+        return mod._base_indexes_or_note(manifest)
+
+    def test_missing_deployment_is_a_note(self, monkeypatch):
+        base, note = self._note(
+            monkeypatch, lambda name: (_ for _ in ()).throw(RuntimeError("no state"))
+        )
+        assert base is None
+        assert "no state for deployment 'DEV-01'" in note
+
+    def test_unreachable_state_is_a_note(self, monkeypatch):
+        base, note = self._note(
+            monkeypatch, lambda name: (_ for _ in ()).throw(OSError("credentials"))
+        )
+        assert base is None
+        assert "could not be read" in note
+        assert "probably wrong" in note
+
+    def test_a_failed_index_scan_is_a_note(self, monkeypatch):
+        from saorsa_deploy.cmd import clients_cmds as mod
+
+        monkeypatch.setattr(mod, "load_deployment_state", lambda name: {"name": name})
+        monkeypatch.setattr(
+            mod,
+            "highest_client_indexes",
+            lambda name, exclude=None: (_ for _ in ()).throw(OSError("s3 unreachable")),
+        )
+        base, note = mod._base_indexes_or_note(SimpleNamespace(deployment="DEV-01", name="b"))
+        assert base is None
+        assert "refuses rather than allocate" in note
+
+    def test_up_refuses_where_plan_only_notes(self, monkeypatch, capsys):
+        from rich.console import Console
+
+        from saorsa_deploy.cmd import clients_cmds as mod
+
+        monkeypatch.setattr(
+            mod,
+            "highest_client_indexes",
+            lambda name, exclude=None: (_ for _ in ()).throw(OSError("s3 unreachable")),
+        )
+        with pytest.raises(SystemExit) as exc:
+            mod._base_indexes_or_exit(
+                SimpleNamespace(deployment="DEV-01", name="b"), Console(width=200)
+            )
+        assert exc.value.code == 2
+        assert "would erase its S3 address list" in capsys.readouterr().out

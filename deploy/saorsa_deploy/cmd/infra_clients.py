@@ -618,9 +618,22 @@ def cmd_infra_clients(args):
     # each flush is a whole-object PUT. Two uploaders sharing an index silently
     # erase each other's address list on every flush. The deployment's own tier
     # keeps starting at 1, so nothing about it changes.
-    base_indexes: dict[str, int] = (
-        highest_client_indexes(args.name, exclude=extension) if extension else {}
-    )
+    base_indexes: dict[str, int] = {}
+    if extension:
+        try:
+            base_indexes = highest_client_indexes(args.name, exclude=extension)
+        except Exception as e:  # noqa: BLE001 — any scan failure must stop the run
+            # Allocating from an incomplete scan would hand this tier an index a
+            # live uploader already owns, and each flush of the loser's address
+            # object is a whole-object PUT. Stop before any VM is created.
+            console.print(
+                f"[bold red]Error:[/bold red] could not determine the client "
+                f"indexes already in use for '{args.name}': {e}. Refusing to "
+                f"allocate, because an index that collides with a live "
+                f"uploader's would erase its S3 address list on every flush. "
+                f"Retry once the registry's S3 state is reachable."
+            )
+            sys.exit(2)
 
     client_specs: list[dict] = []
     try:

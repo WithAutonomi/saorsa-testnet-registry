@@ -11,7 +11,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
-from saorsa_deploy.client_extension import terraform_name
+from saorsa_deploy.client_extension import (
+    refuse_while_client_extensions_exist,
+    terraform_name,
+)
 from saorsa_deploy.client_roles import (
     ALL_CLIENT_ROLES,
     ROLE_DOWNLOAD,  # noqa: F401  (re-exported; used by callers and tests)
@@ -57,6 +60,15 @@ def cmd_destroy_clients(args):
     # at create time, so destroy has to resolve it the same way.
     tf_name = terraform_name(args.name, extension)
     scope = f"extension '{extension}' of '{args.name}'" if extension else f"'{args.name}'"
+
+    if extension is None:
+        # Destroying the deployment's OWN tier wipes `addresses/<deployment>/`
+        # below, and that pool is what an extension's downloaders read — so the
+        # same guard `deployments down` / `nodes destroy` / `bootstraps destroy`
+        # carry applies here. This is the path an operator is most likely to run
+        # by hand mid-run, which is exactly when an extension is standing.
+        # An extension's own destroy is never guarded: it is the way out.
+        refuse_while_client_extensions_exist(args.name, console, "destroy the clients of")
 
     console.print(f"[bold]Loading client state for {scope}...[/bold]")
     clients: list[dict] = []

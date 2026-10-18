@@ -315,10 +315,28 @@ a second NODE fleet. Example:
 - **`clients down` never deletes under `addresses/<deployment>/`** — the pool
   belongs to the deployment, and wiping it would empty a running deployment's
   download workload. Only the deployment's own `clients destroy` clears it.
-- **`deployments down` (both forms), `bootstraps destroy` and `nodes destroy`
-  refuse with exit 2 while any extension has state**, naming each and its
-  `clients down`; no flag overrides it. Checked before the state load, so the
-  orphan-tfstate paths are covered too.
+- **`deployments down` (both forms), `nodes destroy`, `bootstraps destroy` and
+  `clients destroy` WITHOUT `--extension` refuse with exit 2 while any extension
+  has state**, naming each and its `clients down`; no flag overrides it. Checked
+  before the state load, so the orphan-tfstate paths are covered too. The
+  un-extended `clients destroy` is in the list because it is the command that
+  wipes the address pool, and the one most likely to be run by hand mid-run; an
+  extension's own destroy is never guarded (it is the way out).
+- **A scan that cannot complete REFUSES, in the guard and in the index scan.**
+  "Could not look" is not "nothing there": a swallowed `list_client_extensions`
+  error would wipe a live cohort's pool, or hand a second extension an index a
+  live uploader owns. Only a MISSING key is tolerated (`RuntimeError` from
+  `load_client_state`, and only that). The reporting path
+  (`client_extension_tiers`) makes the opposite choice on purpose — a tier
+  missing from a report costs an annotation, not a run — and `clients plan`,
+  being read-only, prints the failure as a note on the plan and carries on.
+- **`clients down` refuses `--name`/`--extension` together with `--config`.**
+  `--name` is the deployment on the state path, but the shared manifest loader
+  makes it override the manifest's `name:` — the EXTENSION — so
+  `clients down --config DEV-01-browsers.yaml --name DEV-01` would aim at an
+  extension called "DEV-01", print "Nothing to destroy", and leave the cohort
+  billing. `_add_manifest_args` takes a `name_help` override for the same
+  reason.
 - `record-results` / `print-uploads` / `print-downloads` / `generate-inventory`
   walk every tier, so an extension's `client_kind` and `network_profile` are
   recorded and rendered like the deployment's own — a missed WASM extension

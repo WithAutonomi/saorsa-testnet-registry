@@ -113,7 +113,46 @@ def _base_indexes_or_note(manifest) -> tuple[dict[str, int] | None, str | None]:
             f"above start at 1. The real ones continue from the deployment's "
             f"own clients, and `clients up` refuses until that state exists."
         )
-    return highest_client_indexes(manifest.deployment, exclude=manifest.name), None
+    except Exception as e:  # noqa: BLE001 — a plan is read-only; say it is unsure
+        # Credentials or connectivity, not a missing key. `plan` is advertised
+        # as working without the deployment being up, so it says what it could
+        # not read instead of raising at the operator.
+        return None, (
+            f"NB the deployment's state could not be read ({e}) — the indexes "
+            f"above start at 1 and are probably wrong."
+        )
+    try:
+        return highest_client_indexes(manifest.deployment, exclude=manifest.name), None
+    except Exception as e:  # noqa: BLE001 — a plan is read-only; say it is unsure
+        # Only ever reached on the read-only paths (`plan`, `up --dry-run`).
+        # `up` itself refuses on the same failure rather than printing a plan it
+        # cannot stand behind; see `_base_indexes_or_exit`.
+        return None, (
+            f"NB the client indexes already in use could not be read ({e}) — "
+            f"the indexes above start at 1 and are probably wrong. `clients up` "
+            f"refuses rather than allocate from an incomplete scan."
+        )
+
+
+def _base_indexes_or_exit(manifest, console: Console) -> dict[str, int]:
+    """``client_index`` continuation for a run that is about to create VMs.
+
+    Unlike :func:`_base_indexes_or_note` this does not degrade: an incomplete
+    scan would print a plan whose indexes are not the ones `clients infra` will
+    allocate, and `clients infra` refuses on the same failure anyway — so fail
+    here, before the journal is touched.
+    """
+    try:
+        return highest_client_indexes(manifest.deployment, exclude=manifest.name)
+    except Exception as e:  # noqa: BLE001 — any scan failure must stop the run
+        console.print(
+            f"[bold red]Error:[/bold red] could not determine the client "
+            f"indexes already in use for '{manifest.deployment}': {e}. "
+            f"Refusing to continue, because an index that collides with a live "
+            f"uploader's would erase its S3 address list on every flush. Retry "
+            f"once the registry's S3 state is reachable."
+        )
+        sys.exit(2)
 
 
 def _print_vm_plan(console: Console, manifest, base_indexes, note: str | None) -> None:
@@ -167,6 +206,9 @@ def cmd_clients_up(args):
         return
 
     _require_deployment_state(manifest, console)
+    # Before the journal: a scan failure must not leave a journal entry (or an
+    # interactive resume prompt) behind a run that never started.
+    base_indexes = _base_indexes_or_exit(manifest, console)
 
     journal_key = journal_name(manifest.deployment, manifest.name)
     journal, resume_index = _resolve_step_journal(
@@ -175,7 +217,6 @@ def cmd_clients_up(args):
         steps,
         getattr(args, "resume", False),
     )
-    base_indexes = highest_client_indexes(manifest.deployment, exclude=manifest.name)
     _print_vm_plan(console, manifest, base_indexes, None)
     _print_plan(console, _plan_label(manifest), manifest.kind, steps, "Deploy", done=resume_index)
     console.print()
@@ -250,10 +291,36 @@ def cmd_clients_down(args):
     skip_drain_failures = getattr(args, "skip_drain_failures", False)
 
     if getattr(args, "config", None):
+        # `--name` means two different things on this command: the DEPLOYMENT on
+        # the state path below, but (through the shared manifest loader) an
+        # override of the manifest's own `name:` — the EXTENSION — here. So
+        # `clients down --config DEV-01-browsers.yaml --name DEV-01`, which an
+        # operator types out of habit, would aim the teardown at an extension
+        # called "DEV-01", report "Nothing to destroy", and leave the real
+        # cohort running and billing. Refuse rather than pick a reading.
+        conflicting = [
+            flag
+            for flag, value in (
+                ("--name", getattr(args, "name", None)),
+                ("--extension", getattr(args, "extension", None)),
+            )
+            if value
+        ]
+        if conflicting:
+            console.print(
+                f"[bold red]Error:[/bold red] {' and '.join(conflicting)} cannot "
+                f"be combined with --config — the manifest's `deployment:` and "
+                f"`name:` already say which extension to destroy, and --name "
+                f"would override the EXTENSION name, not the deployment. Drop "
+                f"it, or use --name <deployment> --extension <name> without "
+                f"--config."
+            )
+            sys.exit(2)
         manifest = _load_clients_manifest(args, console)
         deployment, extension = manifest.deployment, manifest.name
         steps = build_destroy_steps(manifest, skip_drain_failures=skip_drain_failures)
     elif getattr(args, "name", None) and getattr(args, "extension", None):
+        # No --config: --name is the deployment and --extension names the tier.
         deployment, extension = args.name, args.extension
         try:
             validate_extension_name(extension)

@@ -427,6 +427,10 @@ def _record_client_binaries(args, console) -> None:
     extension's. Best-effort: failing to record costs an extension the ability
     to infer its binaries (it then says so and asks for the flags), which is
     worse than provisioning not completing.
+
+    **A new client-binary option has to be added here AND in
+    :func:`_apply_recorded_client_binaries`**, or an extension provisions
+    without it and nothing says so.
     """
     from saorsa_deploy.state import update_deployment_state
 

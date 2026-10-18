@@ -715,7 +715,7 @@ A committed example is at `deploy/manifests/profiles/clients-extension-example.y
 | `clients config show --config <f>` | print the merged, validated manifest as YAML |
 | `clients plan --config <f>` | print the VMs that would be created (provider, region, size, role, hostname) and the exact `clients infra` / `provision` / `start` invocations. Does **not** need the deployment to exist — it says so, and that the indexes shown then start at 1 |
 | `clients up --config <f>` | `infra` → `provision` → `start`. Resumable, with `--resume` semantics identical to `deployments up` |
-| `clients down --config <f>` | stop services → drain any uploader wallets → destroy the extension's VMs → delete its state and journal. Also takes `--name <deployment> --extension <name>` when the manifest is not to hand |
+| `clients down --config <f>` | stop services → drain any uploader wallets → destroy the extension's VMs → delete its state and journal. Also takes `--name <deployment> --extension <name>` when the manifest is not to hand — but **not both forms at once**: with `--config` the manifest already names the deployment and the extension, and `--name` there would override the *extension's* name (the shared manifest loader's `--name`), so it is refused. Without `--config`, `--name` is the deployment |
 | `clients ls --name <deployment>` | list the deployment's extensions with VM counts and state |
 
 The five primitives also take `--extension <name>` directly, which is what the
@@ -738,7 +738,13 @@ and that path is byte-identical to before.
   deployment recorded at `clients provision` time (`client_binaries` in its S3
   state), so an extension can never run a different client build from the
   deployment it is measuring. A deployment provisioned before that record existed
-  is reported, with the flags to pass explicitly.
+  is reported, with the flags to pass explicitly. The record currently holds
+  `ant` (`branch`/`repo_owner`/`version`) and `ant_wasm` (`branch`/`repo_owner`)
+  only — **a new client-binary option has to be added to it in two places**, the
+  write in `_record_client_binaries` and the read in
+  `_apply_recorded_client_binaries` (both in `cmd/provision_clients.py`), or the
+  extension silently provisions without it. `ant_wasm.features` (V2-1617) is the
+  first such option.
 - `extends:` is not supported for this kind — there is nothing to inherit. Nor
   is `slack_post:`: `deployments slack-post` reports on a *deployment* and an
   extension has no registry row of its own, so the step would look up a name
@@ -789,14 +795,27 @@ workload. Only the deployment's own `clients destroy` clears it. Nor does
 `clients down` touch the deployment's own clients, nodes or bootstraps.
 
 **The teardown guard.** `deployments down` (both the `--config` and the `--name`
-form), `bootstraps destroy` and `nodes destroy` **refuse with exit 2** while any
-client extension has state for the deployment, naming each one and the `clients
-down` that removes it. **No flag overrides it** — the same rule `bootstraps
-destroy` already applies to node extensions. The extensions' VMs run against
-this deployment's bootstraps, InfluxDB, Elasticsearch and address pool;
-destroying any of those out from under them leaves VMs running, billing, and
-failing every operation, with the measurements they were created to take
-unusable.
+form), `nodes destroy`, `bootstraps destroy` and **`clients destroy` without
+`--extension`** (the deployment's own tier, which is what wipes the address
+pool) **refuse with exit 2** while any client extension has state for the
+deployment, naming each one and the `clients down` that removes it. **No flag
+overrides it** — the same rule `bootstraps destroy` already applies to node
+extensions. The extensions' VMs run against this deployment's bootstraps,
+InfluxDB, Elasticsearch and address pool; destroying any of those out from
+under them leaves VMs running, billing, and failing every operation, with the
+measurements they were created to take unusable. An extension's **own** destroy
+is never guarded — it is the way out.
+
+A scan that cannot complete refuses too, rather than reading as "no
+extensions". "Could not look" is not "nothing there", a destroy cannot be
+undone, and the destroy commands read their own state from the same bucket — so
+a failed scan is a teardown that was going to fail a moment later anyway, and
+refusing costs only a retry. The same rule governs the `client_index` scan:
+`clients infra` and `clients up` exit 2 rather than allocate from an incomplete
+one, because an index that collides with a live uploader's erases its S3
+address list on every flush. Only a *missing* state object is tolerated
+anywhere. `clients plan` is the exception, being read-only: it prints the note
+and carries on.
 
 ### `deployments slack-post`
 
