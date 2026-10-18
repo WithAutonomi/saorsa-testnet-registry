@@ -57,6 +57,7 @@ ordered command sequence for you — replacing the hand-edited bash runbooks.
 ```bash
 saorsa-deploy deployments plan          --config deploy/manifests/runs/STG-01.yaml   # preview the sequence (no execution)
 saorsa-deploy deployments config show   --config deploy/manifests/runs/STG-01.yaml   # merged + validated manifest as YAML
+saorsa-deploy deployments config profiles                                            # the profiles this version of the tool ships
 saorsa-deploy deployments up            --config deploy/manifests/runs/STG-01.yaml   # run the full deploy sequence
 saorsa-deploy deployments down          --name STG-01                                # destroy (teardown derived from state)
 ```
@@ -73,13 +74,17 @@ failing (e.g. a stuck nonce or too little ETH to cover the drain). The
 abandoned dust is reported but no longer blocks the destroy. Without it, a
 drain failure aborts `down` at step 1 so funds aren't silently lost.
 
-Reusable profiles are committed under `deploy/manifests/profiles/`
-(`reference.yaml` shows every option); copy-me starting points for the prod
-kinds are committed under `deploy/manifests/examples/`. Your concrete run
-manifests live in the git-ignored `deploy/manifests/runs/` — they pin
-versions/branches and churn per run, so like the bash `runbooks/` they stay
-local. (Profiles are deep-merge bases for `extends:`; examples are standalone
-templates to copy into `runs/`.)
+Reusable profiles **ship inside the `saorsa-deploy` wheel**, as package data
+under `saorsa_deploy/resources/profiles/` (`reference.yaml` shows every option),
+and a manifest reaches one with `extends: profile:<name>` from any directory. So
+pinning a tool version pins the profiles that go with it, and a run manifest
+written outside this checkout still resolves them.
+`deployments config profiles` lists what the installed version ships. Copy-me
+starting points for the prod kinds are committed under
+`deploy/manifests/examples/`. Your concrete run manifests live in the
+git-ignored `deploy/manifests/runs/` — they pin versions/branches and churn per
+run, so like the bash `runbooks/` they stay local. (Profiles are deep-merge
+bases for `extends:`; examples are standalone templates to copy into `runs/`.)
 
 One manifest describes one deployment's full desired state, tagged by `kind`
 (`testnet`, `testnet-extension`, `clients`, `prod-uploaders`, `prod-canary`,
@@ -120,6 +125,38 @@ For resume purposes the whole group is **one journal unit**: it is recorded as
 done only when every lane succeeds, so a re-run with `--resume` either skips the
 entire group or re-executes all of it. That is safe because each `infra` command
 is idempotent — terraform reconciles already-created tiers as no-ops.
+
+### Bundled profiles (`extends: profile:<name>`, `deployments config profiles`)
+
+The reusable base profiles are package data inside the wheel, under
+`saorsa_deploy/resources/profiles/`. A manifest reaches one with
+
+```yaml
+extends: profile:staging
+```
+
+which is resolved from the **installed package**, not from the manifest's
+directory — so a run manifest written anywhere (an unattended runner writes one
+into the run's own directory, outside any checkout) picks up the profiles that
+ship with the `saorsa-deploy` version it is running. Pinning
+`saorsa-deploy==1.3.0` pins the `staging` profile as it was at 1.3.0.
+
+`<name>` is a bare profile name: no directory, no `.yaml`. A value containing
+`/`, `\` or `..` is refused rather than normalised (it would be a path into the
+package), and an unknown name is refused with the list of available ones. Any
+`extends` value *without* the `profile:` prefix keeps the original behaviour — a
+path relative to the manifest file — which is how an operator's own private base
+manifests keep working. A profile may itself `extends: profile:<other>`; the
+existing cycle detection covers it.
+
+| Command | What it does |
+|---|---|
+| `deployments config profiles` | List the bundled profile names with the first line of each profile's leading comment as a description. Read-only, no arguments. Exit 2 if the package carries no profiles. |
+| `deployments config show --config <f>` | Print the merged, validated manifest as YAML (profile resolved) |
+| `deployments config validate --config <f>` | Schema and rule checks; exit 2 on failure |
+
+`config profiles` is a subcommand of `deployments config`, beside `show` and
+`validate`.
 
 ### Resumable runs (the step journal)
 
@@ -169,7 +206,7 @@ kind: testnet
 purpose: "RC sanity check"
 ssh_key_path: ~/.ssh/ant_deploy
 slack_post: true                       # optional (any kind): append a final `deployments slack-post` step to `up`
-extends: profiles/staging.yaml         # optional: deep-merge a reusable base (lists REPLACE)
+extends: profile:staging               # optional: deep-merge a bundled profile (lists REPLACE); a relative path to your own base also works
 testnet:
   mode: true                            # --testnet
   upgrade_channel: beta                 # beta | stable | omit
@@ -281,7 +318,11 @@ does **not** gate the primitive `elastic destroy` / `monitoring destroy` command
 those are how you clean the retained stack up, and `down` prints the exact command
 plus the endpoint for each stack it left running.
 
-**Reuse:** `extends:` (deep-merge a base; lists replace wholesale), `--set
+**Reuse:** `extends: profile:<name>` (deep-merge one of the bundled profiles,
+resolved from the installed package rather than from the manifest's directory;
+`<name>` is a bare name, so a value with a `/` or `..` in it is refused, and an
+unknown one lists what is available), `extends: <relative-path>` (deep-merge a
+base manifest of your own, found relative to the child — unchanged), `--set
 dotted.key=value` (override one value, e.g. `--set testnet.nodes.nat_percent=0`),
 and `--name NEW`. **Secrets** are never in a manifest — prod kinds name an env var
 (`secret_key_env:`, default `ARBITRUM_ONE_SECRET_KEY`) and `up` fails fast if it's
@@ -728,7 +769,7 @@ clients:                         # same per-entry grammar as a testnet manifest
   browser_downloaders: []        # the hot-read cohort; `count:` works here
 ```
 
-A committed example is at `deploy/manifests/profiles/clients-extension-example.yaml`.
+A committed example is at `deploy/saorsa_deploy/resources/profiles/clients-extension-example.yaml`.
 
 | command | behaviour |
 | -- | -- |
@@ -1044,7 +1085,7 @@ it bootstraps from the deployment's WebRTC-Direct multiaddrs and discovers the
 rest of the network over authenticated `find_node`. Passing the token is a hard
 error rather than a silent no-op.
 
-Example profile: `deploy/manifests/profiles/webrtc-wasm.yaml`.
+Example profile: `deploy/saorsa_deploy/resources/profiles/webrtc-wasm.yaml`.
 
 #### The three extra pieces
 
@@ -1788,9 +1829,9 @@ worse than the last one did, which needs no calibration.
 
 #### Profiles
 
-- `deploy/manifests/profiles/pointers.yaml` — a short dev run (100 nodes, two
+- `deploy/saorsa_deploy/resources/profiles/pointers.yaml` — a short dev run (100 nodes, two
   pointer clients).
-- `deploy/manifests/profiles/staging.yaml` — carries two pointer entries
+- `deploy/saorsa_deploy/resources/profiles/staging.yaml` — carries two pointer entries
   (DigitalOcean `lon1` and `syd1`), both with `transfer_interval_secs: 300`.
   **The train's RC must carry pointers**; if it predates them the run operator
   strips the two entries for that train, and if it carries pointers but predates
@@ -4245,7 +4286,7 @@ between 2026-09-12 and 2026-09-27.
 WebRTC-Direct — instead of the `ant` binary, so the daily test answers whether a
 *browser* client can still write to production. Nothing else does: `ant-cli`
 links native ant-core and so takes the native transport however it is invoked.
-Example manifest: `deploy/manifests/profiles/prod-wasm-continuous-uploader.yaml`.
+Example manifest: `deploy/saorsa_deploy/resources/profiles/prod-wasm-continuous-uploader.yaml`.
 
 **One transport per deployment.** The browser path measured several times slower,
 so a blended daily series would describe neither instrument. A WASM write test is
@@ -4766,8 +4807,8 @@ The bundle must be built first — `deployments up` emits a resumable
 Manifest keys: `client_kind`, `wasm_binary: {branch, repo_owner}` and
 `wasm_bootstrap_multiaddrs_file` under `prod_downloaders:` /
 `prod_continuous_downloader:`. Examples:
-`deploy/manifests/profiles/prod-wasm-downloaders.yaml` (one-shot) and
-`deploy/manifests/profiles/prod-wasm-continuous-downloader.yaml` (the permanent
+`deploy/saorsa_deploy/resources/profiles/prod-wasm-downloaders.yaml` (one-shot) and
+`deploy/saorsa_deploy/resources/profiles/prod-wasm-continuous-downloader.yaml` (the permanent
 daily test — the browser-path sibling of the native daily downloader, walking the
 same address list on the same cycle so the two transports fetch the same content).
 
@@ -4983,7 +5024,7 @@ Extra arguments on `prod uploaders deploy`:
 | `--wasm-bootstrap-multiaddrs-file` | string | committed list | Override `resources/prod_bootstrap_webrtc_multiaddrs.txt`. No URL form — nothing publishes these addresses at one. |
 | `--skip-bootstrap-probe` | flag | off | Skip the preflight ICE probe. Use after a bootstrap restart: ant-node 0.20.0 opens the listener 2–15 minutes later. |
 
-Manifest form (`kind: prod-uploaders`): `prod_uploaders.wasm_uploaders[]` plus `prod_uploaders.wasm_binary: {branch, repo_owner}` and the optional `wasm_bootstrap_multiaddrs_file`. `uploaders` may be empty for a WASM-only run. Example: `manifests/profiles/prod-wasm-uploaders.yaml`.
+Manifest form (`kind: prod-uploaders`): `prod_uploaders.wasm_uploaders[]` plus `prod_uploaders.wasm_binary: {branch, repo_owner}` and the optional `wasm_bootstrap_multiaddrs_file`. `uploaders` may be empty for a WASM-only run. Example: `saorsa_deploy/resources/profiles/prod-wasm-uploaders.yaml`.
 
 ### Running uploads from the local machine (`prod local-uploads`)
 
@@ -5123,7 +5164,7 @@ partial sample and the **on-disk logs are the authoritative record** — which
 
 `prod debug-nodes destroy --name <name>` tears down the node VMs and, by default, the paired monitoring + Elasticsearch stacks (`--keep-monitoring` / `--keep-elastic` to retain them). `scp root@<vm>:/mnt/ant-node-storage/coredumps/core.*` off the box before destroy — and, if the run mattered, the debug logs under `/mnt/ant-node-storage/log` too: Elasticsearch is only a partial copy of them (see above).
 
-Fully declarative via `deployments up/plan/down --config` (`kind: prod-debug-nodes`); example manifest at `manifests/profiles/prod-debug-nodes.yaml`. `up` is resumable, so a retry skips the ~10-minute debug build.
+Fully declarative via `deployments up/plan/down --config` (`kind: prod-debug-nodes`); example manifest at `saorsa_deploy/resources/profiles/prod-debug-nodes.yaml`. `up` is resumable, so a retry skips the ~10-minute debug build.
 
 **Contabo provider.** Contabo (nodes + monitoring/ES) authenticates via `CNTB_OAUTH2_CLIENT_ID` / `CNTB_OAUTH2_CLIENT_SECRET` / `CNTB_OAUTH2_USER` (account email) / `CNTB_OAUTH2_PASS` (API password) — the `contabo/contabo` Terraform provider reads them from the environment. Contabo has **no attachable block volume** (root-disk only, sized up front, not growable online) and bills on **committed monthly contracts** (no hourly billing / proration), which suits permanent debug nodes. Images are referenced by UUID (`--contabo-image-id`).
 
@@ -5940,7 +5981,7 @@ saorsa-deploy prod nodes destroy --name PROF-NODE-01 --keep-monitoring
 Fully declarative via `deployments up/plan/down --config` (`kind: prod-nodes`).
 Because `up` is resumable, a re-run after a mid-sequence failure skips the
 already-done ~10-minute debug build. See
-`manifests/profiles/prod-nodes.yaml`.
+`saorsa_deploy/resources/profiles/prod-nodes.yaml`.
 
 ### Watching a production rollout (`prod rollout-watch`)
 
@@ -6194,7 +6235,7 @@ commands and the same `saorsa-deploy/elastic/{name}.json` state; what the kind
 adds is `--standalone` (register a `Deployment` row with
 `deploy_args.kind = "elasticsearch"`) and the public-ingest shape below.
 
-Example manifest: `deploy/manifests/profiles/elasticsearch.yaml`.
+Example manifest: `deploy/saorsa_deploy/resources/profiles/elasticsearch.yaml`.
 
 #### Public ingest is a different security posture, not a flag
 

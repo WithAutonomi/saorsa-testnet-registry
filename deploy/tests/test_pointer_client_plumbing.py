@@ -34,6 +34,7 @@ from saorsa_deploy.cmd.infra_clients import (
     DEFAULT_POINTER_UPDATE_INTERVAL_SECS,
     parse_pointer_spec,
 )
+from saorsa_deploy.config import profiles_dir
 from saorsa_deploy.config.models import (
     POINTER_CHAIN_FRACTION,
     POINTER_CREATE_INTERVAL_SECS,
@@ -595,7 +596,9 @@ def test_a_non_pointer_client_gets_no_handover_variables_set():
 # The shipped profiles
 # ---------------------------------------------------------------------------
 
-_PROFILES = Path(__file__).parent.parent / "manifests" / "profiles"
+# The profiles are package data now, so ask the package where they are rather
+# than walking the checkout — that is also what the loader does.
+_PROFILES = profiles_dir()
 
 
 def test_the_pointers_profile_validates_and_carries_the_handover_loop():

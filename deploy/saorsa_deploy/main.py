@@ -1301,6 +1301,11 @@ def main(argv=None):
         help="Validate a manifest; non-zero exit if invalid.",
     )
     _add_manifest_args(deployments_config_validate_parser)
+    deployments_config_subparsers.add_parser(
+        "profiles",
+        help="List the profiles bundled with this version of the tool "
+        "(use one with `extends: profile:<name>`).",
+    )
 
     # deployments down — destroy is name/state-driven, so --config is optional:
     # pass --config to mirror a manifest, or just --name to tear down whatever
@@ -7934,6 +7939,10 @@ def main(argv=None):
                 from saorsa_deploy.cmd.config_cmds import cmd_config_validate
 
                 cmd_config_validate(args)
+            elif args.config_subcommand == "profiles":
+                from saorsa_deploy.cmd.config_cmds import cmd_config_profiles
+
+                cmd_config_profiles(args)
         elif args.deployments_subcommand == "down":
             from saorsa_deploy.cmd.deploy_cmds import cmd_down
 

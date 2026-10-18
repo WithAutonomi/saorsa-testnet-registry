@@ -7,16 +7,22 @@ hand-edited bash runbooks. See ``deploy/README.md`` for the format reference.
 """
 
 from saorsa_deploy.config.loader import (
+    PROFILE_PREFIX,
     ManifestError,
+    list_profiles,
     load_manifest,
     merge_manifest_dict,
+    profiles_dir,
 )
 from saorsa_deploy.config.models import KIND_TO_BLOCK, Manifest
 
 __all__ = [
     "Manifest",
     "KIND_TO_BLOCK",
+    "PROFILE_PREFIX",
     "ManifestError",
+    "list_profiles",
     "load_manifest",
     "merge_manifest_dict",
+    "profiles_dir",
 ]

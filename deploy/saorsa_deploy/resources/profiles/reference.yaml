@@ -1,10 +1,11 @@
 # Reference profile — every available testnet option, populated with a real value.
 #
 # This is a complete, valid manifest (run `saorsa-deploy config validate --config
-# deploy/manifests/profiles/reference.yaml`). Build a new profile or run by COPYING
-# this file and DELETING whatever you don't need — optional blocks (clients, elastic,
-# monitoring) can be removed wholesale, and any field left out falls back to the
-# saorsa-deploy CLI default.
+# deploy/saorsa_deploy/resources/profiles/reference.yaml`). It ships inside the
+# saorsa-deploy wheel, so a manifest anywhere can `extends: profile:reference`.
+# Build a new profile or run by COPYING this file and DELETING whatever you don't
+# need — optional blocks (clients, elastic, monitoring) can be removed wholesale,
+# and any field left out falls back to the saorsa-deploy CLI default.
 #
 # Comments here are explanatory only; there are no commented-out directives to
 # uncomment. Mutually-exclusive forms are shown by example rather than by comment:

@@ -63,10 +63,10 @@ not deploy; nodes would auto-upgrade out from under the run).
 ## Deployment manifest
 
 `deploy/manifests/runs/<NAME>-<slug>.yaml` (git-ignored; the runner writes it from this
-block). Extends `<profile>.yaml`. **Do not edit the profile.**
+block). Extends the bundled `<profile>` profile. **Do not edit the profile.**
 
 ```yaml
-extends: ../profiles/<profile>.yaml
+extends: profile:<profile>
 
 name: <NAME>
 purpose: "<V2-NNNN>: <one line — lands in the registry and the Slack post>"
@@ -299,7 +299,8 @@ bug filed against the crate, a rerun, or a decision for the RM.>
 0. **Verdict and warnings.** Warn if: <the conditions specific to this run, each with its expected
    value>.
 1. Registry id; highest prior `<NAME>` id; <baseline/reference run ids>.
-2. Provenance: <binaries and SHAs before/after build, pins, registry SHA, profile SHA,
+2. Provenance: <binaries and SHAs before/after build, pins, registry SHA, saorsa-deploy
+   version (the profiles ship inside the wheel, so the tool version pins the profile),
    latest ant-node tag at deploy>.
 3. T0, every boundary and every wake's actual fire time, UTC. Time compute was destroyed.
 4. Phase 0 results.

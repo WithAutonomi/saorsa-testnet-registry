@@ -57,10 +57,13 @@ Report the name and binary versions back before continuing.
 **For the comparison to mean anything, the two runs must have the same network
 shape.** Only the binaries should differ. If the user is comparing against an
 earlier run, say which profile or manifest this one uses so they can confirm it
-matches. Record the profile version if the manifest extends one:
+matches. The profiles ship inside the saorsa-deploy wheel, so if the manifest
+extends one (`extends: profile:<name>`) record the tool version and the profile's
+own last commit:
 
 ```bash
-git log -1 --format=%h -- deploy/manifests/profiles/<profile>.yaml
+saorsa-deploy --version
+git log -1 --format=%h -- deploy/saorsa_deploy/resources/profiles/<profile>.yaml
 ```
 
 ## Step 2 — Check preconditions
