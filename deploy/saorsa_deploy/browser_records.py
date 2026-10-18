@@ -12,10 +12,13 @@ Three consumers need the same two things and none of them can reach the VMs:
 * `clients fetch-browser-traces` needs the VMs' addresses while they are up.
 
 The S3 client state answers all of it, but only while it exists — `clients
-destroy` deletes it. So the role config is DENORMALISED into the deployment's
-``deploy_args`` at `clients provision` time, which is the one place in the
-registry that survives teardown, exactly as `prod-uploaders` records its
-uploaders' hostnames and transports there.
+destroy` deletes it, and the deployment's own teardown also deletes the whole
+``addresses/<deployment>/`` prefix the hot-file selection lives under. So both
+are DENORMALISED into the deployment's ``deploy_args``, which is the one place in
+the registry that survives teardown, exactly as `prod-uploaders` records its
+uploaders' hostnames and transports there: the **role config** at `clients
+provision` time, and the **hot-file selection** in the `record-results` pass that
+records the rows it describes.
 
 The list is rebuilt from EVERY client tier on each provision pass, not appended
 to: `record_deploy_args_update` shallow-merges, so a per-tier append would need
@@ -35,6 +38,12 @@ from saorsa_deploy.client_roles import (
 
 #: ``deploy_args`` key holding the browser tier's recorded role config.
 BROWSER_CONFIG_KEY = "browser_downloaders"
+
+#: ``deploy_args`` key holding the snapshotted hot-file selection. The document
+#: itself lives under the deployment's S3 ADDRESS prefix, which the deployment's
+#: own `clients destroy` deletes whole -- so the report, which runs after
+#: teardown, reads this copy.
+BROWSER_HOT_FILES_KEY = "browser_hot_files"
 
 
 def client_hostname(deployment: str, extension: str | None, client: dict) -> str:
@@ -162,6 +171,96 @@ def extension_by_host(tiers: list[tuple[str | None, dict]], deployment: str) -> 
         for entry in browser_vms_in_state(deployment, extension, state):
             out[entry["hostname"]] = extension
     return out
+
+
+def extension_by_host_from_config(entries: list[dict]) -> dict[str, str]:
+    """hostname -> extension name from the RECORDED role config.
+
+    The durable half of the same answer. ``clients down`` deletes the
+    extension's S3 client state, so :func:`extension_by_host` resolves nothing
+    for a cohort that has been torn down -- and a `record-results` re-run after
+    that point is exactly when the second pass of a run's procedure happens.
+    Only entries that name an extension are included, for the reason above.
+    """
+    out: dict[str, str] = {}
+    for entry in entries:
+        hostname = entry.get("hostname")
+        extension = entry.get("extension")
+        if hostname and extension:
+            out[hostname] = extension
+    return out
+
+
+def resolve_extension_by_host(
+    deploy_args: dict | None, tiers: list[tuple[str | None, dict]], deployment: str
+) -> dict[str, str]:
+    """hostname -> extension, recorded config first and the live tiers second.
+
+    The recorded config wins because it survives teardown, and the two cannot
+    disagree: the extension name is part of the hostname, so a host determines
+    its own extension. The live tiers still fill the gaps -- a tier provisioned
+    without ``DATABASE_URL``, or one added since the config was last written.
+    """
+    out = dict(extension_by_host(tiers, deployment))
+    out.update(extension_by_host_from_config(recorded_browser_config(deploy_args)))
+    return out
+
+
+def recorded_hot_files(deploy_args: dict | None) -> dict | None:
+    """The hot-file selection a deployment recorded, or None.
+
+    Only a document with a ``files`` list counts: a half-written or empty
+    snapshot must read as "nothing recorded" so the report falls back to S3
+    rather than reporting a selection of no files.
+    """
+    if not isinstance(deploy_args, dict):
+        return None
+    document = deploy_args.get(BROWSER_HOT_FILES_KEY)
+    if not isinstance(document, dict):
+        return None
+    if not isinstance(document.get("files"), list):
+        return None
+    return document
+
+
+def snapshot_hot_files(deployment: str, console=None) -> dict | None:
+    """Copy the hot-file selection from S3 into ``deploy_args``.
+
+    **The selection does not survive the deployment.** It lives at
+    ``addresses/<deployment>/browser-hot-files.json``, and the deployment's own
+    `clients destroy` deletes that WHOLE prefix -- while `analysis
+    browser-reads` is meant to run after teardown and needs the document to say
+    which file each round read. So it is snapshotted beside the role config, in
+    the same pass that records the rows it describes.
+
+    Best-effort, and deliberately only ever ADDITIVE: a selection that has
+    already gone (or an S3 error) leaves whatever was recorded earlier in place,
+    because a snapshot taken while the cohort was running is the answer and
+    there is no later chance to take one.
+    """
+    from saorsa_deploy.hot_files import load_hot_files
+    from saorsa_deploy.registry import record_deploy_args_update
+
+    try:
+        document = load_hot_files(deployment)
+    except Exception as e:  # noqa: BLE001 -- a results pass must not fail on it
+        if console is not None:
+            console.print(
+                f"[yellow]Warning: could not read the hot-file selection for "
+                f"'{deployment}' ({e}); any snapshot already recorded is "
+                f"kept.[/yellow]"
+            )
+        return None
+    if not document or not isinstance(document.get("files"), list):
+        return None
+    record_deploy_args_update(deployment, {BROWSER_HOT_FILES_KEY: document})
+    if console is not None:
+        console.print(
+            f"  Snapshotted the hot-file selection "
+            f"({len(document['files'])} file(s)) into "
+            f"deploy_args.{BROWSER_HOT_FILES_KEY}"
+        )
+    return document
 
 
 def round_period_from_config(entries: list[dict]) -> int | None:

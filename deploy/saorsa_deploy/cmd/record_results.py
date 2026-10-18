@@ -39,7 +39,10 @@ from saorsa_db.models import (
     ProdUploadStatus,
 )
 
-from saorsa_deploy.browser_records import extension_by_host
+from saorsa_deploy.browser_records import (
+    resolve_extension_by_host,
+    snapshot_hot_files,
+)
 from saorsa_deploy.client_extension import client_extension_tiers, terraform_name
 from saorsa_deploy.client_roles import is_wasm
 from saorsa_deploy.client_transport import (
@@ -549,6 +552,13 @@ def _record_browser_downloads(
 
     Only the WASM bucket is read — the harness writes nowhere else — so a
     deployment with no browser tier simply finds no points and says nothing.
+
+    This pass is also what makes the cohort READABLE after teardown, which is
+    the whole point of the table. Two things it needs are held in S3 state the
+    deployment's own teardown deletes, so both are snapshotted into the registry
+    here, beside the rows they describe: the hot-file selection (the address
+    prefix goes with `clients destroy`) and each VM's extension (the extension's
+    client state goes with `clients down`).
     """
     try:
         points = fetch_browser_download_points(
@@ -567,10 +577,21 @@ def _record_browser_downloads(
     if not points:
         return
 
-    # Resolved only once there is something to label, so a deployment with no
-    # browser tier — every prod kind, and every testnet without one — does not
-    # pay for a client-state scan on each `record-results` pass.
-    extension_for_host = extension_by_host(_client_tiers(args.name), args.name)
+    # Both resolved only once there is something to label, so a deployment with
+    # no browser tier — every prod kind, and every testnet without one — does
+    # not pay for a client-state scan or an S3 GET on each `record-results` pass.
+    #
+    # The recorded role config comes FIRST and the live client tiers second: the
+    # config survives `clients down` while the tiers do not, and the two cannot
+    # disagree because the extension name is part of the hostname. Without that
+    # order a re-run after the cohort was torn down resolves nothing, and the
+    # upsert's COALESCE is then the only thing standing between a recorded
+    # extension and a whole cohort relabelled as the deployment's own tier.
+    extension_for_host = resolve_extension_by_host(
+        deployment.deploy_args, _client_tiers(args.name), args.name
+    )
+    # Additive: a selection already gone leaves an earlier snapshot in place.
+    snapshot_hot_files(args.name, console)
 
     recorded = 0
     unusable = 0

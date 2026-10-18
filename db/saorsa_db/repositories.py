@@ -1318,14 +1318,23 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         Idempotent like the file-op upserts, so `record-results` can be re-run
         against the same Influx range and revise rather than duplicate.
 
-        ``trace_s3_key`` COALESCEs: it is written by `clients fetch-browser-traces`
-        and is NOT carried on the Influx point, so an unconditional assignment
-        would erase the only pointer to a round's archived trace on the next
-        `record-results` -- and the traces die with the VM, so there would be no
-        second chance to find them.
+        **Two columns COALESCE, and both for the same reason**: neither is
+        carried on the Influx point, so a re-run that cannot resolve one would
+        otherwise erase what an earlier pass recorded.
+
+        * ``trace_s3_key`` is written by `clients fetch-browser-traces`, and the
+          traces die with the VM -- so erasing the pointer leaves no second
+          chance to find them.
+        * ``extension`` is resolved from state that teardown deletes (the
+          extension's own S3 client state, and the deployment's address prefix).
+          A `record-results` re-run after `clients down` resolves None for every
+          host, and writing that would relabel a whole cohort as the
+          deployment's own tier -- which is exactly the distinction the column
+          exists to make.
+
+        A known value still updates; only None is refused.
         """
         values = dict(
-            extension=extension,
             region=region,
             hot_file_index=hot_file_index,
             address=address,
@@ -1352,21 +1361,25 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .one_or_none()
         )
+        #: The two columns the Influx point does not carry, so neither may be
+        #: overwritten with None by a re-run that could not resolve it.
+        coalesced = {"extension": extension, "trace_s3_key": trace_s3_key}
         if existing is None:
             existing = DeploymentBrowserDownloadRecord(
                 deployment_id=deployment_id,
                 client_hostname=client_hostname,
                 round_id=round_id,
                 instance=instance,
-                trace_s3_key=trace_s3_key,
+                **coalesced,
                 **values,
             )
             self.session.add(existing)
         else:
             for key, value in values.items():
                 setattr(existing, key, value)
-            if trace_s3_key is not None:
-                existing.trace_s3_key = trace_s3_key
+            for key, value in coalesced.items():
+                if value is not None:
+                    setattr(existing, key, value)
         self.session.commit()
         return existing
 

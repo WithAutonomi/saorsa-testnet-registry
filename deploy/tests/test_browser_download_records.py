@@ -163,12 +163,17 @@ def _point(**extra):
     return point
 
 
-def _record(repo, deployment, points, tiers=None, console=None):
+def _record(repo, deployment, points, tiers=None, console=None, hot_files=None):
     """Drive `_record_browser_downloads` over scripted points, offline.
 
-    The client-tier scan is patched as well as the Influx query: it reads the
-    tfstate bucket, so an unpatched test reaches S3 and fails wherever there are
-    no credentials, which is CI.
+    Three dependencies are patched, not one: besides the Influx query, the
+    client-tier scan and the hot-file read both reach S3, so an unpatched test
+    makes a live call and fails wherever there are no credentials, which is CI.
+
+    `hot_files` is the document the snapshot step finds in S3 (None = no
+    selection there, which is also what a torn-down deployment looks like). The
+    snapshot writes through the real `record_deploy_args_update`, so a test can
+    assert on the deployment's own `deploy_args`.
     """
     args = SimpleNamespace(name=deployment.name)
     with (
@@ -180,6 +185,8 @@ def _record(repo, deployment, points, tiers=None, console=None):
             "saorsa_deploy.cmd.record_results._client_tiers",
             return_value=tiers if tiers is not None else [],
         ),
+        patch("saorsa_deploy.hot_files.load_hot_files", return_value=hot_files),
+        patch("saorsa_deploy.registry.get_repository", return_value=repo),
     ):
         _record_browser_downloads(
             repo,
@@ -194,6 +201,34 @@ def _record(repo, deployment, points, tiers=None, console=None):
 
 def _deployment(repo, name="DEV-03"):
     return repo.create(name=name, deploy_args={"kind": "testnet", "bootstrap_count": 1})
+
+
+def _browser_client():
+    """The client-state entry whose hostname is :data:`HOST`."""
+    return {
+        "role": "browser-download",
+        "region": "lon1",
+        "client_index": 1,
+        "instances": 4,
+        "round_period_secs": 600,
+    }
+
+
+#: A hot-file selection as `clients select-hot-files` writes it.
+_HOT_FILES = {
+    "deployment": "DEV-03",
+    "selected_at": "2026-10-18T08:55:00Z",
+    "size_bytes": 52428800,
+    "files": [
+        {
+            "index": 0,
+            "address": "a0" * 32,
+            "bytes": 52428800,
+            "source_key": "upload-lon1-1.txt",
+            "line": 4,
+        }
+    ],
+}
 
 
 def test_a_point_maps_onto_a_row(repo):
@@ -303,25 +338,134 @@ def test_the_extension_is_resolved_from_the_client_tier(repo):
     after the deployment came up, so without this its rows would be
     indistinguishable from the deployment's own tier."""
     deployment = _deployment(repo)
-    tiers = [
-        (
-            "browsers",
-            {
-                "clients": [
-                    {
-                        "role": "browser-download",
-                        "region": "lon1",
-                        "client_index": 1,
-                        "instances": 4,
-                        "round_period_secs": 600,
-                    }
-                ]
-            },
-        )
-    ]
+    tiers = [("browsers", {"clients": [_browser_client()]})]
     _record(repo, deployment, [_point()], tiers=tiers)
     (row,) = repo.list_browser_download_records_for_deployment(deployment.id)
     assert row.extension == "browsers"
+
+
+def test_a_re_run_after_the_extension_state_is_gone_keeps_the_extension(repo):
+    """The case the DEV-01 procedure actually runs: `record-results` once with
+    the cohort up, then again after `clients down`. The extension's S3 client
+    state is gone by then, so the live tiers resolve nothing — and writing that
+    None would relabel the whole cohort as the deployment's own tier, which is
+    exactly the distinction the column exists to make."""
+    deployment = _deployment(repo)
+    tiers = [("browsers", {"clients": [_browser_client()]})]
+    _record(repo, deployment, [_point()], tiers=tiers)
+    assert repo.list_browser_download_records_for_deployment(deployment.id)[0].extension == (
+        "browsers"
+    )
+
+    # Second pass: the tier is torn down and nothing recorded the config either,
+    # so only the upsert's COALESCE stands between the row and a NULL.
+    _record(repo, deployment, [_point(total_ms=1234)], tiers=[])
+    (row,) = repo.list_browser_download_records_for_deployment(deployment.id)
+    assert row.extension == "browsers"
+    assert row.total_ms == 1234
+
+
+def test_the_extension_is_resolved_from_the_recorded_config_first(repo):
+    """`clients provision` denormalises hostname -> extension into deploy_args
+    for exactly this reason, so a re-run after teardown resolves it from there
+    rather than relying on the COALESCE to save a row it never wrote."""
+    deployment = repo.create(
+        name="DEV-03",
+        deploy_args={
+            "kind": "testnet",
+            "bootstrap_count": 1,
+            "browser_downloaders": [
+                {
+                    "hostname": HOST,
+                    "extension": "browsers",
+                    "instances": 4,
+                    "round_period_secs": 600,
+                },
+            ],
+        },
+    )
+    # No live tiers at all: the cohort is gone, and this is a FIRST recording of
+    # the round — so there is no existing row for a COALESCE to protect.
+    _record(repo, deployment, [_point()], tiers=[])
+    (row,) = repo.list_browser_download_records_for_deployment(deployment.id)
+    assert row.extension == "browsers"
+
+
+def test_the_recorded_config_wins_over_a_live_tier_that_disagrees(repo):
+    """They cannot disagree in practice — the extension name is part of the
+    hostname — but the order is load-bearing, so it is pinned."""
+    deployment = repo.create(
+        name="DEV-03",
+        deploy_args={
+            "kind": "testnet",
+            "bootstrap_count": 1,
+            "browser_downloaders": [{"hostname": HOST, "extension": "recorded"}],
+        },
+    )
+    _record(
+        repo,
+        deployment,
+        [_point()],
+        tiers=[("live", {"clients": [_browser_client()]})],
+    )
+    (row,) = repo.list_browser_download_records_for_deployment(deployment.id)
+    assert row.extension == "recorded"
+
+
+# ---------------------------------------------------------------------------
+# The hot-file selection snapshot
+# ---------------------------------------------------------------------------
+
+
+def test_the_hot_file_selection_is_snapshotted_into_deploy_args(repo):
+    """The selection lives under `addresses/<deployment>/`, which the
+    deployment's own `clients destroy` deletes WHOLE — while the report is meant
+    to run after teardown and needs the document to say which file each round
+    read. So it is snapshotted in the pass that records the rows."""
+    deployment = _deployment(repo)
+    _record(repo, deployment, [_point()], hot_files=_HOT_FILES)
+    assert repo.get(deployment.id).deploy_args["browser_hot_files"] == _HOT_FILES
+
+
+def test_the_snapshot_is_additive_and_survives_the_selection_being_deleted(repo):
+    """A snapshot taken while the cohort was running is the answer, and there is
+    no later chance to take one — so a pass that finds nothing in S3 must leave
+    the earlier snapshot alone rather than clearing it."""
+    deployment = _deployment(repo)
+    _record(repo, deployment, [_point()], hot_files=_HOT_FILES)
+    # Second pass after `clients destroy` wiped the address prefix.
+    _record(repo, deployment, [_point()], hot_files=None)
+    assert repo.get(deployment.id).deploy_args["browser_hot_files"] == _HOT_FILES
+
+
+def test_an_s3_failure_on_the_snapshot_warns_and_keeps_what_was_recorded(repo):
+    deployment = _deployment(repo)
+    _record(repo, deployment, [_point()], hot_files=_HOT_FILES)
+    console = Console(record=True, width=200)
+    args = SimpleNamespace(name=deployment.name)
+    with (
+        patch(
+            "saorsa_deploy.cmd.record_results.fetch_browser_download_points",
+            return_value=[_point()],
+        ),
+        patch("saorsa_deploy.cmd.record_results._client_tiers", return_value=[]),
+        patch(
+            "saorsa_deploy.hot_files.load_hot_files",
+            side_effect=RuntimeError("no credentials"),
+        ),
+        patch("saorsa_deploy.registry.get_repository", return_value=repo),
+    ):
+        _record_browser_downloads(repo, deployment, args, console, "http://influx", "t", "ant")
+    assert "could not read the hot-file selection" in console.export_text()
+    assert repo.get(deployment.id).deploy_args["browser_hot_files"] == _HOT_FILES
+
+
+def test_nothing_is_snapshotted_for_a_deployment_with_no_selection(repo):
+    """An ordinary testnet with a browser tier but no selection yet keeps its
+    deploy_args clean, so the report's "nothing recorded" branch is reachable."""
+    deployment = _deployment(repo)
+    _record(repo, deployment, [_point()], hot_files=None)
+    assert "browser_hot_files" not in repo.get(deployment.id).deploy_args
 
 
 def test_a_deployments_own_browser_vm_records_no_extension(repo):

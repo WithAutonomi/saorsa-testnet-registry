@@ -1360,18 +1360,40 @@ summaries.
 | `stalls`, `refused_dials`, `first_reads` | the derived fields, exactly as the point carried them |
 | `trace_s3_key` | written by `clients fetch-browser-traces`, and **preserved by the upsert** — the point never carries it, so an unconditional assignment would erase the only pointer to a round's trace, and the traces die with the VM |
 
+**Two columns COALESCE on upsert — `extension` and `trace_s3_key` — and both for
+the same reason**: neither is carried on the Influx point, so a re-run that
+cannot resolve one would erase what an earlier pass recorded. A known value
+still updates; only NULL is refused. `extension` is resolved from
+`deploy_args.browser_downloaders` **first** and the live client tiers second,
+because the recorded config survives `clients down` while the tiers do not — and
+the two cannot disagree, since the extension name is part of the hostname. A
+`record-results` re-run after the cohort is torn down is the ordinary case, not
+an edge one: that is where a run's procedure puts the second pass.
+
 `print-recorded-results --id <id>` gains a **Browser downloads** section: rounds,
 VMs, instances, totals by status and by `error_kind`, and how many traces were
 archived. Deliberately a summary — the per-round, per-region and per-chunk
 reading is `analysis browser-reads`, which also carries the gates.
 
-**`clients provision` also denormalises the tier's round period and instance
-count into `deploy_args.browser_downloaders`.** The S3 client state that carries
-them is deleted by `clients destroy`, and the report reads Postgres alone by
-design. The list is rebuilt from every client tier on each provision pass rather
-than appended to, so it converges whichever tier was provisioned last; it is
-best-effort, and without it the report derives the period from the recorded
-boundaries instead.
+**Two things the report needs are held in S3 state that teardown deletes, so
+both are snapshotted into the registry beside the rows.** The report reads
+Postgres alone by design, and is meant to be run after the cohort is gone.
+
+- **`clients provision` denormalises the tier's round period and instance count
+  into `deploy_args.browser_downloaders`** (the S3 client state carrying them
+  goes with `clients destroy`). The list is rebuilt from every client tier on
+  each provision pass rather than appended to, so it converges whichever tier
+  was provisioned last; best-effort, and without it the report derives the
+  period from the recorded boundaries instead.
+- **`record-results` snapshots the hot-file selection into
+  `deploy_args.browser_hot_files`.** `browser-hot-files.json` lives under
+  `addresses/<deployment>/`, and the deployment's own `clients destroy` deletes
+  that **whole prefix** — so without the snapshot the report would exit 2 for
+  exactly the runs it exists to judge. Taken in the pass that records the rows
+  it describes, and **additive**: a pass that finds no selection (or cannot
+  reach S3) leaves an earlier snapshot in place, because a snapshot taken while
+  the cohort was running is the answer and there is no later chance to take one.
+  So **run `record-results` before tearing a cohort down.**
 
 #### Archiving the traces (`clients fetch-browser-traces`)
 
@@ -1418,6 +1440,12 @@ A round is in the window when its boundary (`round_id x period`) lies in
 exactly once between them. The period comes from
 `deploy_args.browser_downloaders`, falling back to the recorded boundaries.
 `--id` is what names ONE run — dev and staging names are reused every train.
+
+The hot-file selection comes from `deploy_args.browser_hot_files`, with the live
+S3 object as the fallback **only** when nothing was recorded; the report names
+which source it read. Preferred rather than merely a fallback because a
+selection that was `--replace`d since says nothing about the rounds in hand, and
+because the S3 object is deleted by the deployment's own `clients destroy`.
 
 Eight sections, fixed format: **1 hot files** (the selection, fetched from S3 at
 report time, and the rounds that read each file), **2 per round** (boundary,

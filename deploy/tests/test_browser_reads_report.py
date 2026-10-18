@@ -565,16 +565,43 @@ class _Repo:
         return self.rows
 
 
-def _run(args, rows, deploy_args=None, hot_files="present"):
-    hot = _hot_files() if hot_files == "present" else None
+def _run(args, rows, deploy_args=None, hot_files="present", s3_error=None):
+    """Drive the command offline.
+
+    `hot_files` is what the LIVE S3 object holds ("present", a document, or
+    None for "gone" — which is what the deployment's own `clients destroy`
+    leaves behind); `s3_error` makes that read raise instead. What the registry
+    recorded goes in `deploy_args` under `browser_hot_files`.
+    """
+    hot = _hot_files() if hot_files == "present" else hot_files
+    patched_load = (
+        patch(
+            "saorsa_deploy.analysis.browser_reads.load_hot_files",
+            side_effect=s3_error,
+        )
+        if s3_error is not None
+        else patch("saorsa_deploy.analysis.browser_reads.load_hot_files", return_value=hot)
+    )
     with (
         patch(
             "saorsa_deploy.analysis.browser_reads.get_repository",
             return_value=_Repo(rows, deploy_args),
         ),
-        patch("saorsa_deploy.analysis.browser_reads.load_hot_files", return_value=hot),
+        patched_load,
     ):
         return cmd_browser_reads(args)
+
+
+def _deploy_args(**extra):
+    args = {
+        "kind": "testnet",
+        "browser_downloaders": [
+            {"hostname": "h1", "instances": 4, "round_period_secs": PERIOD},
+            {"hostname": "h2", "instances": 4, "round_period_secs": PERIOD},
+        ],
+    }
+    args.update(extra)
+    return args
 
 
 def test_exit_zero_when_every_gate_passes():
@@ -611,7 +638,91 @@ def test_exit_two_when_no_round_falls_in_the_window():
 
 
 def test_exit_two_when_there_is_no_hot_file_selection():
+    """Neither source has it: nothing recorded, and the S3 object gone."""
     assert _run(_args(), _rows("spread-rows.json"), hot_files=None) == 2
+
+
+def test_the_recorded_snapshot_is_used_after_the_s3_object_is_gone():
+    """The case this report exists for. The selection lives under
+    `addresses/<deployment>/`, which the deployment's own `clients destroy`
+    deletes WHOLE — and the report is run after teardown, so reading S3 first
+    would make a torn-down run's primary verdict unobtainable."""
+    code = _run(
+        _args(json_out=None),
+        _rows("spread-rows.json"),
+        deploy_args=_deploy_args(browser_hot_files=_hot_files()),
+        hot_files=None,
+    )
+    assert code == 0
+
+
+def test_the_recorded_snapshot_is_preferred_over_the_live_object(tmp_path):
+    """Preferred, not merely a fallback: a selection that was `--replace`d since
+    the rounds were recorded says nothing about the rounds in hand, and the
+    report names which source it read."""
+    replaced = _hot_files()
+    replaced["files"] = [
+        {"index": 0, "address": "ff" * 32, "bytes": 1, "source_key": "k", "line": 1}
+    ]
+    json_out = tmp_path / "report.json"
+    code = _run(
+        _args(json_out=str(json_out)),
+        _rows("spread-rows.json"),
+        deploy_args=_deploy_args(browser_hot_files=_hot_files()),
+        hot_files=replaced,
+    )
+    assert code == 0
+    document = json.loads(json_out.read_text())
+    assert document["hot_files"]["source"] == "deploy_args.browser_hot_files"
+    # The recorded selection's two 50 MiB files, not the replacement's one.
+    assert [f["address"] for f in document["hot_files"]["files"]] == [
+        f["address"] for f in _hot_files()["files"]
+    ]
+
+
+def test_the_live_object_is_named_as_the_source_when_nothing_was_recorded(tmp_path):
+    json_out = tmp_path / "report.json"
+    assert _run(_args(json_out=str(json_out)), _rows("spread-rows.json")) == 0
+    source = json.loads(json_out.read_text())["hot_files"]["source"]
+    assert source.startswith("s3://") and "browser-hot-files.json" in source
+
+
+def test_a_half_written_snapshot_falls_back_to_s3():
+    """A document with no `files` list is not a selection, so it must not shadow
+    one that is still readable."""
+    assert (
+        _run(
+            _args(),
+            _rows("spread-rows.json"),
+            deploy_args=_deploy_args(browser_hot_files={"selected_at": "x"}),
+        )
+        == 0
+    )
+
+
+def test_an_s3_failure_with_nothing_recorded_exits_two_not_a_traceback():
+    assert (
+        _run(
+            _args(),
+            _rows("spread-rows.json"),
+            s3_error=RuntimeError("no credentials"),
+        )
+        == 2
+    )
+
+
+def test_an_s3_failure_is_irrelevant_once_a_snapshot_exists():
+    """Which is the whole point of taking one — the report must not depend on
+    reaching S3 at all after teardown."""
+    assert (
+        _run(
+            _args(),
+            _rows("spread-rows.json"),
+            deploy_args=_deploy_args(browser_hot_files=_hot_files()),
+            s3_error=RuntimeError("no credentials"),
+        )
+        == 0
+    )
 
 
 def test_exit_two_when_the_period_is_unknown():

@@ -34,8 +34,10 @@ from saorsa_deploy.browser_reads import (
     rounds_in_window,
 )
 from saorsa_deploy.browser_records import (
+    BROWSER_HOT_FILES_KEY,
     expected_instances,
     recorded_browser_config,
+    recorded_hot_files,
     round_period_from_config,
 )
 from saorsa_deploy.hot_files import hot_files_key, load_hot_files
@@ -103,6 +105,45 @@ def _resolve_period(config: list[dict], rows) -> tuple[int, str]:
         "recorded rounds. Re-run `clients provision` with DATABASE_URL set to "
         "record it."
     )
+
+
+def _resolve_hot_files(deployment, name: str) -> tuple[dict, str]:
+    """The hot-file selection, and where it came from.
+
+    **The registry snapshot comes first, and the live S3 object is only the
+    fallback.** The selection lives at
+    ``addresses/<deployment>/browser-hot-files.json`` and the deployment's own
+    `clients destroy` deletes that WHOLE prefix -- while this report is meant to
+    be run after teardown, so reading S3 first would make the primary verdict of
+    a torn-down run unobtainable. `record-results` snapshots the document in the
+    same pass that records the rows, which is also the more coherent pairing: a
+    selection that was `--replace`d since says nothing about the rounds in hand.
+
+    The S3 read is guarded, so a credentials or connectivity failure becomes the
+    "no selection" error rather than a traceback.
+    """
+    recorded = recorded_hot_files(deployment.deploy_args)
+    if recorded is not None:
+        return recorded, f"deploy_args.{BROWSER_HOT_FILES_KEY}"
+    try:
+        live = load_hot_files(name)
+    except Exception as e:  # noqa: BLE001 -- reported, never a traceback
+        raise BrowserReadsError(
+            f"no hot-file selection recorded for '{deployment.name}' "
+            f"(id={deployment.id}), and s3://{S3_ADDRESSES_BUCKET}/"
+            f"{hot_files_key(name)} could not be read: {e}"
+        )
+    if live is None:
+        raise BrowserReadsError(
+            f"no hot-file selection for '{name}' — nothing is recorded in "
+            f"deploy_args.{BROWSER_HOT_FILES_KEY} and "
+            f"s3://{S3_ADDRESSES_BUCKET}/{hot_files_key(name)} does not exist, "
+            f"so the report cannot say which file each round read. The S3 object "
+            f"is deleted by the deployment's own `clients destroy`; the snapshot "
+            f"is taken by `deployments record-results`, so run that BEFORE "
+            f"tearing a cohort down."
+        )
+    return live, f"s3://{S3_ADDRESSES_BUCKET}/{hot_files_key(name)}"
 
 
 def _render_console(report: dict, console) -> None:
@@ -201,21 +242,14 @@ def _run(args, console) -> int:
             f"{period}s period."
         )
 
-    # Fetched at report time, not recorded with the rows: a selection may have
-    # been replaced, and the document names the files the cohort was reading.
-    hot_files = load_hot_files(args.name)
-    if hot_files is None:
-        raise BrowserReadsError(
-            f"no hot-file selection for '{args.name}' — "
-            f"s3://{S3_ADDRESSES_BUCKET}/{hot_files_key(args.name)} does not "
-            f"exist, so the report cannot say which file each round read."
-        )
+    hot_files, hot_files_source = _resolve_hot_files(deployment, args.name)
 
     report = build_report(
         deployment=deployment.name,
         deployment_id=deployment.id,
         rows=rows,
         hot_files=hot_files,
+        hot_files_source=hot_files_source,
         period_secs=period,
         period_source=period_source,
         expected_instances=expected_instances(config),

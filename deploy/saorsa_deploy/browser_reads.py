@@ -533,6 +533,7 @@ def build_report(
     hot_files: dict | None,
     period_secs: int,
     period_source: str,
+    hot_files_source: str = "",
     expected_instances: int | None,
     window_start: datetime,
     window_end: datetime,
@@ -589,6 +590,12 @@ def build_report(
             "traces_archived": sum(1 for r in rows if _field(r, "trace_s3_key")),
         },
         "hot_files": {
+            # Where the selection was read from, for the same reason
+            # `round_period_source` is reported: the registry snapshot and the
+            # live S3 object can differ (a selection may have been replaced,
+            # or deleted with the address prefix), so a reader must be able to
+            # see which one this report describes.
+            "source": hot_files_source,
             "selected_at": (hot_files or {}).get("selected_at"),
             "size_bytes": (hot_files or {}).get("size_bytes"),
             "files": hot_file_rounds(rows, hot_files),
@@ -686,9 +693,11 @@ def render_markdown(report: dict) -> str:
     if not files:
         lines.append("No hot-file selection carried any file.")
     else:
+        source = report["hot_files"].get("source")
         lines.append(
             f"Selected at `{report['hot_files']['selected_at']}`, "
-            f"{report['hot_files']['size_bytes']:,} bytes each."
+            f"{report['hot_files']['size_bytes']:,} bytes each"
+            + (f", read from `{source}`." if source else ".")
         )
         lines.append("")
         lines.append("| index | address | bytes | source | rounds | round ids |")

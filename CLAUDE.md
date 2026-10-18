@@ -1448,14 +1448,28 @@ summary. `deployments archive` carries the table like the others.
 - **`started_at` is the round's BOUNDARY**, not when the browser came up
   (`started_late_ms` carries that), which is what makes a window selection over
   these rows select whole rounds. The window is half-open on `round_id × period`.
-- **`trace_s3_key` is preserved by the upsert.** It is written by the trace fetch
-  and the Influx point never carries it, so an unconditional assignment would
-  erase the only pointer to a round's trace — and the traces die with the VM.
-- **`clients provision` denormalises the round period and instance count into
-  `deploy_args.browser_downloaders`**, because `clients destroy` deletes the S3
-  client state and the report reads Postgres alone by design. Rebuilt from every
-  client tier each pass (a shallow merge cannot append), best-effort; without it
-  the period is derived from the recorded boundaries.
+- **`trace_s3_key` AND `extension` COALESCE on upsert**, both because the Influx
+  point carries neither, so a re-run that cannot resolve one would erase what an
+  earlier pass recorded. The traces die with the VM, so erasing the pointer
+  leaves no second chance; and `extension` is resolved from state teardown
+  deletes, so a re-run after `clients down` — where a run's procedure puts its
+  second `record-results` — would relabel a whole cohort as the deployment's own
+  tier. `extension` resolves from `deploy_args.browser_downloaders` FIRST and
+  the live client tiers second (the config survives teardown; the two cannot
+  disagree, since the extension name is part of the hostname).
+- **Everything the report needs is snapshotted into the registry, because it
+  reads Postgres alone and runs after the cohort is gone.** `clients provision`
+  denormalises the round period and instance count into
+  `deploy_args.browser_downloaders` (rebuilt from every client tier each pass —
+  a shallow merge cannot append — and without it the period is derived from the
+  recorded boundaries). `record-results` snapshots the hot-file selection into
+  **`deploy_args.browser_hot_files`**, because `browser-hot-files.json` sits
+  under `addresses/<deployment>/` and the deployment's own `clients destroy`
+  deletes that WHOLE prefix — so without it the report exits 2 for exactly the
+  runs it exists to judge. The snapshot is **additive** (a pass that finds no
+  selection leaves an earlier one alone), so **run `record-results` before
+  tearing a cohort down**; the report prefers it and falls back to S3 only when
+  nothing was recorded.
 - **`fetch-browser-traces` exits 2 if any VM is unreachable** — it runs while the
   VMs are up, and a partial archive exiting 0 is indistinguishable from a
   complete one once they are gone. It **never creates a row**: an unmatched trace
