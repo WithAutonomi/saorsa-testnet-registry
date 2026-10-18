@@ -156,6 +156,49 @@ class TestExtensionGuard:
         patches.destroy_boot.assert_called_once()
 
 
+class TestClientExtensionGuard:
+    """The separate guard for CLIENT extensions (`kind: clients`).
+
+    Distinct from the node-extension guard above: a client extension has no
+    deployment state of its own (so `list_extensions_of` cannot see it), and it
+    is `list_client_extensions` that reports one. Both refuse, neither is
+    overridden by `--force`.
+
+    The scan answers "none" for every test via the `no_client_extensions`
+    autouse fixture in conftest, so these two set their own value over it.
+    """
+
+    def test_refuses_while_a_client_extension_stands(self, patches, monkeypatch):
+        from saorsa_deploy import state as state_mod
+
+        monkeypatch.setattr(state_mod, "list_client_extensions", lambda name: ["browsers"])
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_destroy_bootstraps(_args(name="DEV-01"))
+
+        assert exc.value.code == 2
+        # Refused before the state load, so the orphan-tfstate path is covered.
+        patches.load_state.assert_not_called()
+        patches.destroy_boot.assert_not_called()
+        patches.delete_state.assert_not_called()
+
+    def test_refuses_when_the_scan_cannot_complete(self, patches, monkeypatch):
+        # "Could not look" is not "nothing there", and a teardown cannot be
+        # undone. This is the case that was reaching real S3 and failing CI.
+        from saorsa_deploy import state as state_mod
+
+        def boom(name):
+            raise OSError("Unable to locate credentials")
+
+        monkeypatch.setattr(state_mod, "list_client_extensions", boom)
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_destroy_bootstraps(_args(name="DEV-01"))
+
+        assert exc.value.code == 2
+        patches.destroy_boot.assert_not_called()
+
+
 class TestMissingStateFallback:
     def test_scans_s3_for_orphan_bootstrap_tfstate(self, patches):
         patches.load_state.side_effect = RuntimeError("No deployment state found")

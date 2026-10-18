@@ -187,3 +187,50 @@ class TestStopUploaderSshKeyResolution:
         ):
             cmd_destroy_clients(args)
         return p_stop
+
+
+class TestClientExtensionGuard:
+    """The deployment's OWN `clients destroy` refuses while an extension stands.
+
+    It is the command that wipes `addresses/<deployment>/`, and that pool is
+    what an extension's downloaders read. An extension's own destroy
+    (`--extension`) is never guarded: it is the way out.
+    """
+
+    def test_the_un_extended_destroy_refuses(self, patches, monkeypatch):
+        from saorsa_deploy import state as state_mod
+
+        monkeypatch.setattr(state_mod, "list_client_extensions", lambda name: ["browsers"])
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_destroy_clients(_args(name="DEV-02", extension=None))
+
+        assert exc.value.code == 2
+        patches.load_client.assert_not_called()
+        patches.destroy.assert_not_called()
+
+    def test_an_extensions_own_destroy_is_not_guarded(self, patches, monkeypatch):
+        from saorsa_deploy import state as state_mod
+
+        monkeypatch.setattr(
+            state_mod,
+            "list_client_extensions",
+            lambda name: pytest.fail("guarded an extension's own destroy"),
+        )
+        patches.load_client.side_effect = RuntimeError("No client state")
+
+        cmd_destroy_clients(_args(name="DEV-02", extension="browsers"))
+
+    def test_refuses_when_the_scan_cannot_complete(self, patches, monkeypatch):
+        from saorsa_deploy import state as state_mod
+
+        def boom(name):
+            raise OSError("Unable to locate credentials")
+
+        monkeypatch.setattr(state_mod, "list_client_extensions", boom)
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_destroy_clients(_args(name="DEV-02", extension=None))
+
+        assert exc.value.code == 2
+        patches.destroy.assert_not_called()

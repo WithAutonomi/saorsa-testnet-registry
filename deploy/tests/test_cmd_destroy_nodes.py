@@ -341,3 +341,42 @@ class TestRetiresTheLocalSnapshot:
         cmd_destroy_nodes(_args())
 
         assert other.exists()
+
+
+class TestClientExtensionGuard:
+    """`nodes destroy` refuses while a client extension stands.
+
+    A client extension's VMs run their workload against this node fleet, so the
+    fleet cannot go first. The scan answers "none" for every test via the
+    `no_client_extensions` autouse fixture in conftest; these set their own.
+    """
+
+    def test_refuses_while_a_client_extension_stands(self, patches, monkeypatch):
+        from saorsa_deploy import state as state_mod
+
+        monkeypatch.setattr(state_mod, "list_client_extensions", lambda name: ["browsers"])
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_destroy_nodes(_args(name="DEV-02"))
+
+        assert exc.value.code == 2
+        # Refused before the state load, so the orphan-tfstate path is covered.
+        patches.load_state.assert_not_called()
+        patches.execute.assert_not_called()
+        patches.delete_state.assert_not_called()
+
+    def test_refuses_when_the_scan_cannot_complete(self, patches, monkeypatch):
+        # "Could not look" is not "nothing there". This is the case that was
+        # reaching real S3 and failing CI.
+        from saorsa_deploy import state as state_mod
+
+        def boom(name):
+            raise OSError("Unable to locate credentials")
+
+        monkeypatch.setattr(state_mod, "list_client_extensions", boom)
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_destroy_nodes(_args(name="DEV-02"))
+
+        assert exc.value.code == 2
+        patches.execute.assert_not_called()
