@@ -605,23 +605,24 @@ class TestTheVerifierScript:
 
 
 class TestTheClientRoleCommand:
-    """`.env` is loaded as an import side effect of `saorsa_db.db`.
+    """This command takes a raw administrative connection.
 
     Every other command reaches the database through `saorsa_deploy.registry`,
-    which imports it. This one takes a raw administrative connection and
-    imports nothing from `saorsa_db`, so it has to load `.env` itself — without
-    that it reports "No DATABASE_URL configured" while sitting next to a `.env`
+    so `main()`'s startup load of the settings file and `./.env` is what puts
+    DATABASE_URL in the environment for them. This one imports nothing from
+    `saorsa_db` and can be reached directly, so it loads them itself — without
+    that it reports "No DATABASE_URL configured" while sitting next to a file
     that defines one.
     """
 
-    def test_dotenv_is_loaded_before_the_variable_is_read(self, monkeypatch):
-        """The regression: reading os.environ without loading .env first.
+    def test_the_env_files_are_loaded_before_the_variable_is_read(self, monkeypatch):
+        """The regression: reading os.environ without loading the files first.
 
-        `load_dotenv` is stubbed rather than pointed at a real file because it
-        searches upward from the *calling module's* location, so it finds this
-        repo's own .env no matter what the working directory is — which would
-        make the test pass for the wrong reason (and print real credentials on
-        failure). What matters is that `_admin_url` calls it before looking.
+        The loader is stubbed rather than pointed at a real file because the
+        default resolution reaches `~/.config/saorsa-deploy/env` and the
+        checkout's own `.env`, which would make the test pass for the wrong
+        reason (and print real credentials on failure). What matters is that
+        `_admin_url` calls it before looking.
         """
         from rich.console import Console
 
@@ -629,11 +630,11 @@ class TestTheClientRoleCommand:
 
         monkeypatch.delenv("DATABASE_URL", raising=False)
 
-        def fake_load_dotenv(*args, **kwargs):
+        def fake_load_env_files(*args, **kwargs):
             os.environ["DATABASE_URL"] = "postgresql://admin:pw@example.org/reg"
-            return True
+            return []
 
-        monkeypatch.setattr(module, "load_dotenv", fake_load_dotenv)
+        monkeypatch.setattr(module, "load_env_files", fake_load_env_files)
         assert module._admin_url(Console()) == "postgresql://admin:pw@example.org/reg"
 
     def test_a_genuinely_absent_url_still_exits(self, monkeypatch):
@@ -642,7 +643,7 @@ class TestTheClientRoleCommand:
         from saorsa_deploy.cmd import pool_client_role as module
 
         monkeypatch.delenv("DATABASE_URL", raising=False)
-        monkeypatch.setattr(module, "load_dotenv", lambda *a, **k: False)
+        monkeypatch.setattr(module, "load_env_files", lambda *a, **k: [])
         with pytest.raises(SystemExit):
             module._admin_url(Console())
 

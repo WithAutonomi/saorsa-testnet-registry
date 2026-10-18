@@ -255,6 +255,35 @@ server is legacy and partly broken; do not route deployments through it.
 
 `saorsa-deploy` runs locally. It needs cloud credentials in the local environment: `DO_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, SSH keys. When `DATABASE_URL` is set, it automatically records deployments in PostgreSQL.
 
+### Where the credentials come from
+
+The tool loads two files at startup and **neither overrides a variable that is
+already set**, so precedence is: **the environment, then
+`$SAORSA_DEPLOY_ENV_FILE` (else `~/.config/saorsa-deploy/env`), then `./.env`**.
+Flat `KEY=value`, `#` comments, optional quotes, `export ` tolerated, **no
+evaluation** — the format systemd's `EnvironmentFile=` reads, so one file serves
+both the tool and a runner that exports it into a session for its own
+`psql "$DATABASE_URL"`.
+
+- The settings file exists because an **installed** copy has neither of the
+  other sources. `saorsa_db.db` used to `load_dotenv()` at import, and
+  python-dotenv searches upward from the **calling module's file** — a checkout
+  for `uv run`, `~/.cache/uv/…` for a wheel — so a wheel install reported
+  `DATABASE_URL is not set` while the checkout's copy of the same command
+  worked. **`saorsa_db.db` now has no import-time effect on the environment**;
+  each entry point (`saorsa_deploy.main`, `saorsa_web.config`, both Alembic
+  `env.py`, the MCP server) loads its own.
+- **A missing settings file is not an error; one that exists and cannot be read
+  is**, naming the path — "could not look" is not "nothing there".
+- **`saorsa-deploy config env-file`** is the precondition check: it prints the
+  resolved path and, per variable the tool reads, whether it is set — **never a
+  value**, so it is safe in a run log. It **exits 0 whatever it finds**, because
+  most variables are provider- or kind-specific and there is no set whose
+  absence fails every command.
+- `~/.config/saorsa-deploy/canary-publisher.env` is unrelated and unchanged.
+
+See `deploy/README.md` §"Where the credentials come from".
+
 The full testnet sequence is `bootstraps infra` → `nodes infra` → `nodes
 provision-genesis` → `bootstraps provision` → `nodes provision` → `nodes start`;
 teardown is `nodes destroy` → `bootstraps destroy`. `deployments up`/`down`

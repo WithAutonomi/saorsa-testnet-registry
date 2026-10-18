@@ -11,10 +11,10 @@ The URL is printed, never stored: like the wallet key, the manifest holds the
 import os
 import sys
 
-from dotenv import load_dotenv
 from rich.console import Console
 from sqlalchemy import text
 
+from saorsa_deploy.env_file import load_env_files
 from saorsa_deploy.pool_client_role import (
     READ_ONLY_TABLES,
     READ_WRITE_TABLES,
@@ -30,14 +30,12 @@ DEFAULT_ROLE = "ant_pool_client"
 
 
 def _admin_url(console: Console) -> str:
-    # `.env` is loaded as an import side effect of `saorsa_db.db`, and every
-    # other command in this package reaches the database through
-    # `saorsa_deploy.registry`, which imports it. This one takes a raw
-    # administrative connection and imports nothing from `saorsa_db`, so
-    # without this call nothing has read `.env` by the time we look — and the
-    # command reports "No DATABASE_URL configured" while sitting next to a
-    # `.env` that defines it.
-    load_dotenv()
+    # `main()` has already loaded the settings file and `./.env`, so this is
+    # belt and braces for a caller that reaches `_admin_url` directly. It is
+    # cheap and idempotent (nothing loaded ever overrides the environment), and
+    # without something here the command would report "No DATABASE_URL
+    # configured" while sitting next to a file that defines it.
+    load_env_files()
 
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
@@ -45,8 +43,9 @@ def _admin_url(console: Console) -> str:
             "[bold red]Error:[/bold red] No DATABASE_URL configured. Creating "
             "a role needs an administrative connection to the registry — the "
             "scoped role this command creates cannot create itself.\n\n"
-            "Set it in .env (loaded automatically from the repo root) or "
-            "export it."
+            "Set it in ~/.config/saorsa-deploy/env (or the file "
+            "$SAORSA_DEPLOY_ENV_FILE names), in ./.env, or export it. "
+            "`saorsa-deploy config env-file` shows which the tool read."
         )
         sys.exit(1)
     return url
