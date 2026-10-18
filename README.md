@@ -129,20 +129,71 @@ uv run ruff check .
 
 ## Releasing
 
-Both workspace packages share a single version number (SemVer). To cut a new release:
+All four workspace packages (`saorsa-db`, `saorsa-deploy`, `saorsa-web`,
+`saorsa-deploy-mcp`) share a single version number (SemVer), and the release is
+made by CI, not by hand. antops runs a `saorsa-deploy` **wheel pinned by
+version** in their Linear issue, fetched from a GitHub release — so a change to
+the tool that does not move the version is a change no run can ask for.
+
+The flow:
+
+1. **The PR declares the bump.** Its body carries one line that CI parses:
+
+   ```
+   Semantic version: breaking | feature | fix | none
+   ```
+
+   `breaking` for a change under `deploy/` or `db/` that a manifest or caller
+   must adapt to, `feature` for a new command, flag, manifest key or model
+   field, `fix` for any other change to the tool, and `none` for a PR that
+   changes neither tree (documentation, workflows, the web app). Documentation
+   and run manifests inside those trees — `deploy/README.md`,
+   `deploy/manifests/`, `db/README.md` — are not a change to the tool.
+
+2. **The author sets the version**, before committing:
+
+   ```bash
+   uv run scripts/bump_version.py 1.1.0 --no-commit
+   ```
+
+   This edits the four `pyproject.toml` files and `uv.lock` and stops; commit
+   them with the rest of the change.
+
+3. **CI checks it.** The `version-bump` job
+   (`.github/workflows/version-check.yml`, logic in
+   `scripts/check_version_bump.py`) fails the PR unless the four versions agree
+   and the head version is exactly the base version bumped the declared way. It
+   is a required status check on `main`, so a tool change cannot be merged
+   without one. A failing check is fixed by re-bumping, never by editing the
+   check.
+
+4. **CI releases on merge.** `.github/workflows/release.yml` runs on every push
+   to `main`: if tag `v<version>` does not exist it builds both wheels, creates
+   the tag on the merged commit, and publishes a GitHub release titled
+   `v<version>` listing the merged PRs, with
+   `saorsa_db-<version>-py3-none-any.whl` and
+   `saorsa_deploy-<version>-py3-none-any.whl` attached. A merge that declared
+   `none` leaves the version alone, so the tag already exists and the job does
+   nothing.
+
+Fetching a released version — the exact commands an antops run uses:
 
 ```bash
-uv run scripts/bump_version.py 0.2.0
+gh release list
+gh release download v1.0.0 -p '*.whl' -D /tmp/wheels
+uvx --no-sources --find-links /tmp/wheels saorsa-deploy==1.0.0 --version
 ```
 
-This script:
+Running `scripts/bump_version.py` without `--no-commit` still commits, tags and
+pushes in one go. That path is for an emergency release when CI cannot make
+one; it pushes the same `v<version>` tag the release workflow would create.
 
-1. Updates the version in both `web/pyproject.toml` and `mcp/pyproject.toml`
-2. Creates a git commit (`chore: bump version to 0.2.0`)
-3. Creates a git tag (`v0.2.0`)
-4. Pushes the commit and tag to the remote
-
-Pushing the tag triggers the `deploy.yml` GitHub Action, which deploys the app to Digital Ocean App Platform.
+Pushing a `v*` tag **by hand** also triggers the `deploy.yml` GitHub Action,
+which deploys the web app to Digital Ocean App Platform. A tag created by the
+release workflow does not: GitHub does not run workflows on events raised with
+the built-in `GITHUB_TOKEN`, which is what stops a release from re-triggering
+itself. The App Platform deployment is therefore still a by-hand tag push, as
+it was before the release workflow existed.
 
 ### Prerequisites
 

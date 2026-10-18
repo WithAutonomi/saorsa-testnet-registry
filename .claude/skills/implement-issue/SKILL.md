@@ -41,7 +41,7 @@ one to use.
 
   If either is missing, post a comment on the issue saying exactly what is missing, leave its
   status alone, and stop — your final message being `IMPLEMENT COMPLETE <issue> FAILED -` and
-  nothing else, under the rules in Step 7.
+  nothing else, under the rules in Step 8.
 * Note the issue's `gitBranchName` (Linear supplies it; use it verbatim — it keeps Linear's branch
   linking working). If that branch already exists on `origin`, or an open PR already references
   the issue, a previous run got here first: comment on the issue with what you found and stop as
@@ -58,8 +58,8 @@ completed steps.
 git checkout -b <gitBranchName> origin/main
 ```
 
-Set the issue to **In Progress**. Create a task list covering implement → verify → commit → PR →
-Linear, and keep it updated.
+Set the issue to **In Progress**. Create a task list covering implement → verify → version bump →
+commit → PR → Linear, and keep it updated.
 
 ## Step 3 — Implement
 
@@ -123,7 +123,42 @@ not cause — check by running that one test against `origin/main` in a temporar
 Do not weaken a test to make it pass. Do not skip or mark xfail. If you cannot make the gate
 pass on your own changes, go to Blocked.
 
-## Step 5 — Commit
+## Step 5 — Version bump
+
+The four workspace packages share one version number, and a `saorsa-deploy` wheel built from it
+is what an antops run installs — so a change to the tool that does not move the version is a
+change no run can ask for. CI enforces it: the `version-bump` check fails any PR whose declared
+bump type and version do not match what it changes, and it is a required check on `main`.
+
+Decide the type from the issue:
+
+| type | when |
+| -- | -- |
+| `breaking` | a change under `deploy/` or `db/` that a manifest, a caller or an operator's command line must adapt to |
+| `feature` | a new command, flag, manifest key or model field |
+| `fix` | any other change to the tool |
+| `none` | the change touches neither `deploy/` nor `db/`, or the issue says not to bump. Documentation and run manifests inside those trees — `deploy/README.md`, `deploy/manifests/`, `db/README.md` — are not a change to the tool |
+
+For anything but `none`, read the current version from `deploy/pyproject.toml`, apply the bump
+(`breaking` → major+1 with minor and patch reset, `feature` → minor+1 with patch reset, `fix` →
+patch+1) and set it:
+
+```bash
+uv run scripts/bump_version.py <new version> --no-commit
+```
+
+That edits `deploy/`, `db/`, `web/` and `mcp/`'s `pyproject.toml` plus `uv.lock` and stops;
+include all five in the commit. Then write the line
+
+```
+Semantic version: <breaking | feature | fix | none>
+```
+
+into the PR body, under the issue link (Step 7). Without it the check fails the PR. A
+`version-bump` check that fails on your PR is fixed by re-bumping or correcting the declared
+type — **never** by editing the check or the workflow.
+
+## Step 6 — Commit
 
 Stage the files you changed explicitly (`git add <paths>`, never `git add .` / `-A`). Check
 `git diff --cached` once before committing: nothing unrelated, no secrets, no stray files.
@@ -136,7 +171,7 @@ One commit is preferred; several are fine if they are genuinely separate changes
   at 100 columns. A test summary line (`3610 passed` etc.).
 * End with the attribution line the session's system reminder specifies, if one is present.
 
-## Step 6 — Push and open the PR
+## Step 7 — Push and open the PR
 
 ```bash
 git push -u origin <gitBranchName>
@@ -147,7 +182,8 @@ gh pr create --repo jacderida/saorsa-testnet-registry --base main --head <gitBra
 
 The PR body has, in this order:
 
-1. The Linear issue id and URL on the first line (so Linear links it).
+1. The Linear issue id and URL on the first line (so Linear links it), then the
+   `Semantic version:` line from Step 5.
 2. **Summary** — bullets of what changed and why.
 3. **Test plan** — the exact commands run and their results (`ruff` clean, `N passed`), the
    issue-specific verification and what it showed.
@@ -171,9 +207,9 @@ code, a dependency is missing, the gate cannot be made to pass on your own chang
    or failure. If nothing useful exists, commit nothing and open no PR.
 2. Set the issue to **Blocked** and post a comment with the same question or failure and the
    draft PR URL if there is one.
-3. Continue to Step 7 with status `BLOCKED`.
+3. Continue to Step 8 with status `BLOCKED`.
 
-## Step 7 — Exit
+## Step 8 — Exit
 
 Return the checkout to `main` (`git checkout main`) so the next issue starts clean; the branch
 stays pushed. `git status --porcelain` must be empty — if it is not, say what is left and why.

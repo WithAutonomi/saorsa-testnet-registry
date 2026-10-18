@@ -1,6 +1,6 @@
 [project]
 name = "saorsa-deploy-mcp"
-version = "0.2.4"
+version = "1.0.0"
 description = "MCP server for the Saorsa Testnet Registry"
 requires-python = ">=3.13"
 dependencies = [

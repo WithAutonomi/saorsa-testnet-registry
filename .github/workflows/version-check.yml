@@ -1,0 +1,48 @@
+name: Version
+
+# antops runs a `saorsa-deploy` wheel pinned by version, so a change to the
+# tool that does not move the version is a change no run can ask for. The PR
+# declares its bump type in its body; this job checks it. Every decision lives
+# in `scripts/check_version_bump.py`, which is unit-tested — this file only
+# gathers the four inputs.
+
+on:
+  pull_request:
+    # `edited` so that fixing the `Semantic version:` line re-runs the check
+    # without an empty commit.
+    types: [opened, synchronize, edited, reopened]
+
+jobs:
+  version-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The head itself, not the merge commit: the versions being checked
+          # are the ones the PR author set.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Gather the PR's inputs
+        env:
+          # Via the environment, never interpolated into the script: a PR body
+          # is attacker-controlled text.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          git show "$BASE_SHA:deploy/pyproject.toml" > "$RUNNER_TEMP/base-deploy-pyproject.toml"
+          git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+          echo "Changed files:"
+          cat "$RUNNER_TEMP/changed-files.txt"
+      - name: Check the version bump
+        run: |
+          python scripts/check_version_bump.py \
+            --repo-root . \
+            --base-pyproject "$RUNNER_TEMP/base-deploy-pyproject.toml" \
+            --body-file "$RUNNER_TEMP/pr-body.md" \
+            --changed-files "$RUNNER_TEMP/changed-files.txt"

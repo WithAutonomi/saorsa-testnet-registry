@@ -2471,4 +2471,4 @@ See `deploy/README.md` §"Elasticsearch" for the full argument tables.
 - `cd db && uv run alembic upgrade head` - Apply migrations
 - `uv run ruff check . --fix` - Lint and fix
 - `uv run pytest deploy/tests/` - Run deploy package tests
-- `uv run scripts/bump_version.py <version>` - Bump version across all packages, commit, tag, and push
+- `uv run scripts/bump_version.py <version> --no-commit` - Set the shared version across all four packages while preparing a PR (CI's `version-bump` check requires it for any change under `deploy/` or `db/`, and CI makes the tagged release with wheels on merge; see README.md §Releasing). Without `--no-commit` it also commits, tags and pushes — emergencies only
