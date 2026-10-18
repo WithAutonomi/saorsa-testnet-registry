@@ -79,6 +79,12 @@ def deploy_patches():
         patch(
             "saorsa_deploy.cmd.prod_continuous_downloader._start_prod_downloader"
         ) as p_start_clients,
+        # The deploy's final step is a best-effort client-telegraf provision,
+        # which reads monitoring state — a real s3.GetObject. It is swallowed,
+        # so these tests passed either way, but they were the last two in the
+        # suite making a live AWS call. Patched here, not asserted on: what the
+        # tests are about is the recorded cadence.
+        patch("saorsa_deploy.cmd.provision_telegraf_metrics.provision_client_telegraf_best_effort"),
     ):
         yield SimpleNamespace(
             record_create=p_create,
