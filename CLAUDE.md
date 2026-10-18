@@ -159,8 +159,10 @@ uv run ruff check .
 Everything `saorsa-deploy` writes locally lives under
 **`~/.local/share/saorsa-deploy/`** — `workspaces/` (the Terraform working copies,
 one per tier/region) and `infra-logs/<deployment>/` (the `up` lane logs) —
-overridable with **`SAORSA_DEPLOY_STATE_DIR`** (which is also how the tests
-isolate themselves). `state_dir()` in `deploy/saorsa_deploy/paths.py` is the one
+overridable with **`SAORSA_DEPLOY_STATE_DIR`** — in the environment or in the
+settings file, since `main()` loads that first and `state_dir()` reads the
+environment when called — which is also how the tests isolate themselves.
+`state_dir()` in `deploy/saorsa_deploy/paths.py` is the one
 definition; `grep -rn '"\.saorsa"' deploy/saorsa_deploy` is empty and a test
 asserts it stays that way.
 

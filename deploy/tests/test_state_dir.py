@@ -15,12 +15,18 @@ from rich.console import Console
 from saorsa_deploy import parallel_infra, paths
 from saorsa_deploy.bootstrap import _build_bootstrap_configs
 from saorsa_deploy.cmd.migration_infra import _workspace_dir as migration_workspace_dir
+from saorsa_deploy.env_file import ENV_FILE_VAR, load_env_files
 from saorsa_deploy.orchestrator.steps import Step, StepGroup
 from saorsa_deploy.paths import state_dir
 
 # The source tree must not grow a second cwd-relative state location: the
 # directory a command runs from is not allowed to decide where its state lives.
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "saorsa_deploy"
+
+#: `env_file` resolves `./.env` against the cwd deliberately — that is the
+#: documented third place a credential can come from, and it is a file the
+#: operator wrote, not state the tool writes. Everything else is an offender.
+CWD_RELATIVE_BY_DESIGN = {"env_file.py"}
 
 
 class TestStateDir:
@@ -50,6 +56,20 @@ class TestStateDir:
         monkeypatch.chdir(tmp_path)
         assert state_dir() == before
 
+    def test_the_settings_file_can_set_it(self, monkeypatch, tmp_path):
+        """An installed copy has no `.env`, so the override must work there too.
+
+        `main()` loads the settings file before importing any command module,
+        and `state_dir()` reads the environment when it is called, so a value
+        set there reaches every command.
+        """
+        env_file = tmp_path / "env"
+        env_file.write_text(f"{paths.STATE_DIR_ENV_VAR}={tmp_path / 'from-settings'}\n")
+        monkeypatch.setenv(ENV_FILE_VAR, str(env_file))
+        monkeypatch.delenv(paths.STATE_DIR_ENV_VAR, raising=False)
+        load_env_files(cwd=tmp_path)
+        assert state_dir() == tmp_path / "from-settings"
+
 
 class TestWorkspacePaths:
     """Workspaces moved wholesale: same last component, new parent."""
@@ -76,7 +96,8 @@ class TestWorkspacePaths:
         offenders = [
             str(path.relative_to(SOURCE_ROOT))
             for path in SOURCE_ROOT.rglob("*.py")
-            if '".saorsa"' in path.read_text() or "Path.cwd() /" in path.read_text()
+            if path.name not in CWD_RELATIVE_BY_DESIGN
+            and ('".saorsa"' in path.read_text() or "Path.cwd()" in path.read_text())
         ]
         assert offenders == []
 

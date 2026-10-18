@@ -172,6 +172,7 @@ class TestTheKeyInventory:
             "ARBITRUM_ONE_SECRET_KEY",
             "GITHUB_TOKEN",
             "ANT_DEPLOY_SLACK_BOT_TOKEN",
+            "SAORSA_DEPLOY_STATE_DIR",
         ):
             assert expected in names
 

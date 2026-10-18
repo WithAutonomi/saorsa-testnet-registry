@@ -130,8 +130,11 @@ parallel-lane logs — lives under **one** directory per machine:
   infra-logs/<NAME>/ # lane00-nodes-infra.log, lane01-elastic-infra.log, ...
 ```
 
-`SAORSA_DEPLOY_STATE_DIR` overrides the location. Nothing else about a command
-depends on where it is invoked from: `deployments up` from one directory and
+`SAORSA_DEPLOY_STATE_DIR` overrides the location, from the environment or from
+the settings file above (`main()` loads that before any command module, and
+`state_dir()` reads the environment when it is called, so an installed copy with
+no `.env` honours it too). Nothing else about a command depends on where it is
+invoked from: `deployments up` from one directory and
 `deployments down --name X` from another use the same workspaces. That is the
 point — these paths used to be `<cwd>/.saorsa/...`, so the working state of a
 deployment was a property of whichever directory created it, every directory a

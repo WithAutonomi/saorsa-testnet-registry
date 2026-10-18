@@ -30,6 +30,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from saorsa_deploy.paths import DEFAULT_STATE_DIR
+
 #: Environment variable naming an alternative settings file.
 ENV_FILE_VAR = "SAORSA_DEPLOY_ENV_FILE"
 
@@ -155,6 +157,15 @@ ENV_KEY_GROUPS: tuple[EnvKeyGroup, ...] = (
                 "GITHUB_TOKEN", "Raise the release-lookup rate limit (GH_TOKEN is the fallback)"
             ),
             EnvKey("GH_TOKEN", "Fallback spelling of GITHUB_TOKEN"),
+        ),
+    ),
+    EnvKeyGroup(
+        "Paths",
+        (
+            EnvKey(
+                "SAORSA_DEPLOY_STATE_DIR",
+                f"Terraform workspaces and lane logs (default {DEFAULT_STATE_DIR})",
+            ),
         ),
     ),
     EnvKeyGroup(
