@@ -162,6 +162,7 @@ class DeploymentRepository(ABC):
         name: str,
         deploy_args: dict,
         workflow_run_id: int | None = None,
+        saorsa_deploy_version: str | None = None,
     ) -> Deployment: ...
 
     @abstractmethod
@@ -793,11 +794,13 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         name: str,
         deploy_args: dict,
         workflow_run_id: int | None = None,
+        saorsa_deploy_version: str | None = None,
     ) -> Deployment:
         deployment = Deployment(
             name=name,
             deploy_args=deploy_args,
             workflow_run_id=workflow_run_id,
+            saorsa_deploy_version=saorsa_deploy_version,
             status=DeploymentStatus.PENDING,
         )
         self.session.add(deployment)

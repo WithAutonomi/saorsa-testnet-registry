@@ -716,6 +716,19 @@ def build_slack_blocks(
         _section(f"*Deployed:* {_fmt_dt(deployment.created_at)}"),
     ]
 
+    # The tool version that STARTED the run, recorded on the row at creation.
+    # Named explicitly when it is absent: a missing line would read as a
+    # summary nobody thought to include it in, where "not recorded" is the
+    # actual answer for every row created before the column existed.
+    tool_version = getattr(deployment, "saorsa_deploy_version", None)
+    blocks.append(
+        _section(
+            f"*saorsa-deploy:* `{tool_version}`"
+            if tool_version
+            else "*saorsa-deploy:* _(not recorded)_"
+        )
+    )
+
     purpose = deploy_args.get("purpose")
     if purpose:
         blocks.append(_section(f"*Purpose:*\n{purpose}"))

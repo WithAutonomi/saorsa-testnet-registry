@@ -163,6 +163,7 @@ def _load_run(repo, deployment_id: int, window_label: str, console: Console):
     return RunMetrics(
         deployment_id=deployment.id,
         name=deployment.name,
+        saorsa_deploy_version=deployment.saorsa_deploy_version,
         window_label=window_label,
         window_start=window_start,
         window_end=window_end,
@@ -300,6 +301,16 @@ def cmd_compare_runs(args) -> None:
         if new_baseline
         else f"{baseline.name} (#{baseline.deployment_id})"
     )
+    # Context for reading the gates, never a gate itself: a difference between
+    # two runs produced by different tool versions may be the tool's, and that
+    # is for the reader to weigh.
+    cand_tool = candidate.saorsa_deploy_version or "not recorded"
+    if new_baseline:
+        console.print(f"[dim]saorsa-deploy: candidate {cand_tool}[/dim]")
+    else:
+        base_tool = baseline.saorsa_deploy_version or "not recorded"
+        console.print(f"[dim]saorsa-deploy: candidate {cand_tool}, baseline {base_tool}[/dim]")
+
     table = Table(
         title=(
             f"Gate comparison: {candidate.name} (#{candidate.deployment_id}) vs "

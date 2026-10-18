@@ -92,9 +92,24 @@ Use the abstract interface for unit testing with fakes.
 
 ### Models
 
-- `Deployment` — id, name, status (enum), workflow_run_id (nullable), deploy_args (JSON), timestamps
+- `Deployment` — id, name, status (enum), workflow_run_id (nullable), deploy_args (JSON), `saorsa_deploy_version` (nullable), timestamps
 - `DeploymentEvent` — id, deployment_id (FK), event_type, details (JSON), timestamp
 - `DeploymentStatus` — pending, running, stopped, failed, destroying, destroyed
+
+**`saorsa_deploy_version` is the version that STARTED the run.** antops pins a
+tool version per job, so a run has to be able to name the one that executed it,
+and the registry — not a Linear comment — is where that is looked up months
+later. Written once by the creating command (every creation site funnels through
+`record_deployment_created`) and never moved: a resumed `up` skips the
+journalled step that created the row, and `record-results` / `record-analysis`
+key on the id and do not touch it, so a run begun on 1.0.0 and recorded by
+1.2.0 still reads 1.0.0. `prod continuous-uploader deploy` reuses its existing
+row by design, so its version stays the one that first stood it up. **Nullable
+and never backfilled** — a pre-column row and a web-app-created row both read
+null, rendered `-` by `deployments ls` and "not recorded" by `deployments print`
+and the `compare` header, because a guessed version reads as a fact.
+`deployments compare` prints both runs' versions in its report header and
+**never gates on them**.
 
 ## Deployment Statuses
 

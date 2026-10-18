@@ -22,6 +22,33 @@ A PR that changes `deploy/` or `db/` must bump the version and declare the bump
 type in its body; CI's `version-bump` check enforces it. See the repository
 README's "Releasing" section.
 
+### The version is recorded on the run
+
+Every row `deployments up` creates carries the version of the tool that created
+it, in `deployments.saorsa_deploy_version`. A Linear comment is not where
+someone comparing two runs months later looks; the registry is, and the tool
+version is a fact of the same kind as the `ant-node` version a run deployed.
+
+- The value is the version that **started** the run. It is written once, at
+  creation, and nothing afterwards moves it: a resumed `up` skips the journalled
+  step that created the row, and `record-results`, `record-analysis` and every
+  other recording command key on the deployment id and never touch the column.
+  So a run begun on 1.0.0 and recorded by 1.2.0 still reads 1.0.0.
+- `prod continuous-uploader deploy` deliberately **reuses** its existing row
+  (that kind is re-provisioned in place and a fresh row would scatter its
+  history), so its version stays the one that first stood the deployment up.
+- The column is **nullable and never backfilled**. Every row created before it
+  existed reads null, as does one created by the web app, which knows nothing
+  about the CLI. `deployments ls` renders null as `-`; `deployments print` and
+  the `deployments compare` header say "not recorded". A guess would read as a
+  fact, which is worse than an absence.
+- Where it shows up: the `Tool` column of `deployments ls`, a
+  `saorsa-deploy:` line in the `deployments print` summary (and so in the
+  `deployments slack-post` message), and two header lines in the
+  `deployments compare` report. **`compare` never gates on it** — two runs
+  produced by different tool versions are still compared; the version is context
+  for reading a difference, not itself a gate.
+
 ## Prerequisites
 
 - Python >= 3.10
@@ -2728,6 +2755,8 @@ uv run saorsa-deploy deployments compare --id 474 --baseline-id 470 \
 ```
 
 Both runs are named by **deployment id, never by name** — staging names are reused every train, and a name lookup resolves to whichever run was most recent.
+
+The report header names each run's `saorsa-deploy` version (`not recorded` for a run predating the column), as information only: a difference between two runs built by different tool versions may be the tool's, and weighing that is the reader's job. No gate reads it. See §"The version is recorded on the run".
 
 #### Arguments
 

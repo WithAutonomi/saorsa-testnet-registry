@@ -161,6 +161,15 @@ def render_report(verdict: dict, computed_at: str | None = None) -> str:
         coverage = run.get("activity_coverage")
         if coverage is not None:
             lines.append(f"- {label} activity coverage: {100 * coverage:.1f}% of window")
+    # Information only -- the comparison never gates on the tool version. Both
+    # runs are named even when neither recorded one, because a line that
+    # disappeared when the value was null would read as a report that did not
+    # consider it.
+    for label, run in (("Candidate", candidate), ("Baseline", baseline)):
+        if verdict.get("new_baseline") and label == "Baseline":
+            continue
+        tool = run.get("saorsa_deploy_version")
+        lines.append(f"- {label} saorsa-deploy: {f'`{tool}`' if tool else 'not recorded'}")
     lines.append(f"- Threshold config version: {verdict['threshold_config_version']}")
     lines.append(f"- Outbound ratio metric: `{verdict['outbound_ratio_metric']}`")
     if computed_at:
