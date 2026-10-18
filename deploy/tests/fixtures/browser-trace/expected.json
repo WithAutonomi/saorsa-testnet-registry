@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Hand-checked derived fields for hot-read.jsonl. Read the fixture top to",
+    "bottom against lib/derive.mjs; every number below is a decision the",
+    "fixture was written to force.",
+    "",
+    "stalls = 2 -- dial-2 (10012 ms, no channel-open) and dial-3 (9340 ms, no",
+    "channel-open). dial-1 reached channel-open and finished. dial-4 failed in",
+    "74 ms, which is a refusal and not the 10 s channel-open timeout. dial-5",
+    "failed at 9600 ms, inside the stall window, but DID reach channel-open --",
+    "it failed at the authentication layer, not at the transport, so counting",
+    "it would attribute an admission failure to NAT.",
+    "",
+    "refused_dials = 1 -- dial-4 alone; its detail names the refusal. It is",
+    "counted separately from a stall precisely so a per-IP quota mistake (a",
+    "fifth instance on the VM) cannot be read as a NAT'd fleet.",
+    "",
+    "first_reads = 4 entries. chunk01 has three preceding candidates (peerA and",
+    "peerE from lookup-progress, peerF from discovery) and its first GET went",
+    "to peerA -- the second GET to peerE is a FALLBACK and is not recorded.",
+    "chunk02 has one candidate. chunk03 has none, so known_holders is 0 (the",
+    "client read a peer it had from somewhere other than a logged lookup).",
+    "chunk04's GET carries no peer and is skipped -- there is no holder to",
+    "name. chunk05's rpc is a PUT, not a GET. chunk06's candidate record",
+    "carries its whole set in `detail.peers`, which is absorbed: 4 holders, and",
+    "the first GET went to peerG."
+  ],
+  "stalls": 2,
+  "refused_dials": 1,
+  "first_reads": [
+    { "chunk": "chunk01", "holder": "peerA", "known_holders": 3 },
+    { "chunk": "chunk02", "holder": "peerE", "known_holders": 1 },
+    { "chunk": "chunk03", "holder": "peerA", "known_holders": 0 },
+    { "chunk": "chunk06", "holder": "peerG", "known_holders": 4 }
+  ]
+}

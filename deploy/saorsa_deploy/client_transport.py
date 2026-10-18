@@ -23,7 +23,7 @@ is not.
 
 from __future__ import annotations
 
-from saorsa_deploy.client_roles import is_wasm
+from saorsa_deploy.client_roles import is_browser, is_wasm
 
 NATIVE = "native"
 WASM = "wasm"
@@ -76,8 +76,16 @@ def transport_map_from_deploy_args(deploy_args: dict | None) -> dict[str, str]:
 
 
 def transport_for_role(role: str | None) -> str | None:
-    """The transport a client role implies, or None for an unknown role."""
-    if not role:
+    """The transport a client role implies, or None when the question does not apply.
+
+    None for an unknown role, and None for the BROWSER role: it writes its own
+    `browser_download` measurement and never an `upload` or a `download`, so it
+    has no row for a transport label to go on. Returning `native` for it (which
+    an `is_wasm` test alone does) would hand the results pipeline a browser host
+    mapped to the wrong transport the moment anything started reading its
+    operations.
+    """
+    if not role or is_browser(role):
         return None
     return WASM if is_wasm(role) else NATIVE
 

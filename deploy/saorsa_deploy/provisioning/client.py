@@ -7,22 +7,26 @@ from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
 from pyinfra.api.operation import add_op
 from pyinfra.api.operations import run_ops
-from pyinfra.operations import server
+from pyinfra.operations import files, server
 from rich.console import Console
 
 from saorsa_deploy.client_roles import (
+    ROLE_BROWSER_DOWNLOAD,
     ROLE_POINTER,
     ROLE_UPLOAD,
     WASM_MAX_FILE_BYTES,
+    is_browser,
     is_pointer,
     is_upload,
     is_wasm,
     unit_for_role,
 )
+from saorsa_deploy.hot_files import addresses_base_url
 from saorsa_deploy.prod_bootstraps import (
     REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
     render_bootstrap_peers_toml,
 )
+from saorsa_deploy.provisioning import browser_client as browser
 from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     SET_HOSTNAME_OP_NAME,
@@ -184,6 +188,17 @@ WASM_ENV_QUOTED_KEYS = (
     "RPC_URL",
     "PAYMENT_TYPE",
     "RUST_LOG",
+)
+
+
+#: Values in the browser harness's env file that must be quoted: a multiaddr
+#: list and a URL both carry characters systemd would otherwise read oddly in an
+#: unquoted EnvironmentFile value.
+BROWSER_ENV_QUOTED_KEYS = (
+    "BOOTSTRAP_WEBRTC_MULTIADDRS",
+    "ADDRESSES_BASE_URL",
+    "INFLUX_URL",
+    "INFLUX_TOKEN",
 )
 
 
@@ -354,8 +369,23 @@ class AntClientProvisioner:
                     "forward_logs": forward_logs,
                     "rust_log": rust_log,
                     "upload_presigned_url": "",
+                    **(self._browser_env(c) if is_browser(role) else {}),
                 }
         return ip_to_env
+
+    @staticmethod
+    def _browser_env(client: dict) -> dict:
+        """The three knobs one browser-downloader VM runs at.
+
+        Read from the client's own recorded spec, not from a shared default:
+        two cohorts in one deployment may legitimately differ, and the recorded
+        value is the one `clients infra` matched the VM against.
+        """
+        return {
+            "instances": client.get("instances", 4),
+            "round_period_secs": client.get("round_period_secs", 600),
+            "download_timeout_secs": client.get("download_timeout_secs", 300),
+        }
 
     def _pointer_env(self, client: dict) -> dict:
         """The workload rates one pointer client runs at, and where it publishes.
@@ -505,6 +535,159 @@ class AntClientProvisioner:
                 host=[host],
             )
 
+    def _add_browser_ops(self, state, ip_to_env: dict) -> None:
+        """Provision the headless-Chromium harness on every browser-role host.
+
+        No-op when the deployment has none, which keeps every existing
+        deployment's client provisioning byte-for-byte unchanged.
+
+        Four pieces: Node 22 (the major the bundle is built against), Playwright
+        and its Chromium, the harness from this package, and the deployment's
+        own WASM bundle. The bundle check is the one that matters most -- it
+        fails the pass unless the installed bytes export `setBrowserTrace`,
+        because without the hook every round runs, succeeds and reports zero
+        stalls, zero refusals and no first reads, which reads as a clean network
+        rather than as a missing instrument.
+        """
+        browser_ips = {ip for ip, env in ip_to_env.items() if is_browser(env["role"])}
+        if not browser_ips:
+            return
+        if not self.wasm_bundle_url:
+            raise RuntimeError(
+                "Browser-downloader clients are configured but no WASM bundle "
+                "URL was resolved — run `build ant-wasm --name <name> "
+                "--branch-name <branch> --repo-owner <owner> --features "
+                "'browser-wasm,test-utils'` first"
+            )
+        if not self.bootstrap_webrtc_multiaddrs:
+            raise RuntimeError(
+                "Browser-downloader clients are configured but the deployment "
+                "state holds no WebRTC-Direct bootstrap addresses — run "
+                "`deployments webrtc-addresses --name <name>` after the nodes "
+                "are started"
+            )
+
+        hosts = [h for h in state.inventory.get_active_hosts() if h.name in browser_ips]
+        if not hosts:
+            return
+
+        self.console.print(
+            f"[cyan]Provisioning {len(hosts)} browser-downloader host(s) "
+            f"({len(self.bootstrap_webrtc_multiaddrs)} bootstrap address(es)).[/cyan]"
+        )
+
+        add_op(
+            state,
+            server.shell,
+            name=f"Install Node.js {WASM_NODE_MAJOR}",
+            commands=[build_node_install_command()],
+            host=hosts,
+        )
+        src = get_resources_dir() / "browser-client"
+        add_op(
+            state,
+            server.shell,
+            name="Deploy browser downloader harness",
+            commands=[
+                f"mkdir -p {browser.BROWSER_CLIENT_DIR}/lib "
+                f"{browser.BROWSER_CLIENT_TRACE_DIR} {browser.BROWSER_FORWARD_LOG_DIR}"
+            ],
+            host=hosts,
+        )
+        # The harness is plain ESM with no build step, so the files are copied as
+        # they are committed -- which is what lets `node --test` run them here
+        # and on a VM against the same bytes. `package.json` goes up BEFORE the
+        # npm install below, so npm has a manifest to install into rather than
+        # synthesising one in a directory it knows nothing about.
+        for rel in [
+            "package.json",
+            "harness.mjs",
+            *(f"lib/{m.name}" for m in sorted((src / "lib").glob("*.mjs"))),
+        ]:
+            add_op(
+                state,
+                files.put,
+                name=f"Upload {rel}",
+                src=str(src / rel),
+                dest=f"{browser.BROWSER_CLIENT_DIR}/{rel}",
+                host=hosts,
+            )
+        add_op(
+            state,
+            server.shell,
+            name=f"Install Playwright {browser.PLAYWRIGHT_VERSION} and Chromium",
+            commands=[browser.build_playwright_install_command()],
+            host=hosts,
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Install WASM bundle for the browser harness",
+            commands=[browser.build_bundle_install_command(self.wasm_bundle_url)],
+            host=hosts,
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Verify the bundle carries the browser trace hook",
+            commands=[browser.build_trace_hook_check_command()],
+            host=hosts,
+        )
+
+        seeds = ",".join(self.bootstrap_webrtc_multiaddrs)
+        unit = unit_for_role(ROLE_BROWSER_DOWNLOAD)
+        for host in hosts:
+            env = ip_to_env[host.name]
+            values = {
+                "TESTNET_NAME": self.deployment_name,
+                "HOST_ROLE": "browser_downloader",
+                "REGION": env["region"],
+                "INSTANCES": env["instances"],
+                "ROUND_PERIOD_SECS": env["round_period_secs"],
+                "DOWNLOAD_TIMEOUT_SECS": env["download_timeout_secs"],
+                "BOOTSTRAP_WEBRTC_MULTIADDRS": seeds,
+                # Unsigned HTTPS base of the deployment's address prefix: the
+                # harness GETs the hot-file manifest from under it and signs
+                # nothing, so a skewed clock cannot have its requests rejected.
+                "ADDRESSES_BASE_URL": addresses_base_url(self.deployment_name),
+                "BUNDLE_DIR": browser.BROWSER_BUNDLE_DIR,
+                "BUNDLE_PORT": browser.BROWSER_BUNDLE_PORT,
+                "TRACE_DIR": browser.BROWSER_CLIENT_TRACE_DIR,
+                "FORWARD_LOGS": env["forward_logs"],
+            }
+            if self.influx_url and self.influx_token:
+                values.update(
+                    {
+                        "INFLUX_URL": self.influx_url,
+                        "INFLUX_TOKEN": self.influx_token,
+                        "INFLUX_ORG": self.influx_org,
+                        # The WASM bucket, beside the other browser-path
+                        # operations. `browser_download` is its own measurement
+                        # within it, so nothing averages this workload with the
+                        # WASM roles' random-file downloads.
+                        "INFLUX_BUCKET": INFLUXDB_WASM_BUCKET,
+                    }
+                )
+            body = browser.render_env_file(values, quoted=BROWSER_ENV_QUOTED_KEYS)
+            add_op(
+                state,
+                server.shell,
+                name="Write browser downloader env file and unit",
+                commands=[
+                    f"cat > {browser.BROWSER_CLIENT_ENV_PATH} << 'ENV_EOF'\n{body}ENV_EOF\n"
+                    f"chmod 600 {browser.BROWSER_CLIENT_ENV_PATH}\n"
+                    f"cat > /etc/systemd/system/{unit}.service << 'UNIT_EOF'\n"
+                    f"{browser.build_systemd_unit()}UNIT_EOF\n"
+                    "systemctl daemon-reload"
+                ],
+                host=[host],
+            )
+
+    @property
+    def browser_clients(self) -> list[dict]:
+        """Clients running the real-browser transport, with an IP."""
+        return [c for c in self.clients if c.get("ip") and is_browser(c.get("role", "upload"))]
+
     @property
     def wasm_clients(self) -> list[dict]:
         """Clients running the WASM transport (either role), with an IP."""
@@ -537,6 +720,13 @@ class AntClientProvisioner:
                 "/var/log/ant-client-forward/pointer.stderr.log",
             ],
             "pointer",
+        ),
+        # The browser harness tees its own streams into these. A role missing
+        # from this map forwards NOTHING while reporting nothing wrong, which is
+        # how both WASM roles silently forwarded nothing for a release.
+        ROLE_BROWSER_DOWNLOAD: (
+            [browser.BROWSER_STDOUT_LOG, browser.BROWSER_STDERR_LOG],
+            "browser_downloader",
         ),
     }
 
@@ -657,6 +847,24 @@ class AntClientProvisioner:
             Params={"Bucket": self.addresses_s3_bucket, "Key": key},
             ExpiresIn=7 * 24 * 3600,
         )
+
+    @staticmethod
+    def _native_only(ip_to_env: dict) -> dict:
+        """The hosts whose systemd unit the NATIVE writer is responsible for.
+
+        Every role whose unit is written elsewhere has to be excluded here. The
+        native writer's role case block has no arm for them, so a host left in
+        falls into its `else` and is given an `ant-downloader.service` --- which
+        `clients start` then cannot find, because it maps the real role to its
+        unit. That happened to both WASM roles once already; a method rather
+        than an inline comprehension so the next role added can be guarded by a
+        test instead of by a reviewer.
+        """
+        return {
+            ip: env
+            for ip, env in ip_to_env.items()
+            if not is_wasm(env["role"]) and not is_browser(env["role"])
+        }
 
     @staticmethod
     def _case_entry(ip: str, env: dict) -> str:
@@ -1051,6 +1259,11 @@ ENV_EOF"""
             # bundle they have no use for.
             self._add_wasm_ops(state, ip_to_env)
 
+            # --- browser (real headless Chromium) clients -----------------
+            # Targeted per host for the same reason: a native or WASM client VM
+            # has no use for Playwright or a 300 MB Chromium.
+            self._add_browser_ops(state, ip_to_env)
+
             # Write only the systemd unit matching each host's role. The old
             # unit (if any) is removed so stale services don't linger when a VM
             # flips role during reprovisioning.
@@ -1060,7 +1273,7 @@ ENV_EOF"""
 
             # Native roles only: a WASM host's unit is written by
             # _add_wasm_ops, and must not be overwritten here.
-            native_env = {ip: env for ip, env in ip_to_env.items() if not is_wasm(env["role"])}
+            native_env = self._native_only(ip_to_env)
             if native_env:
                 unit_case_entries = [
                     f'    "{ip}") ROLE={env["role"]} ;;' for ip, env in native_env.items()

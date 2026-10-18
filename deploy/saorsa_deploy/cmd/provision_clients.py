@@ -4,7 +4,13 @@ from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.client_extension import CLIENT_BINARIES_STATE_KEY
-from saorsa_deploy.client_roles import ROLE_LABELS, ROLE_UPLOAD, is_upload, is_wasm
+from saorsa_deploy.client_roles import (
+    ROLE_LABELS,
+    ROLE_UPLOAD,
+    is_browser,
+    is_upload,
+    is_wasm,
+)
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
@@ -31,6 +37,11 @@ from saorsa_deploy.wallet import (
     to_token_units,
     transfer_eth,
     transfer_token,
+)
+from saorsa_deploy.wasm_build import (
+    DEFAULT_FEATURES,
+    TEST_UTILS_FEATURE,
+    features_include,
 )
 
 
@@ -420,6 +431,37 @@ def _resolve_wasm_bundle(args, console) -> str:
     return url
 
 
+def _require_trace_features(args, console) -> None:
+    """Refuse a browser-downloader tier unless the bundle carries `test-utils`.
+
+    The features come from ``--wasm-features`` on the deployment's own path and
+    from the deployment's RECORDED features on an extension's (filled in by
+    :func:`_apply_recorded_client_binaries`), so an extension inherits the
+    answer rather than guessing it. Exit 2, the same code every other
+    manifest-level refusal uses, because the fix is a manifest edit and a
+    rebuild, not a retry.
+
+    The installed bytes are checked again on the VM, in the provisioning pass:
+    this catches the mistake before a VM exists, that catches a bundle rebuilt
+    without the feature under the same branch name.
+    """
+    features = getattr(args, "wasm_features", None) or DEFAULT_FEATURES
+    if features_include(features, TEST_UTILS_FEATURE):
+        return
+    console.print(
+        f"[bold red]Error:[/bold red] this deployment has browser-downloader "
+        f"clients, but its WASM bundle was built with features "
+        f"'{features}' — which does not include '{TEST_UTILS_FEATURE}'. The "
+        f"role's entire output is derived from the bundle's `setBrowserTrace` "
+        f"hook, which only a {TEST_UTILS_FEATURE} build carries: without it "
+        f"every round would run, succeed, and report zero stalls, zero refused "
+        f"dials and no first reads. Set "
+        f'`testnet.binaries.ant_wasm.features: "browser-wasm,{TEST_UTILS_FEATURE}"` '
+        f"in the manifest and re-run `build ant-wasm`."
+    )
+    sys.exit(2)
+
+
 def _record_client_binaries(args, console) -> None:
     """Record the client-binary source on the deployment's S3 state.
 
@@ -445,6 +487,12 @@ def _record_client_binaries(args, console) -> None:
             "repo_owner": (
                 getattr(args, "wasm_repo_owner", None) or getattr(args, "repo_owner", None)
             ),
+            # The cargo features the bundle was built with. Recorded because a
+            # browser-downloader tier REQUIRES a `test-utils` build and an
+            # extension has no other way to know what the deployment built --
+            # and because a bundle is identified by its commit plus its
+            # features, not by its commit alone.
+            "features": getattr(args, "wasm_features", None) or DEFAULT_FEATURES,
         },
     }
     try:
@@ -494,6 +542,7 @@ def _apply_recorded_client_binaries(args, console) -> None:
             ("ant_version", ant.get("version")),
             ("wasm_branch_name", wasm.get("branch")),
             ("wasm_repo_owner", wasm.get("repo_owner")),
+            ("wasm_features", wasm.get("features")),
         ):
             if value:
                 setattr(args, field, value)
@@ -687,7 +736,17 @@ def cmd_provision_clients(args):
     # deployment neither reads the state key nor needs a bundle.
     wasm_bundle_url = None
     bootstrap_webrtc_multiaddrs: list[str] = []
-    if any(is_wasm(c.get("role", "upload")) for c in clients):
+    has_browser = any(is_browser(c.get("role", "upload")) for c in clients)
+    if has_browser:
+        # Checked BEFORE the bundle is resolved and before a single SSH session
+        # is opened: a browser downloader's whole output is read off the
+        # per-dial trace, and `setBrowserTrace` is compiled in only by the
+        # `test-utils` feature. On a bundle without it every round still runs
+        # and still succeeds, reporting zero stalls, zero refusals and no first
+        # reads — which reads as a clean network rather than as a missing
+        # instrument, and is worse than no run at all.
+        _require_trace_features(args, console)
+    if has_browser or any(is_wasm(c.get("role", "upload")) for c in clients):
         wasm_bundle_url = _resolve_wasm_bundle(args, console)
         # The bootstrap tier's addresses, and only those: a WASM client gets
         # the same bootstraps as a native client, differing only in that it
@@ -702,14 +761,14 @@ def cmd_provision_clients(args):
         bootstrap_webrtc_multiaddrs = deploy_state.get("bootstrap_webrtc_multiaddrs") or []
         if not bootstrap_webrtc_multiaddrs:
             console.print(
-                "[bold red]Error:[/bold red] this deployment has WASM clients but "
-                "no bootstrap WebRTC-Direct addresses in its state. Run "
+                "[bold red]Error:[/bold red] this deployment has browser-path "
+                "clients but no bootstrap WebRTC-Direct addresses in its state. Run "
                 f"`saorsa-deploy deployments webrtc-addresses --name {args.name}` "
                 "after the bootstrap tier is up."
             )
             sys.exit(1)
         console.print(
-            f"[cyan]WASM clients bootstrap from "
+            f"[cyan]Browser-path clients bootstrap from "
             f"{len(bootstrap_webrtc_multiaddrs)} address(es).[/cyan]"
         )
 

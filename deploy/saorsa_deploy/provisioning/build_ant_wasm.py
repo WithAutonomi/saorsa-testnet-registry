@@ -41,6 +41,7 @@ from saorsa_deploy.provisioning.wasm_client import build_node_install_command
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.wasm_build import (  # noqa: F401  (re-exported)
     BUILD_INFO_NAME,
+    DEFAULT_FEATURES,
     NODE_MAJOR,
     NPM_BUILD_ARGV,
     NPM_INSTALL_ARGV,
@@ -50,6 +51,7 @@ from saorsa_deploy.wasm_build import (  # noqa: F401  (re-exported)
     bundle_load_check_source,
     clone_argv,
     shell,
+    wasm_pack_argv,
 )
 
 BUILD_DIR = "/root/ant-client"
@@ -69,6 +71,7 @@ class AntWasmBuilder:
         repo_owner: str,
         branch_name: str,
         console: Console | None = None,
+        features: str | None = None,
     ):
         self.name = name
         self.ip = ip
@@ -76,6 +79,11 @@ class AntWasmBuilder:
         self.repo_owner = repo_owner
         self.branch_name = branch_name
         self.console = console or Console()
+        # Cargo features this bundle is built with. Recorded in build-info.json
+        # as well as used, because "which features" is what decides whether the
+        # bundle carries `setBrowserTrace` -- and a bundle is identified by its
+        # commit plus its features, not by its commit alone.
+        self.features = features or DEFAULT_FEATURES
         self.s3_key = (
             f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/{ANT_WASM_ARCHIVE_NAME}"
         )
@@ -179,7 +187,8 @@ class AntWasmBuilder:
                 server.shell,
                 name="Build ant-core to WASM",
                 commands=[
-                    f"cd {BUILD_DIR} && PATH=/root/.cargo/bin:$PATH " + shell(WASM_PACK_ARGV)
+                    f"cd {BUILD_DIR} && PATH=/root/.cargo/bin:$PATH "
+                    + shell(wasm_pack_argv(self.features))
                 ],
             )
 
@@ -209,6 +218,7 @@ class AntWasmBuilder:
                         dest_path=BUILD_INFO_PATH,
                         ref=self.branch_name,
                         repo_owner=self.repo_owner,
+                        features=self.features,
                     )
                 ],
             )

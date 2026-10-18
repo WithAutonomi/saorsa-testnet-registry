@@ -15,6 +15,13 @@ from typing import Annotated, Literal, Optional, Union
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
+from saorsa_deploy.client_roles import (
+    BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+    BROWSER_DEFAULT_INSTANCES,
+    BROWSER_DEFAULT_ROUND_PERIOD_SECS,
+    BROWSER_MAX_INSTANCES,
+    BROWSER_MIN_ROUND_PERIOD_SECS,
+)
 from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES as _WASM_MAX_FILE_BYTES
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
@@ -265,6 +272,31 @@ class Binary(_Base):
         return self.branch is not None
 
 
+#: Cargo features the WASM bundle is built with when a manifest says nothing.
+#: `ant-core` declares `default = ["native"]` and a `browser-wasm` feature
+#: mutually exclusive with it, so a wasm32 build without it stops at an explicit
+#: `compile_error!` -- this is the floor, never empty.
+DEFAULT_WASM_FEATURES = "browser-wasm"
+
+
+class AntWasmBinary(Binary):
+    """The testnet `ant-core` WASM bundle source, with its cargo features.
+
+    `features` exists because the browser-downloader role needs the bundle's
+    `setBrowserTrace` hook, which is compiled in only by the `test-utils`
+    feature -- and that feature also links a deterministic mock node, so it is
+    emphatically not the default. The string is passed to
+    ``wasm-pack build … --features <features>`` verbatim rather than being a
+    list, so a manifest says exactly what cargo is told.
+    """
+
+    features: Optional[str] = None
+
+    @property
+    def resolved_features(self) -> str:
+        return self.features or DEFAULT_WASM_FEATURES
+
+
 # --------------------------------------------------------------------------- #
 # testnet
 # --------------------------------------------------------------------------- #
@@ -277,7 +309,11 @@ class TestnetBinaries(_Base):
     # there is no version to pin. It is built from source by `build ant-wasm`
     # (wasm-pack against the ant-client checkout) exactly as `ant` is built by
     # `build ant`.
-    ant_wasm: Optional[Binary] = None
+    #
+    # `AntWasmBinary`, not `Binary`: it additionally carries the cargo
+    # `features` the bundle is built with (the browser-downloader role needs a
+    # `test-utils` build for its trace hook).
+    ant_wasm: Optional[AntWasmBinary] = None
 
 
 class Bootstraps(_Base):
@@ -636,6 +672,80 @@ class PointerClient(_Base):
         return rate
 
 
+class BrowserDownloader(_Base):
+    """A VM running N real headless Chromium instances on one hot file.
+
+    The WASM roles run ant-core compiled to WASM under Node.js with a
+    datachannel shim, one process per VM, drawing random files from the address
+    pool. That cannot measure what ADR-0023 (hot-record read spreading) changes:
+    the behaviour of many *real browsers* reading the *same* record at the *same
+    moment*. This role launches a fresh Chromium context per instance per round,
+    all of them reading one operator-chosen file on a shared wall-clock
+    schedule, and keeps a per-dial trace from the bundle's `test-utils` tracing.
+
+    No file size and no wallet: it only reads, and what it reads is named by
+    `clients select-hot-files`, not by this entry.
+    """
+
+    provider: str
+    region: str
+    vm_size: Optional[str] = None
+    # Chromium instances per VM. Capped at the per-IP WebRTC session quota: a
+    # node refuses a fifth session from one source address, so a fifth instance
+    # would be refused by every node it dials and measure the quota rather than
+    # the read path.
+    instances: int = BROWSER_DEFAULT_INSTANCES
+    # Rounds begin on wall-clock multiples of this, which is what makes the
+    # cohort simultaneous without any coordination between VMs.
+    round_period_secs: int = BROWSER_DEFAULT_ROUND_PERIOD_SECS
+    # Harness deadline per download, measured from the round boundary.
+    download_timeout_secs: int = BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS
+    # Forward the harness stdout+stderr to the deployment's Elasticsearch
+    # instance (index telegraf-ant-clients-{name}). Requires elastic.enabled.
+    forward_logs: Optional[bool] = None
+    # Identical VMs to create from this entry, with consecutive client_index
+    # values. The one client role that has this: a hot-read cohort is 35 VMs of
+    # the same shape, and listing 35 identical entries is a manifest nobody can
+    # read and a diff nobody can review.
+    count: int = 1
+
+    # NB no `clock_skew`, `network` or `rust_log`. The measurement is *when*
+    # each instance read and *which holder served it*, so a skewed clock would
+    # desynchronise the one thing being measured; shaping would do the same to
+    # the dial timings the derived fields are read off.
+
+    @model_validator(mode="after")
+    def _within_the_limits(self) -> "BrowserDownloader":
+        if self.count < 1:
+            raise ValueError(
+                f"clients.browser_downloaders: count must be >= 1, got {self.count}. "
+                "Omit the key for a single VM."
+            )
+        if not 1 <= self.instances <= BROWSER_MAX_INSTANCES:
+            raise ValueError(
+                f"clients.browser_downloaders: instances must be between 1 and "
+                f"{BROWSER_MAX_INSTANCES}, got {self.instances}. A node admits at "
+                f"most {BROWSER_MAX_INSTANCES} WebRTC sessions per source IPv4 "
+                f"address (max_connections_per_ip), and one browser client holds "
+                f"one session per node, so a further instance would be refused by "
+                f"every node it dials."
+            )
+        if self.round_period_secs < BROWSER_MIN_ROUND_PERIOD_SECS:
+            raise ValueError(
+                f"clients.browser_downloaders: round_period_secs must be >= "
+                f"{BROWSER_MIN_ROUND_PERIOD_SECS}, got {self.round_period_secs}. "
+                "A shorter round is less than a cold browser client's own startup."
+            )
+        if self.download_timeout_secs >= self.round_period_secs:
+            raise ValueError(
+                f"clients.browser_downloaders: download_timeout_secs "
+                f"({self.download_timeout_secs}) must be < round_period_secs "
+                f"({self.round_period_secs}), or a round can still be running when "
+                "the next one is due and the cohort stops being simultaneous."
+            )
+        return self
+
+
 class Clients(_Base):
     uploaders: list[Uploader] = []
     downloaders: list[Downloader] = []
@@ -649,6 +759,11 @@ class Clients(_Base):
     # address pool for realistic `chunk` targets, and falls back to random
     # 32-byte addresses when the pool is empty, so it never depends on uploaders.
     pointers: list[PointerClient] = []
+    # Browser (real headless Chromium) downloaders. Not subject to the pairing
+    # rule either: the file they read is named by `clients select-hot-files` out
+    # of what is already in the pool, so a cohort is added to a deployment whose
+    # uploads have already happened -- which is the only time a hot file exists.
+    browser_downloaders: list[BrowserDownloader] = []
 
     @model_validator(mode="after")
     def _both_roles(self) -> "Clients":
@@ -683,15 +798,29 @@ class Clients(_Base):
             *self.wasm_uploaders,
             *self.wasm_downloaders,
             *self.pointers,
+            *self.browser_downloaders,
         ]
 
     @property
     def has_wasm(self) -> bool:
-        return bool(self.wasm_uploaders or self.wasm_downloaders)
+        """Whether anything here needs the `ant-core` WASM bundle.
+
+        True for the browser role too, and that is the point: it runs the same
+        bundle (in Chromium rather than under Node), so it needs
+        ``binaries.ant_wasm``, the `build ant-wasm` step, and the bootstrap
+        WebRTC-Direct addresses collected before `clients provision`. The
+        uploader/downloader PAIRING rule is checked on the two wasm-* lists
+        alone and is unaffected.
+        """
+        return bool(self.wasm_uploaders or self.wasm_downloaders or self.browser_downloaders)
 
     @property
     def has_pointers(self) -> bool:
         return bool(self.pointers)
+
+    @property
+    def has_browser(self) -> bool:
+        return bool(self.browser_downloaders)
 
 
 class ClientsExtensionSpec(_Base):
@@ -718,13 +847,15 @@ class ClientsExtensionSpec(_Base):
     wasm_uploaders: list[WasmUploader] = []
     wasm_downloaders: list[WasmDownloader] = []
     pointers: list[PointerClient] = []
+    browser_downloaders: list[BrowserDownloader] = []
 
     @model_validator(mode="after")
     def _at_least_one_tier(self) -> "ClientsExtensionSpec":
         if not self.all_entries:
             raise ValueError(
                 "clients: at least one of uploaders / downloaders / "
-                "wasm_uploaders / wasm_downloaders / pointers must be non-empty "
+                "wasm_uploaders / wasm_downloaders / pointers / "
+                "browser_downloaders must be non-empty "
                 "(an extension with no VMs would only stand in the way of a "
                 "`deployments down`)"
             )
@@ -738,15 +869,29 @@ class ClientsExtensionSpec(_Base):
             *self.wasm_uploaders,
             *self.wasm_downloaders,
             *self.pointers,
+            *self.browser_downloaders,
         ]
 
     @property
     def has_wasm(self) -> bool:
-        return bool(self.wasm_uploaders or self.wasm_downloaders)
+        """Whether anything here needs the `ant-core` WASM bundle.
+
+        True for the browser role too, and that is the point: it runs the same
+        bundle (in Chromium rather than under Node), so it needs
+        ``binaries.ant_wasm``, the `build ant-wasm` step, and the bootstrap
+        WebRTC-Direct addresses collected before `clients provision`. The
+        uploader/downloader PAIRING rule is checked on the two wasm-* lists
+        alone and is unaffected.
+        """
+        return bool(self.wasm_uploaders or self.wasm_downloaders or self.browser_downloaders)
 
     @property
     def has_pointers(self) -> bool:
         return bool(self.pointers)
+
+    @property
+    def has_browser(self) -> bool:
+        return bool(self.browser_downloaders)
 
 
 def _require_client_binaries(clients, binaries, kind: str) -> None:

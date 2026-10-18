@@ -28,24 +28,57 @@ NODE_MAJOR = "22"
 
 ANT_CLIENT_REPO = "ant-client"
 
-#: The wasm-pack invocation itself.
+#: Cargo features a build gets when nothing asks for more.
 #:
-#: `--target web` (not nodejs/bundler): it is what ant-client's own CI builds
-#: and tests under Node, and what the client's explicit init call expects.
 #: `ant-core` declares `default = ["native"]` and a `browser-wasm` feature
-#: mutually exclusive with it, so a wasm32 build without BOTH flags stops at an
-#: explicit `compile_error!`. `test-utils` is deliberately NOT enabled -- it
-#: links a deterministic mock node.
-WASM_PACK_ARGV = (
-    "wasm-pack",
-    "build",
-    "--target",
-    "web",
-    "ant-core",
-    "--no-default-features",
-    "--features",
-    "browser-wasm",
-)
+#: mutually exclusive with it, so a wasm32 build without BOTH `browser-wasm` and
+#: `--no-default-features` stops at an explicit `compile_error!`. This is the
+#: floor, not a suggestion. `test-utils` is deliberately NOT in it -- it links a
+#: deterministic mock node, so a production bundle must not carry it.
+DEFAULT_FEATURES = "browser-wasm"
+
+#: The feature that compiles in `setBrowserTrace`, the per-dial trace hook. The
+#: browser-downloader role is built around it, so that role refuses a bundle
+#: whose recorded features do not name it.
+TEST_UTILS_FEATURE = "test-utils"
+
+
+def features_include(features: str | None, feature: str) -> bool:
+    """Whether a comma-separated cargo feature string names ``feature``.
+
+    Split rather than substring-matched: `browser-wasm` contains neither
+    `wasm` as a feature nor `test-utils`, and a `test-utils-extra` added
+    upstream must not read as `test-utils`.
+    """
+    return feature in {f.strip() for f in (features or DEFAULT_FEATURES).split(",") if f.strip()}
+
+
+def wasm_pack_argv(features: str | None = None) -> tuple[str, ...]:
+    """The wasm-pack invocation itself.
+
+    `--target web` (not nodejs/bundler): it is what ant-client's own CI builds
+    and tests under Node, and what the client's explicit init call expects.
+
+    ``features`` is passed through verbatim, so a manifest says exactly what
+    cargo is told. It replaces the feature list rather than adding to it --
+    which means a caller asking for `test-utils` has to name `browser-wasm`
+    too, and the build fails loudly at `compile_error!` if it forgets rather
+    than quietly producing a native-feature bundle.
+    """
+    return (
+        "wasm-pack",
+        "build",
+        "--target",
+        "web",
+        "ant-core",
+        "--no-default-features",
+        "--features",
+        features or DEFAULT_FEATURES,
+    )
+
+
+#: The default invocation, for the callers that build the production bundle.
+WASM_PACK_ARGV = wasm_pack_argv()
 
 #: Where wasm-pack leaves the package, relative to the ant-client checkout.
 WASM_PKG_SUBDIR = "ant-core/pkg"
@@ -69,6 +102,7 @@ def build_info_command(
     dest_path: str,
     ref: str,
     repo_owner: str,
+    features: str | None = None,
 ) -> str:
     """Shell that writes the build's provenance to ``dest_path``.
 
@@ -90,6 +124,7 @@ def build_info_command(
         '  "commit": "$COMMIT",\n'
         f'  "ref": "{ref}",\n'
         f'  "repo_owner": "{repo_owner}",\n'
+        f'  "features": "{features or DEFAULT_FEATURES}",\n'
         '  "node_datachannel_version": "$ND",\n'
         f'  "wasm_pack_version": "{WASM_PACK_VERSION}",\n'
         f'  "node_major": "{NODE_MAJOR}",\n'

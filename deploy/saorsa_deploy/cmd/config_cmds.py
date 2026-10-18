@@ -22,7 +22,12 @@ def _load_or_exit(args, console: Console):
         )
     except ManifestError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
+        # 2, not 1, matching `clients config show|validate` (which has always
+        # used it) and every other manifest-level refusal in the tool. These
+        # two commands are read-only and nothing branches on the old value;
+        # an unattended runner checking a manifest wants one code for "the
+        # manifest is bad" whichever kind it is.
+        sys.exit(2)
 
 
 def cmd_config_show(args):
@@ -34,7 +39,7 @@ def cmd_config_show(args):
 
 
 def cmd_config_validate(args):
-    """Validate a manifest; exit non-zero with a friendly error if invalid."""
+    """Validate a manifest; exit 2 with a friendly error if invalid."""
     console = Console()
     manifest = _load_or_exit(args, console)
     console.print(

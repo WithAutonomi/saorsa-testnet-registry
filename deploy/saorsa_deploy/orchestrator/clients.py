@@ -25,6 +25,10 @@ the deployment having to exist.
 
 from __future__ import annotations
 
+from saorsa_deploy.client_roles import (
+    BROWSER_DEFAULT_VM_SIZE,
+    ROLE_BROWSER_DOWNLOAD,
+)
 from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.orchestrator.steps import Step
 from saorsa_deploy.orchestrator.testnet import (
@@ -120,11 +124,14 @@ _ROLE_FOR_LIST = {
     "wasm_uploaders": "wasm-upload",
     "wasm_downloaders": "wasm-download",
     "pointers": "pointer",
+    "browser_downloaders": ROLE_BROWSER_DOWNLOAD,
 }
 
 #: Default VM size per role, mirroring the `clients infra` spec parsers. Only
 #: used to render the plan when an entry leaves `vm_size` unset.
 _DEFAULT_VM_SIZE = "s-2vcpu-4gb"
+#: Roles whose default differs from the shared one above.
+_ROLE_DEFAULT_VM_SIZE = {ROLE_BROWSER_DOWNLOAD: BROWSER_DEFAULT_VM_SIZE}
 
 
 def planned_client_vms(
@@ -146,18 +153,26 @@ def planned_client_vms(
     vms: list[dict] = []
     for list_name, role in _ROLE_FOR_LIST.items():
         entries = getattr(spec, list_name, []) or []
-        for offset, entry in enumerate(entries, start=1):
-            index = base.get(role, 0) + offset
-            vms.append(
-                {
-                    "role": role,
-                    "provider": entry.provider,
-                    "region": entry.region,
-                    "vm_size": entry.vm_size or _DEFAULT_VM_SIZE,
-                    "client_index": index,
-                    "hostname": (
-                        f"{deployment}-{extension}-ant-client-{role}-{entry.region}-{index}"
-                    ),
-                }
-            )
+        default_size = _ROLE_DEFAULT_VM_SIZE.get(role, _DEFAULT_VM_SIZE)
+        offset = 0
+        for entry in entries:
+            # `count` (browser downloaders only) is shorthand for N identical
+            # VMs, and the plan prints each one: a 35-VM cohort written as one
+            # entry still has to show 35 hostnames and 35 indexes, or the plan
+            # is not what `clients up` is about to create.
+            for _ in range(getattr(entry, "count", 1)):
+                offset += 1
+                index = base.get(role, 0) + offset
+                vms.append(
+                    {
+                        "role": role,
+                        "provider": entry.provider,
+                        "region": entry.region,
+                        "vm_size": entry.vm_size or default_size,
+                        "client_index": index,
+                        "hostname": (
+                            f"{deployment}-{extension}-ant-client-{role}-{entry.region}-{index}"
+                        ),
+                    }
+                )
     return vms

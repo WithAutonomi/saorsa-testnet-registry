@@ -110,11 +110,31 @@ class TestManifest:
             _manifest(tmp_path, body)
 
     def test_unknown_role_key_is_a_validation_error(self, tmp_path):
-        # `browser_downloaders` is a separate issue's role. Until it exists the
-        # key must be a loud error, not a silently-ignored list.
-        body = EXTENSION + "      browser_downloaders: []\n"
-        with pytest.raises(ManifestError, match="browser_downloaders"):
+        # A role list this schema does not know must be a loud error, not a
+        # silently-ignored list -- the manifest is the sole description of a
+        # real cloud deployment. (This was `browser_downloaders` until V2-1617
+        # added the role; `browser_uploaders` does not exist and is the same
+        # shape of mistake.)
+        body = EXTENSION + "      browser_uploaders: []\n"
+        with pytest.raises(ManifestError, match="browser_uploaders"):
             _manifest(tmp_path, body)
+
+    def test_browser_downloaders_are_a_known_role_list(self, tmp_path):
+        # V2-1617's role, and the reason an extension exists for it: a hot-read
+        # cohort is added to a deployment whose uploads have already happened,
+        # which is the only time a hot file exists to select.
+        body = """\
+            kind: clients
+            name: browsers
+            deployment: DEV-01
+            purpose: p
+            clients:
+              browser_downloaders:
+                - { provider: digital_ocean, region: lon1, count: 2 }
+        """
+        manifest = _manifest(tmp_path, body)
+        assert len(manifest.clients.browser_downloaders) == 1
+        assert manifest.clients.has_browser
 
     def test_extends_is_refused(self, tmp_path):
         _write(tmp_path, "base.yaml", EXTENSION)

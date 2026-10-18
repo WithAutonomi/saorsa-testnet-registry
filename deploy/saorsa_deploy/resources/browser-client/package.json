@@ -1,0 +1,14 @@
+{
+  "name": "ant-browser-downloader",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless-Chromium hot-read cohort: N browser instances per VM reading one hot file every round.",
+  "scripts": {
+    "start": "node harness.mjs",
+    "test": "node --test 'test/*.test.mjs'"
+  },
+  "dependencies": {
+    "playwright": "1.56.0"
+  }
+}

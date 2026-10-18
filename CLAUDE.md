@@ -289,7 +289,9 @@ driven by `clients up|down|plan|ls|config --config` mirroring `deployments
 up`/`down` (journal, `--resume`, the lot). The five primitives take
 `--extension <name>` directly. Unrelated to `deployments extend`, which creates
 a second NODE fleet. Example:
-`deploy/manifests/profiles/clients-extension-example.yaml`.
+`deploy/manifests/profiles/clients-extension-example.yaml`. The
+`browser_downloaders` tier (below) is the one most often added this way — a hot
+file only exists once the deployment's uploaders have published one.
 
 - **No binaries, ever.** The extension reuses what the deployment recorded at
   `clients provision` time (`client_binaries` in its S3 state), so it cannot run
@@ -1351,6 +1353,65 @@ WASM client runs under **plain Node.js** with `node-datachannel` supplying
 5 MiB download and a real paid upload with byte-identical round-trip all pass.
 
 See `deploy/README.md` §"WASM client VMs (the browser path)".
+
+### The browser-downloader tier (`clients.browser_downloaders[]`)
+
+The WASM roles run ant-core under **Node.js**, one process per VM, drawing
+random files. That cannot measure what **ADR-0023** (hot-record read spreading,
+ant-node#250 / ant-client#225) changes: many **real browsers** reading the
+**same** file at the **same moment**. This role does — N headless Chromium
+instances per VM under Playwright, a fresh browser/context/page per instance per
+round, all reading one operator-chosen hot file on a wall-clock schedule, with a
+per-dial trace from the bundle's `test-utils` hook. Role `browser-download`,
+unit `ant-browser-downloader`, CLI `--browser-downloader`. Works in a `kind:
+clients` extension too, which is the normal way to use it.
+
+- **`instances` is capped at 4, and the cap is the network's**: a node admits at
+  most 4 WebRTC sessions per **source IPv4 address** (`max_connections_per_ip`,
+  a `>=` check in saorsa-transport `src/webrtc/direct.rs`) and one browser client
+  holds one session per node, so a fifth would be refused by every node it dials
+  and would measure the quota. Enforced in the schema, the spec parser AND the
+  harness's own config — only the last sees what reached the VM.
+- **It REQUIRES a bundle built with `test-utils`.** New `ant_wasm.features`
+  (default `browser-wasm`, passed to `wasm-pack --features` verbatim and
+  **replacing** the list, so `browser-wasm` must be named) carries it;
+  `clients provision` **exits 2** for a browser tier whose recorded features lack
+  it, and the pass additionally greps the installed bundle. Both exist because
+  without `setBrowserTrace` every round runs, **succeeds**, and reports zero
+  stalls, zero refusals and no first reads — a clean network, not a missing
+  instrument.
+- **`clients select-hot-files --name N --count N --size-mb N` is an explicit
+  operator step**, writing ONE `browser-hot-files.json` under the deployment's
+  address prefix. A VM provisioned inside `up` exists before any upload does,
+  and VMs choosing independently from a growing pool would disagree about which
+  file was hot. Candidates are the native `upload-*.txt` lines of **exactly**
+  `size-mb × 1048576` bytes ordered by (key, line) = upload order; a shortfall
+  exits 2 writing **nothing**; an existing selection is printed and left alone
+  without `--replace`. `print-hot-files` exits 2 when absent. Round `r` reads
+  `files[round_id mod len]`, re-read every round.
+- **Measurement `browser_download` in `wasm-client-metrics`, never `download`** —
+  a synchronised cohort on one file and a client drawing random files are two
+  unlike workloads. **One point per instance per round, always**: a round with no
+  point is itself a finding, which only reads that way if a skip is a point. No
+  hot files yet → `skipped`/`no_hot_files`, no browser launched.
+- **The three derived fields each need all their conditions.** `stalls` = dials
+  ending `cancelled-or-error`, **never** `channel-open`, 9–11 s (the client's 10 s
+  channel-open timeout = an unreachable NAT'd holder); a 74 ms failure is a
+  refusal and a post-`channel-open` failure is an admission failure.
+  `refused_dials` is separate so a per-IP quota mistake is not read as a NAT'd
+  fleet. `first_reads` takes the **first** holder per chunk and the candidates
+  **preceding** that read — the whole trace's would include peers learned
+  afterwards.
+- **`clock_skew`, `network` and `rust_log` are refused by name**: the measurement
+  is *when* each instance read and *which holder served it*. `count: N` (this
+  role only) expands to N VMs with consecutive `client_index`, as repeated
+  `--browser-downloader` flags, because the argv is what the journal compares.
+- Traces land at `/var/lib/ant-browser-downloader/trace/<round>-<instance>.jsonl`
+  and are **never deleted** — `scp` before destroy. Persisting the points to
+  Postgres, the trace fetch, `print-downloads --browser` and
+  `analysis browser-reads` are **V2-1618**.
+
+See `deploy/README.md` §"Browser client VMs (real Chromium, hot-read cohort)".
 
 ### The pointer client tier (`clients.pointers[]`)
 
