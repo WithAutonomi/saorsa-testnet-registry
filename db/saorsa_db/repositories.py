@@ -8,6 +8,9 @@ from typing import Optional
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
+from saorsa_db.models.browser_download_record import (
+    DeploymentBrowserDownloadRecord,
+)
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
 from saorsa_db.models.derived_metric import DeploymentDerivedMetric
@@ -338,6 +341,55 @@ class DeploymentRepository(ABC):
     def list_pointer_records_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentPointerRecord]: ...
+
+    @abstractmethod
+    def upsert_browser_download_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        round_id: int,
+        instance: int,
+        status: OpRecordStatus,
+        started_at: datetime,
+        extension: str | None = None,
+        region: str | None = None,
+        hot_file_index: int | None = None,
+        address: str | None = None,
+        file_size_bytes: int | None = None,
+        error_kind: str | None = None,
+        error_text: str | None = None,
+        total_ms: int | None = None,
+        connect_ms: int | None = None,
+        started_late_ms: int | None = None,
+        seeds: list | None = None,
+        stalls: int | None = None,
+        refused_dials: int | None = None,
+        first_reads: list | None = None,
+        trace_s3_key: str | None = None,
+    ) -> DeploymentBrowserDownloadRecord: ...
+
+    @abstractmethod
+    def list_browser_download_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentBrowserDownloadRecord]: ...
+
+    @abstractmethod
+    def set_browser_download_trace_key(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        round_id: int,
+        instance: int,
+        trace_s3_key: str,
+    ) -> bool:
+        """Point one recorded round at its archived trace.
+
+        Returns False when no row matches -- the round's Influx point has not
+        been recorded yet, which is not an error: the trace is archived while
+        the VMs are up and the next `record-results` picks the row up (and
+        preserves whatever key is already set).
+        """
+        ...
 
     @abstractmethod
     def list_wasm_client_hostnames(self, deployment_id: int) -> list[str]: ...
@@ -1236,6 +1288,138 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .all()
         )
+
+    def upsert_browser_download_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        round_id: int,
+        instance: int,
+        status: OpRecordStatus,
+        started_at: datetime,
+        extension: str | None = None,
+        region: str | None = None,
+        hot_file_index: int | None = None,
+        address: str | None = None,
+        file_size_bytes: int | None = None,
+        error_kind: str | None = None,
+        error_text: str | None = None,
+        total_ms: int | None = None,
+        connect_ms: int | None = None,
+        started_late_ms: int | None = None,
+        seeds: list | None = None,
+        stalls: int | None = None,
+        refused_dials: int | None = None,
+        first_reads: list | None = None,
+        trace_s3_key: str | None = None,
+    ) -> DeploymentBrowserDownloadRecord:
+        """Record one browser instance's round, keyed on (deployment, host, round, instance).
+
+        Idempotent like the file-op upserts, so `record-results` can be re-run
+        against the same Influx range and revise rather than duplicate.
+
+        **Two columns COALESCE, and both for the same reason**: neither is
+        carried on the Influx point, so a re-run that cannot resolve one would
+        otherwise erase what an earlier pass recorded.
+
+        * ``trace_s3_key`` is written by `clients fetch-browser-traces`, and the
+          traces die with the VM -- so erasing the pointer leaves no second
+          chance to find them.
+        * ``extension`` is resolved from state that teardown deletes (the
+          extension's own S3 client state, and the deployment's address prefix).
+          A `record-results` re-run after `clients down` resolves None for every
+          host, and writing that would relabel a whole cohort as the
+          deployment's own tier -- which is exactly the distinction the column
+          exists to make.
+
+        A known value still updates; only None is refused.
+        """
+        values = dict(
+            region=region,
+            hot_file_index=hot_file_index,
+            address=address,
+            file_size_bytes=file_size_bytes,
+            status=status,
+            error_kind=error_kind,
+            error_text=error_text,
+            total_ms=total_ms,
+            connect_ms=connect_ms,
+            started_at=started_at,
+            started_late_ms=started_late_ms,
+            seeds=seeds,
+            stalls=stalls,
+            refused_dials=refused_dials,
+            first_reads=first_reads,
+        )
+        existing = (
+            self.session.query(DeploymentBrowserDownloadRecord)
+            .filter(
+                DeploymentBrowserDownloadRecord.deployment_id == deployment_id,
+                DeploymentBrowserDownloadRecord.client_hostname == client_hostname,
+                DeploymentBrowserDownloadRecord.round_id == round_id,
+                DeploymentBrowserDownloadRecord.instance == instance,
+            )
+            .one_or_none()
+        )
+        #: The two columns the Influx point does not carry, so neither may be
+        #: overwritten with None by a re-run that could not resolve it.
+        coalesced = {"extension": extension, "trace_s3_key": trace_s3_key}
+        if existing is None:
+            existing = DeploymentBrowserDownloadRecord(
+                deployment_id=deployment_id,
+                client_hostname=client_hostname,
+                round_id=round_id,
+                instance=instance,
+                **coalesced,
+                **values,
+            )
+            self.session.add(existing)
+        else:
+            for key, value in values.items():
+                setattr(existing, key, value)
+            for key, value in coalesced.items():
+                if value is not None:
+                    setattr(existing, key, value)
+        self.session.commit()
+        return existing
+
+    def list_browser_download_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentBrowserDownloadRecord]:
+        return (
+            self.session.query(DeploymentBrowserDownloadRecord)
+            .filter(DeploymentBrowserDownloadRecord.deployment_id == deployment_id)
+            .order_by(
+                DeploymentBrowserDownloadRecord.round_id,
+                DeploymentBrowserDownloadRecord.client_hostname,
+                DeploymentBrowserDownloadRecord.instance,
+            )
+            .all()
+        )
+
+    def set_browser_download_trace_key(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        round_id: int,
+        instance: int,
+        trace_s3_key: str,
+    ) -> bool:
+        existing = (
+            self.session.query(DeploymentBrowserDownloadRecord)
+            .filter(
+                DeploymentBrowserDownloadRecord.deployment_id == deployment_id,
+                DeploymentBrowserDownloadRecord.client_hostname == client_hostname,
+                DeploymentBrowserDownloadRecord.round_id == round_id,
+                DeploymentBrowserDownloadRecord.instance == instance,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            return False
+        existing.trace_s3_key = trace_s3_key
+        self.session.commit()
+        return True
 
     def list_wasm_client_hostnames(self, deployment_id: int) -> list[str]:
         """Hosts this deployment already has WASM-labelled operations for.

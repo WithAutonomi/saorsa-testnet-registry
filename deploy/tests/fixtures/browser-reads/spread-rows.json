@@ -1,0 +1,1336 @@
+[
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987190,
+    "instance": 1,
+    "hot_file_index": null,
+    "address": null,
+    "file_size_bytes": null,
+    "status": "skipped",
+    "error_kind": "no_hot_files",
+    "error_text": null,
+    "total_ms": 0,
+    "connect_ms": 0,
+    "started_at": "2026-10-18T09:00:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987190,
+    "instance": 2,
+    "hot_file_index": null,
+    "address": null,
+    "file_size_bytes": null,
+    "status": "skipped",
+    "error_kind": "no_hot_files",
+    "error_text": null,
+    "total_ms": 0,
+    "connect_ms": 0,
+    "started_at": "2026-10-18T09:00:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987190,
+    "instance": 3,
+    "hot_file_index": null,
+    "address": null,
+    "file_size_bytes": null,
+    "status": "skipped",
+    "error_kind": "no_hot_files",
+    "error_text": null,
+    "total_ms": 0,
+    "connect_ms": 0,
+    "started_at": "2026-10-18T09:00:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987190,
+    "instance": 4,
+    "hot_file_index": null,
+    "address": null,
+    "file_size_bytes": null,
+    "status": "skipped",
+    "error_kind": "no_hot_files",
+    "error_text": null,
+    "total_ms": 0,
+    "connect_ms": 0,
+    "started_at": "2026-10-18T09:00:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987190,
+    "instance": 1,
+    "hot_file_index": null,
+    "address": null,
+    "file_size_bytes": null,
+    "status": "skipped",
+    "error_kind": "no_hot_files",
+    "error_text": null,
+    "total_ms": 0,
+    "connect_ms": 0,
+    "started_at": "2026-10-18T09:00:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987190,
+    "instance": 2,
+    "hot_file_index": null,
+    "address": null,
+    "file_size_bytes": null,
+    "status": "skipped",
+    "error_kind": "no_hot_files",
+    "error_text": null,
+    "total_ms": 0,
+    "connect_ms": 0,
+    "started_at": "2026-10-18T09:00:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987190,
+    "instance": 3,
+    "hot_file_index": null,
+    "address": null,
+    "file_size_bytes": null,
+    "status": "skipped",
+    "error_kind": "no_hot_files",
+    "error_text": null,
+    "total_ms": 0,
+    "connect_ms": 0,
+    "started_at": "2026-10-18T09:00:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987190,
+    "instance": 4,
+    "hot_file_index": null,
+    "address": null,
+    "file_size_bytes": null,
+    "status": "skipped",
+    "error_kind": "no_hot_files",
+    "error_text": null,
+    "total_ms": 0,
+    "connect_ms": 0,
+    "started_at": "2026-10-18T09:00:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987191,
+    "instance": 1,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8000,
+    "connect_ms": 700,
+    "started_at": "2026-10-18T09:10:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 1,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA0",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB0",
+        "known_holders": null
+      },
+      {
+        "chunk": "chunk-c",
+        "holder": "12D3KooWOnly",
+        "known_holders": 1
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987191-1.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987191,
+    "instance": 2,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8100,
+    "connect_ms": 701,
+    "started_at": "2026-10-18T09:10:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA1",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB1",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987191-2.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987191,
+    "instance": 3,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8200,
+    "connect_ms": 702,
+    "started_at": "2026-10-18T09:10:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA2",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB2",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987191-3.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987191,
+    "instance": 4,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8300,
+    "connect_ms": 703,
+    "started_at": "2026-10-18T09:10:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA3",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB3",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987191-4.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987191,
+    "instance": 1,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8400,
+    "connect_ms": 704,
+    "started_at": "2026-10-18T09:10:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 1,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA4",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB0",
+        "known_holders": null
+      },
+      {
+        "chunk": "chunk-c",
+        "holder": "12D3KooWOnly",
+        "known_holders": 1
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987191-1.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987191,
+    "instance": 2,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8500,
+    "connect_ms": 705,
+    "started_at": "2026-10-18T09:10:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA5",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB1",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987191-2.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987191,
+    "instance": 3,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8600,
+    "connect_ms": 706,
+    "started_at": "2026-10-18T09:10:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA0",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB2",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987191-3.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987191,
+    "instance": 4,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8700,
+    "connect_ms": 707,
+    "started_at": "2026-10-18T09:10:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA1",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB3",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987191-4.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987192,
+    "instance": 1,
+    "hot_file_index": 0,
+    "address": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8800,
+    "connect_ms": 708,
+    "started_at": "2026-10-18T09:20:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 1,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA2",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB0",
+        "known_holders": null
+      },
+      {
+        "chunk": "chunk-c",
+        "holder": "12D3KooWOnly",
+        "known_holders": 1
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987192-1.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987192,
+    "instance": 2,
+    "hot_file_index": 0,
+    "address": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 8900,
+    "connect_ms": 709,
+    "started_at": "2026-10-18T09:20:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA3",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB1",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987192-2.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987192,
+    "instance": 3,
+    "hot_file_index": 0,
+    "address": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9000,
+    "connect_ms": 710,
+    "started_at": "2026-10-18T09:20:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA4",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB2",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987192-3.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987192,
+    "instance": 4,
+    "hot_file_index": 0,
+    "address": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9100,
+    "connect_ms": 711,
+    "started_at": "2026-10-18T09:20:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA5",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB3",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987192-4.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987192,
+    "instance": 1,
+    "hot_file_index": 0,
+    "address": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9200,
+    "connect_ms": 712,
+    "started_at": "2026-10-18T09:20:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 1,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA0",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB0",
+        "known_holders": null
+      },
+      {
+        "chunk": "chunk-c",
+        "holder": "12D3KooWOnly",
+        "known_holders": 1
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987192-1.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987192,
+    "instance": 2,
+    "hot_file_index": 0,
+    "address": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9300,
+    "connect_ms": 713,
+    "started_at": "2026-10-18T09:20:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA1",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB1",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987192-2.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987192,
+    "instance": 3,
+    "hot_file_index": 0,
+    "address": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9400,
+    "connect_ms": 714,
+    "started_at": "2026-10-18T09:20:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA2",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB2",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987192-3.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987192,
+    "instance": 4,
+    "hot_file_index": 0,
+    "address": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9500,
+    "connect_ms": 715,
+    "started_at": "2026-10-18T09:20:00+00:00",
+    "started_late_ms": 12000,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA3",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB3",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987192-4.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987193,
+    "instance": 1,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9600,
+    "connect_ms": 716,
+    "started_at": "2026-10-18T09:30:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 1,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA4",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB0",
+        "known_holders": null
+      },
+      {
+        "chunk": "chunk-c",
+        "holder": "12D3KooWOnly",
+        "known_holders": 1
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987193-1.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987193,
+    "instance": 2,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9700,
+    "connect_ms": 717,
+    "started_at": "2026-10-18T09:30:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA5",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB1",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987193-2.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987193,
+    "instance": 3,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9800,
+    "connect_ms": 718,
+    "started_at": "2026-10-18T09:30:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA0",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB2",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987193-3.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987193,
+    "instance": 4,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 9900,
+    "connect_ms": 719,
+    "started_at": "2026-10-18T09:30:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA1",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB3",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-lon1-1/2987193-4.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987193,
+    "instance": 1,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 10000,
+    "connect_ms": 720,
+    "started_at": "2026-10-18T09:30:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 1,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA2",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB0",
+        "known_holders": null
+      },
+      {
+        "chunk": "chunk-c",
+        "holder": "12D3KooWOnly",
+        "known_holders": 1
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987193-1.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987193,
+    "instance": 2,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 10100,
+    "connect_ms": 721,
+    "started_at": "2026-10-18T09:30:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA3",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB1",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987193-2.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987193,
+    "instance": 3,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 10200,
+    "connect_ms": 722,
+    "started_at": "2026-10-18T09:30:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA4",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB2",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987193-3.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987193,
+    "instance": 4,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "success",
+    "error_kind": null,
+    "error_text": null,
+    "total_ms": 10300,
+    "connect_ms": 723,
+    "started_at": "2026-10-18T09:30:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 0,
+    "first_reads": [
+      {
+        "chunk": "chunk-a",
+        "holder": "12D3KooWA5",
+        "known_holders": 7
+      },
+      {
+        "chunk": "chunk-b",
+        "holder": "12D3KooWB3",
+        "known_holders": null
+      }
+    ],
+    "trace_s3_key": "saorsa-deploy/results/DEV-03/browser-traces/DEV-03-browsers-ant-client-browser-download-nyc3-2/2987193-4.jsonl"
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987189,
+    "instance": 1,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "failure",
+    "error_kind": "not_found",
+    "error_text": "record not found",
+    "total_ms": 4000,
+    "connect_ms": 800,
+    "started_at": "2026-10-18T08:50:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 5,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987189,
+    "instance": 2,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "failure",
+    "error_kind": "not_found",
+    "error_text": "record not found",
+    "total_ms": 4000,
+    "connect_ms": 800,
+    "started_at": "2026-10-18T08:50:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 5,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987189,
+    "instance": 3,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "failure",
+    "error_kind": "not_found",
+    "error_text": "record not found",
+    "total_ms": 4000,
+    "connect_ms": 800,
+    "started_at": "2026-10-18T08:50:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 5,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-lon1-1",
+    "extension": "browsers",
+    "region": "lon1",
+    "round_id": 2987189,
+    "instance": 4,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "failure",
+    "error_kind": "not_found",
+    "error_text": "record not found",
+    "total_ms": 4000,
+    "connect_ms": 800,
+    "started_at": "2026-10-18T08:50:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 5,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987189,
+    "instance": 1,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "failure",
+    "error_kind": "not_found",
+    "error_text": "record not found",
+    "total_ms": 4000,
+    "connect_ms": 800,
+    "started_at": "2026-10-18T08:50:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 5,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987189,
+    "instance": 2,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "failure",
+    "error_kind": "not_found",
+    "error_text": "record not found",
+    "total_ms": 4000,
+    "connect_ms": 800,
+    "started_at": "2026-10-18T08:50:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 5,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987189,
+    "instance": 3,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "failure",
+    "error_kind": "not_found",
+    "error_text": "record not found",
+    "total_ms": 4000,
+    "connect_ms": 800,
+    "started_at": "2026-10-18T08:50:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 5,
+    "first_reads": [],
+    "trace_s3_key": null
+  },
+  {
+    "deployment_id": 701,
+    "client_hostname": "DEV-03-browsers-ant-client-browser-download-nyc3-2",
+    "extension": "browsers",
+    "region": "nyc3",
+    "round_id": 2987189,
+    "instance": 4,
+    "hot_file_index": 1,
+    "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "file_size_bytes": 52428800,
+    "status": "failure",
+    "error_kind": "not_found",
+    "error_text": "record not found",
+    "total_ms": 4000,
+    "connect_ms": 800,
+    "started_at": "2026-10-18T08:50:00+00:00",
+    "started_late_ms": 500,
+    "seeds": [
+      "/ip4/203.0.113.10/udp/10001/webrtc-direct/certhash/uEiAseed1/p2p/12D3KooWBoot1",
+      "/ip4/203.0.113.11/udp/10001/webrtc-direct/certhash/uEiAseed2/p2p/12D3KooWBoot2"
+    ],
+    "stalls": 0,
+    "refused_dials": 5,
+    "first_reads": [],
+    "trace_s3_key": null
+  }
+]

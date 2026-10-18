@@ -1241,6 +1241,35 @@ def main(argv=None):
         help="Deployment name.",
     )
 
+    # clients fetch-browser-traces
+    clients_fetch_traces_parser = clients_subparsers.add_parser(
+        "fetch-browser-traces",
+        help=(
+            "Copy every browser-downloader VM's per-dial traces off the VM, "
+            "archive them to S3 and link each to its recorded round. Run it "
+            "while the VMs are UP, before `clients down` — the traces are "
+            "deleted with the VM. Exits 2 if any VM is unreachable."
+        ),
+    )
+    clients_fetch_traces_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name. Covers its own browser tier and every `kind: clients` extension's.",
+    )
+    clients_fetch_traces_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/ant_deploy",
+        help="SSH private key for the client VMs (default: ~/.ssh/ant_deploy).",
+    )
+    clients_fetch_traces_parser.add_argument(
+        "--ssh-user",
+        type=str,
+        default="root",
+        help="SSH user on the client VMs (default: root).",
+    )
+
     # =========================================================================
     # === deployments group ===
     # === extend, generate-inventory, ls, print-downloads, print-uploads, ===
@@ -1683,6 +1712,20 @@ def main(argv=None):
         ),
     )
     _add_print_file_ops_args(deployments_print_downloads_parser)
+    deployments_print_downloads_parser.add_argument(
+        "--browser",
+        action="store_true",
+        help=(
+            "Print the browser-downloader cohort's rounds (the "
+            "`browser_download` measurement) instead of the native/WASM "
+            "download operations: one row per round with instances reporting, "
+            "status counts, p50/p95 of the successes and the summed stalls and "
+            "refused dials. Mutually exclusive with the native view in one "
+            "invocation — a synchronised cohort reading one file and a client "
+            "drawing random files are two unlike workloads, so nothing should "
+            "render them in one table."
+        ),
+    )
 
     # deployments print-recorded-results
     deployments_print_recorded_parser = deployments_subparsers.add_parser(
@@ -7875,6 +7918,12 @@ def main(argv=None):
             from saorsa_deploy.cmd.hot_files import cmd_print_hot_files
 
             cmd_print_hot_files(args)
+        elif args.clients_subcommand == "fetch-browser-traces":
+            from saorsa_deploy.cmd.fetch_browser_traces import (
+                cmd_fetch_browser_traces,
+            )
+
+            cmd_fetch_browser_traces(args)
     elif args.command == "deployments":
         if args.deployments_subcommand == "config":
             if args.config_subcommand == "show":

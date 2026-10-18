@@ -1324,8 +1324,164 @@ that resolved and returned the wrong number of bytes is a `failure` with
 `error_text` `size mismatch: got N` — a correctness finding, not a slow
 download, and nothing else would notice it.
 
-Nothing persists these points to Postgres yet; that, the trace fetch,
-`print-downloads --browser` and `analysis browser-reads` are V2-1618.
+`deployments print-downloads --name <n> --browser` is the **live** view of them:
+one row per round with the boundary, the instances reporting, the status counts,
+p50/p95 of the successes and the summed stalls and refused dials.
+`--window`/`--recent`/`--summary` behave as for the native view, and the flag is
+mutually exclusive with it in one invocation — a synchronised cohort reading one
+file and a client drawing random files are two unlike workloads, so nothing
+renders them in one table.
+
+#### Persisting the rounds (`deployment_browser_download_records`)
+
+InfluxDB retention is bounded and the browser VMs are destroyed after the rounds,
+so `deployments record-results --name <n>` copies every point into
+`deployment_browser_download_records` in the same pass as the file-op and pointer
+records — a command an operator has to remember separately is a command that does
+not get run. A run with no browser tier finds no points and says nothing, and
+`deployments archive` carries the table like the others (it is a wrapper over
+`record-results`).
+
+A table of its own rather than more rows in `deployment_download_records`, for the
+same reason the harness writes its own measurement. It also carries fields no file
+transfer has: the round, the instance inside the VM, and the three per-dial
+summaries.
+
+| column | notes |
+| --- | --- |
+| `deployment_id`, `client_hostname`, `round_id`, `instance` | `UNIQUE` together — one point per instance per round, so this is the operation's identity and a re-run revises rather than duplicates |
+| `extension` | the `kind: clients` extension whose tier the VM belongs to, NULL for one declared in the deployment's own manifest. Resolved from the client state that lists the VM |
+| `region`, `hot_file_index`, `address`, `file_size_bytes` | `hot_file_index` is NULL on a `skipped` row, which never chose a file |
+| `status` | the shared `oprecordstatus` enum: `success` / `failure` / `skipped`. A `skipped` row is STORED but excluded from every denominator |
+| `error_kind`, `error_text` | a plain string column, not an enum: the classifier lives in the harness and a kind it gains must be recordable without a migration |
+| `total_ms`, `connect_ms`, `started_late_ms` | |
+| `started_at` | the round's **boundary**, not the instant the browser launched (`started_late_ms` carries that) — which is what makes a window selection over these rows select whole rounds |
+| `seeds` | the bootstrap multiaddrs this instance was given, as an array. Every download dials every seed, so this is what makes the per-round session load on each bootstrap computable |
+| `stalls`, `refused_dials`, `first_reads` | the derived fields, exactly as the point carried them |
+| `trace_s3_key` | written by `clients fetch-browser-traces`, and **preserved by the upsert** — the point never carries it, so an unconditional assignment would erase the only pointer to a round's trace, and the traces die with the VM |
+
+**Two columns COALESCE on upsert — `extension` and `trace_s3_key` — and both for
+the same reason**: neither is carried on the Influx point, so a re-run that
+cannot resolve one would erase what an earlier pass recorded. A known value
+still updates; only NULL is refused. `extension` is resolved from
+`deploy_args.browser_downloaders` **first** and the live client tiers second,
+because the recorded config survives `clients down` while the tiers do not — and
+the two cannot disagree, since the extension name is part of the hostname. A
+`record-results` re-run after the cohort is torn down is the ordinary case, not
+an edge one: that is where a run's procedure puts the second pass.
+
+`print-recorded-results --id <id>` gains a **Browser downloads** section: rounds,
+VMs, instances, totals by status and by `error_kind`, and how many traces were
+archived. Deliberately a summary — the per-round, per-region and per-chunk
+reading is `analysis browser-reads`, which also carries the gates.
+
+**Two things the report needs are held in S3 state that teardown deletes, so
+both are snapshotted into the registry beside the rows.** The report reads
+Postgres alone by design, and is meant to be run after the cohort is gone.
+
+- **`clients provision` denormalises the tier's round period and instance count
+  into `deploy_args.browser_downloaders`** (the S3 client state carrying them
+  goes with `clients destroy`). The list is rebuilt from every client tier on
+  each provision pass rather than appended to, so it converges whichever tier
+  was provisioned last; best-effort, and without it the report derives the
+  period from the recorded boundaries instead.
+- **`record-results` snapshots the hot-file selection into
+  `deploy_args.browser_hot_files`.** `browser-hot-files.json` lives under
+  `addresses/<deployment>/`, and the deployment's own `clients destroy` deletes
+  that **whole prefix** — so without the snapshot the report would exit 2 for
+  exactly the runs it exists to judge. Taken in the pass that records the rows
+  it describes, and **additive**: a pass that finds no selection (or cannot
+  reach S3) leaves an earlier snapshot in place, because a snapshot taken while
+  the cohort was running is the answer and there is no later chance to take one.
+  So **run `record-results` before tearing a cohort down.**
+
+#### Archiving the traces (`clients fetch-browser-traces`)
+
+```bash
+uv run saorsa-deploy clients fetch-browser-traces --name DEV-03
+```
+
+Copies `/var/lib/ant-browser-downloader/trace/*.jsonl` off **every** browser VM
+(the deployment's own tier and each `kind: clients` extension's) to
+`~/.autonomi/testnets/<deployment>/browser-traces/<hostname>/`, uploads each to
+`s3://saorsa-testnet-addresses/saorsa-deploy/results/<deployment>/browser-traces/<hostname>/<round_id>-<instance>.jsonl`,
+and sets `trace_s3_key` on the matching row. Prints per host: files fetched,
+bytes, how many linked and how many matched no row.
+
+Three things worth knowing:
+
+- **Run it while the VMs are UP, before `clients down`.** It **exits 2 if any VM
+  is unreachable**, because a partial archive that exited 0 would be
+  indistinguishable from a complete one — and after teardown there is no way to
+  tell and no way to go back.
+- **It never creates a row.** A trace whose round has not been recorded yet is
+  reported as unmatched and left; run `record-results` and then this command
+  again (the upsert preserves a `trace_s3_key` that is already set). Inventing a
+  row would mean one with no status, no duration and no first reads.
+- **The VMs come from the S3 client state, not the local inventory.** A browser
+  cohort is normally an extension added hours after `up` wrote the inventory, so
+  the inventory would not name its VMs at all.
+
+Idempotent: a completed round's trace never changes, so re-uploading it is a
+no-op in content.
+
+#### The report (`analysis browser-reads`)
+
+```bash
+uv run saorsa-deploy analysis browser-reads --name DEV-03 --id 701 \
+  --window-start 2026-10-18T10:00:00Z --window-end 2026-10-18T14:00:00Z \
+  --markdown-out browser-reads.md --json-out browser-reads.json
+```
+
+**Reads Postgres only**, so it runs after the VMs and their InfluxDB are gone —
+which is the whole reason the rows exist. `record-results` must have run first.
+A round is in the window when its boundary (`round_id x period`) lies in
+`[start, end)`; half-open, so two adjacent windows partition a run's rounds
+exactly once between them. The period comes from
+`deploy_args.browser_downloaders`, falling back to the recorded boundaries.
+`--id` is what names ONE run — dev and staging names are reused every train.
+
+The hot-file selection comes from `deploy_args.browser_hot_files`, with the live
+S3 object as the fallback **only** when nothing was recorded; the report names
+which source it read. Preferred rather than merely a fallback because a
+selection that was `--replace`d since says nothing about the rounds in hand, and
+because the S3 object is deleted by the deployment's own `clients destroy`.
+
+Eight sections, fixed format: **1 hot files** (the selection and the rounds that
+read each file), **2 per round** (boundary,
+instances reporting vs expected, completion, p50/p95, failures by kind, and a
+flag on a round whose instances started more than 10 s apart), **3 per region**,
+**4 per chunk**, **5 stalls**, **6 refusals**, **7 bootstrap load** and **8
+gates**. `skipped` rows are excluded from every denominator and listed
+separately.
+
+**§4 is the verdict on the hot-read spreading change, and it reads `first_reads`
+alone.** For every chunk any download read: the reads, the distinct holders, the
+**busiest holder's share** and the distribution of `known_holders`, sorted by
+share descending. The first read is the one that matters — a fallback to a second
+holder has already paid the first one's `NotFound` or silence, so counting it
+would credit the read path for a retry. `known_holders` is the
+discovery-reported count for the whole download rather than the count known at
+the read, and `null` (no count reported) is its own bucket, never 0.
+
+**§7** is sessions per bootstrap per round: every download dials every seed, so a
+round's download count is what one bootstrap sees at its start. The per-round
+**maximum** is printed against the 256-session ceiling — an average over a run
+that started small would hide the peak that matters.
+
+| gate | threshold | what it means |
+| --- | --- | --- |
+| G1 per-round completion | `--min-completion`, default 0.99 | successes/attempts in **every** round. Per round, not over the window: a cohort that failed every read for one round and recovered has still had an outage, and a window-wide average hides it. A round of only skips has no rate and is not gated — but a window in which EVERY round was skipped **fails**, because a PASS over nothing attempted is the reading this gate exists to prevent |
+| G2 no `not_found` | 0 rows | the hot file was chosen from the deployment's own published uploads, so a close group agreeing it is absent is content loss, not a read-path property |
+| G3 busiest holder share | `--max-holder-share`, default 0.25 | for **every** chunk with at least 20 first reads. Below 20 a share is noise (one holder serving 2 of 3 reads is 67%), so those chunks are **listed, not gated** |
+| G4 refused dials | `--max-refused`, default 0 | total reconstructed refusals. A refusal usually means the VM exceeded the per-IP WebRTC session quota, not that the fleet refused us — check the instance count before reading it as the fleet |
+
+**Exit 0** when all four pass, **1** when any fails, **2** when the report cannot
+be produced at all (no rows, no round in the window, no hot-file selection, no
+period). The two are distinct because an unattended runner has to tell "the
+release made the read path worse" from "I measured nothing". `--json-out` carries
+every table and the gate verdicts; `--json-out -` writes the object as the whole
+of stdout (see §"`--json-out -`"), and `--print-markdown` is suppressed there.
 
 #### The trace, and the three derived fields
 
@@ -2733,7 +2889,9 @@ where they were proven on live fleets.
 Every command takes `--name <deployment>` and reads hosts, the NAT tier and the
 SSH key from `~/.autonomi/testnets/<name>/inventory.json` (`deployments
 generate-inventory --name <name>` writes it). An IP that is not in the
-inventory is refused rather than treated as an ad-hoc host.
+inventory is refused rather than treated as an ad-hoc host. The one exception is
+`browser-reads`, which touches no VM at all: it reads recorded Postgres rows, so
+that it can be run once the deployment is gone.
 
 **The local inventory has a lifecycle, and a stale one is refused.** It is
 *written* by `generate-inventory` (the last step of `deployments up`), *retired*
@@ -2783,6 +2941,7 @@ teardown; there is no backfill.
 | `analysis log-count --name N --phrase P --start … --end … [--index node\|client] [--hosts …] [--json-out F\|-]` | Count of a log phrase in a window with host cardinality, top hosts and level breakdown. |
 | `analysis counter-delta --name N --field tail.X --start … --end …` | Delta and rate of a cumulative per-service counter (per host, per service, max − min; single-sample services reported, not folded in as zero). |
 | `analysis pointer-commitments --name N --start … --end … [--hosts …] [--min-rotations N] [--min-hosts N] [--json-out F\|-]` | Commitment-rotation coverage: total rotations, how many carry `pointers=`, how many report `pointers=0`, the non-zero remainder and the host spread of it. See below. |
+| `analysis browser-reads --name N [--id ID] --window-start … --window-end … [--min-completion 0.99] [--max-holder-share 0.25] [--max-refused 0] [--markdown-out F] [--print-markdown] [--json-out F\|-]` | The hot-read report over the recorded browser rounds: per round, per region and per chunk, with the busiest holder's share of each chunk's first reads, stalls, refusals, bootstrap load and four gates. **Postgres only**, so it survives teardown; exits 0 / 1 / 2. See §"Browser client VMs". |
 | `analysis udp-rate --name N --start … --end … [--every 1m]` | Per-host UDP out-datagram rate from InfluxDB (`udp_outdatagrams`, lower case) — plain tier only, see above. |
 | `analysis relay-report --name N --start … --end … [--hosts …]` | Counts of every relay-lifecycle phrase plus the `relay recv stream closed` ÷ `Proactive relay torn down` ratio (V2-1061's gate metric), optionally for a host cohort. |
 | `analysis teardowns --name N --start … --end … --out F.jsonl` | Exports each `Proactive relay torn down` document (ts, host, service, `relay_addr`, `relay_server`, `allocation_id`). |

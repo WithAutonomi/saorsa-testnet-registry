@@ -162,6 +162,14 @@ def cmd_print_recorded_results(args) -> None:
             # nothing happened, the opposite of the truth. These are a handful of
             # counts, and they print nothing at all for a run with no WASM rows.
             _print_transport_totals(upload_records, download_records, console)
+        # The browser tier is neither an upload nor a download record, so it is
+        # its own section — and it prints nothing at all for the runs that have
+        # no browser rounds, which is every run before V2-1617.
+        _print_browser_downloads_section(
+            repo.list_browser_download_records_for_deployment(deployment.id),
+            deployment.name,
+            console,
+        )
 
 
 def _resolve_kind(deploy_args) -> str:
@@ -632,6 +640,81 @@ def _print_transport_totals(uploads: list, downloads: list, console: Console) ->
                     f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = "
                     f"{rate}{extra}{build_note}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Browser downloads section (deployment_browser_download_records)
+# ---------------------------------------------------------------------------
+
+
+def _print_browser_downloads_section(rows: list, name: str, console: Console) -> None:
+    """Rounds, instances and the totals by status and by error kind.
+
+    Prints NOTHING when the deployment has no browser rounds, so every existing
+    run's output is unchanged. Deliberately a summary rather than a per-row
+    dump: the per-round, per-region and per-chunk reading of this table is
+    `analysis browser-reads`, which also carries the gates, and duplicating it
+    here would give two answers to maintain.
+    """
+    if not rows:
+        return
+    console.print()
+    console.rule(f"[bold]Browser downloads — {name}[/bold]")
+
+    rounds = sorted({r.round_id for r in rows})
+    hosts = sorted({r.client_hostname for r in rows})
+    extensions = sorted({r.extension for r in rows if r.extension})
+    archived = sum(1 for r in rows if r.trace_s3_key)
+
+    summary = Table(show_header=False, box=None)
+    summary.add_column("k")
+    summary.add_column("v", justify="right")
+    summary.add_row("rounds", f"{len(rounds):,}")
+    summary.add_row(
+        "round ids",
+        f"{rounds[0]}–{rounds[-1]}" if len(rounds) > 1 else str(rounds[0]),
+    )
+    summary.add_row("VMs", f"{len(hosts):,}")
+    # Distinct (host, instance) pairs: the cohort's size is instances per VM
+    # times VMs, and a VM whose harness never came up contributes none.
+    summary.add_row("instances", f"{len({(r.client_hostname, r.instance) for r in rows}):,}")
+    summary.add_row("downloads", f"{len(rows):,}")
+    summary.add_row("traces archived", f"{archived:,}")
+    if extensions:
+        summary.add_row("extensions", ", ".join(extensions))
+    console.print(summary)
+
+    status_table = Table(title="By status")
+    status_table.add_column("status")
+    status_table.add_column("rows", justify="right")
+    status_table.add_column("share", justify="right")
+    # The share is over EVERY row, skips included: this is the composition of
+    # the series, not a success rate. The success rate — which excludes skips
+    # from its denominator — is the report's G1 gate.
+    for status in (OpRecordStatus.SUCCESS, OpRecordStatus.FAILURE, OpRecordStatus.SKIPPED):
+        count = sum(1 for r in rows if r.status == status)
+        if not count:
+            continue
+        status_table.add_row(status.value, f"{count:,}", f"{100.0 * count / len(rows):.1f}%")
+    console.print(status_table)
+
+    kinds: dict[str, int] = {}
+    for row in rows:
+        if row.error_kind:
+            kinds[row.error_kind] = kinds.get(row.error_kind, 0) + 1
+    if kinds:
+        kind_table = Table(title="By error_kind")
+        kind_table.add_column("error_kind")
+        kind_table.add_column("rows", justify="right")
+        for kind, count in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0])):
+            kind_table.add_row(kind, f"{count:,}")
+        console.print(kind_table)
+
+    console.print(
+        "[dim]Per-round, per-region, per-chunk holder share and the gates: "
+        "`saorsa-deploy analysis browser-reads --name <name> --window-start … "
+        "--window-end …`[/dim]"
+    )
 
 
 def _print_op_records_for_kind(

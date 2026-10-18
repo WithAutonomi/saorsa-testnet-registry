@@ -90,6 +90,18 @@ class Deployment(Base):
         cascade="all, delete-orphan",
     )
 
+    browser_download_records: Mapped[
+        list["DeploymentBrowserDownloadRecord"]  # noqa: F821
+    ] = relationship(
+        back_populates="deployment",
+        order_by=(
+            "DeploymentBrowserDownloadRecord.round_id, "
+            "DeploymentBrowserDownloadRecord.client_hostname, "
+            "DeploymentBrowserDownloadRecord.instance"
+        ),
+        cascade="all, delete-orphan",
+    )
+
     host_result: Mapped[Optional["DeploymentHostResult"]] = relationship(
         back_populates="deployment",
         cascade="all, delete-orphan",

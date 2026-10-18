@@ -23,6 +23,7 @@ Influx instance.
 
 import csv
 import io
+import json
 import sys
 from array import array
 from collections.abc import Iterable, Iterator
@@ -493,6 +494,158 @@ def parse_pointer_csv(body: "str | Iterable[str]") -> list[dict]:
                     "group_size": _parse_int(record.get("group", "")),
                     "holders": _parse_int(record.get("holders", "")),
                     "attempt": record.get("attempt") or None,
+                }
+            )
+        except (KeyError, ValueError):
+            continue
+    return points
+
+
+#: The `browser_download` measurement (V2-1617): one point per Chromium instance
+#: per round of a browser-downloader cohort. Fields named explicitly, as the two
+#: queries above do — a `_field == *` pivot would widen every row with whatever a
+#: future harness adds and the parse below would not know what to do with it.
+#:
+#: `round_id`, `instance` and `hot_file_index` are TAGS, so they arrive as their
+#: own columns; the first two are part of the row key, because one host emits one
+#: point per (round, instance) and `_time` alone would collide for the instances
+#: of one round that finished inside the same second.
+BROWSER_FLUX_TEMPLATE = """from(bucket: "{bucket}")
+  |> range(start: {start}, stop: {stop})
+  |> filter(fn: (r) => r._measurement == "browser_download")
+  |> filter(fn: (r) =>
+       r._field == "status" or
+       r._field == "error_kind" or
+       r._field == "error_text" or
+       r._field == "address" or
+       r._field == "file_size" or
+       r._field == "total_ms" or
+       r._field == "connect_ms" or
+       r._field == "start_ns" or
+       r._field == "started_late_ms" or
+       r._field == "seeds" or
+       r._field == "stalls" or
+       r._field == "refused_dials" or
+       r._field == "first_reads")
+  |> pivot(rowKey: ["_time", "host", "round_id", "instance"], \
+columnKey: ["_field"], valueColumn: "_value")
+"""
+
+
+def fetch_browser_download_points(
+    url: str,
+    token: str,
+    org: str,
+    bucket: str,
+    start: str = "0",
+    stop: str = FLUX_FAR_FUTURE,
+    timeout: int = 30,
+) -> list[dict]:
+    """One dict per `browser_download` point.
+
+    Browser rounds land in the WASM bucket (`wasm-client-metrics`) beside the
+    WASM roles' operations, because they run the same ant-core bundle — but in a
+    measurement of their own, so nothing can average a synchronised cohort's
+    reads of one file with a client's reads of random ones.
+
+    ``stop`` defaults to :data:`FLUX_FAR_FUTURE` for the reason every query here
+    does. A browser VM is deliberately never clock-skewed (the measurement IS
+    when each instance read), but the default is the safe one and costs nothing.
+    """
+    flux = BROWSER_FLUX_TEMPLATE.format(bucket=bucket, start=start, stop=stop)
+    resp = requests.post(
+        f"{url.rstrip('/')}/api/v2/query",
+        params={"org": org},
+        headers={
+            "Authorization": f"Token {token}",
+            "Content-Type": "application/vnd.flux",
+            "Accept": "application/csv",
+        },
+        data=flux,
+        timeout=timeout,
+        stream=True,
+    )
+    resp.raise_for_status()
+    return parse_browser_download_csv(iter_response_lines(resp))
+
+
+def _parse_json_list(value: "str | None") -> list | None:
+    """A JSON array field, or None when it was not written or will not parse.
+
+    None rather than `[]`: "the harness recorded no first reads" and "this point
+    predates the field" are different facts, and the report's denominators must
+    not count a point that never carried the field as one that carried an empty
+    array.
+    """
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
+def parse_browser_download_csv(body: "str | Iterable[str]") -> list[dict]:
+    """Parse the pivoted `browser_download` CSV.
+
+    ``status`` is a STRING field here, unlike the file ops' integer: nothing was
+    reading the measurement when the harness was written, so there was no
+    `OpRecordStatus` for it to agree with and a human reading the bucket gets
+    `success` rather than `0`. The mapping onto the enum happens in
+    `record-results`.
+
+    A row with no ``round_id`` or no ``instance`` is dropped: those two are the
+    operation's identity, so a point missing either cannot be stored or counted.
+    """
+    points: list[dict] = []
+    reader = csv.reader(_csv_lines(body))
+    header: list[str] | None = None
+    for row in reader:
+        if not row or not any(row):
+            header = None
+            continue
+        if row[0].startswith("#"):
+            continue
+        if header is None:
+            header = row
+            continue
+        record = dict(zip(header, row))
+        if record.get("_measurement") != "browser_download":
+            continue
+        if record.get("host") in (None, ""):
+            continue
+        round_id = _parse_int(record.get("round_id", ""))
+        instance = _parse_int(record.get("instance", ""))
+        if round_id is None or instance is None:
+            continue
+        try:
+            points.append(
+                {
+                    "_time": _parse_ts(record["_time"]),
+                    "host": record["host"],
+                    "region": record.get("region", "") or None,
+                    "round_id": round_id,
+                    "instance": instance,
+                    # Absent on a skip that never chose a file — the harness
+                    # drops the tag rather than writing it blank.
+                    "hot_file_index": _parse_int(record.get("hot_file_index", "")),
+                    "status": record.get("status") or "",
+                    "error_kind": record.get("error_kind") or None,
+                    "error_text": record.get("error_text") or None,
+                    "address": record.get("address") or None,
+                    "file_size": _parse_int(record.get("file_size", "")),
+                    "total_ms": _parse_int(record.get("total_ms", "")),
+                    "connect_ms": _parse_int(record.get("connect_ms", "")),
+                    # The round's BOUNDARY in nanoseconds, not the instant the
+                    # browser launched: the harness stamps `round_id x period`.
+                    "start_ns": _parse_int(record.get("start_ns", "")),
+                    "started_late_ms": _parse_int(record.get("started_late_ms", "")),
+                    # A comma-joined list on the wire, an array in Postgres.
+                    "seeds": [s for s in (record.get("seeds") or "").split(",") if s] or None,
+                    "stalls": _parse_int(record.get("stalls", "")),
+                    "refused_dials": _parse_int(record.get("refused_dials", "")),
+                    "first_reads": _parse_json_list(record.get("first_reads")),
                 }
             )
         except (KeyError, ValueError):
