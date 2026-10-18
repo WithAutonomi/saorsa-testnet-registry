@@ -314,9 +314,25 @@ def delete_elastic_state(name: str) -> None:
 
 
 S3_CLIENT_KEY_PREFIX = "saorsa-deploy/clients"
+#: Client *extensions* -- a client tier added to a running deployment from a
+#: ``kind: clients`` manifest. One key per extension, under its deployment, so
+#: the deployment's own ``clients/<deployment>.json`` is never touched by one.
+S3_CLIENT_EXTENSION_KEY_PREFIX = "saorsa-deploy/client-extensions"
 
 
-def save_client_state(name: str, clients: list[dict]) -> None:
+def client_state_key(name: str, extension: str | None = None) -> str:
+    """S3 key holding a client tier's state.
+
+    ``extension=None`` is the deployment's own client tier and returns the
+    historical key, so every existing caller and every stored document is
+    untouched. A named extension gets its own key under the deployment.
+    """
+    if extension is None:
+        return f"{S3_CLIENT_KEY_PREFIX}/{name}.json"
+    return f"{S3_CLIENT_EXTENSION_KEY_PREFIX}/{name}/{extension}.json"
+
+
+def save_client_state(name: str, clients: list[dict], extension: str | None = None) -> None:
     """Save client deployment metadata to S3.
 
     Args:
@@ -326,28 +342,32 @@ def save_client_state(name: str, clients: list[dict]) -> None:
             Uploader specs additionally carry file_size_mb, payment_type,
             ant_funding, eth_funding, and (after provision) wallet_address +
             wallet_secret_key for the per-uploader wallet.
+        extension: Name of the client extension this tier belongs to, or None
+            for the deployment's own clients.
     """
     state = {
         "name": name,
         "clients": clients,
     }
+    if extension is not None:
+        state["extension"] = extension
     client = _get_s3_client()
     client.put_object(
         Bucket=S3_BUCKET,
-        Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+        Key=client_state_key(name, extension),
         Body=json.dumps(state, indent=2),
         ContentType="application/json",
     )
 
 
-def update_client_state(name: str, updates: dict) -> None:
+def update_client_state(name: str, updates: dict, extension: str | None = None) -> None:
     """Merge updates into existing client state in S3."""
-    state = load_client_state(name)
+    state = load_client_state(name, extension)
     state.update(updates)
     client = _get_s3_client()
     client.put_object(
         Bucket=S3_BUCKET,
-        Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+        Key=client_state_key(name, extension),
         Body=json.dumps(state, indent=2),
         ContentType="application/json",
     )
@@ -359,6 +379,7 @@ def update_client_wallet(
     wallet_address: str,
     wallet_secret_key: str,
     role: str = "upload",
+    extension: str | None = None,
 ) -> None:
     """Persist a generated per-uploader wallet onto its entry in client state.
 
@@ -367,7 +388,7 @@ def update_client_wallet(
     wallet must never land on native uploader #1.
     Raises RuntimeError if the deployment or matching uploader entry is missing.
     """
-    state = load_client_state(name)
+    state = load_client_state(name, extension)
     clients = state.get("clients", [])
     matched = False
     for entry in clients:
@@ -385,13 +406,13 @@ def update_client_wallet(
     client = _get_s3_client()
     client.put_object(
         Bucket=S3_BUCKET,
-        Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+        Key=client_state_key(name, extension),
         Body=json.dumps(state, indent=2),
         ContentType="application/json",
     )
 
 
-def load_client_state(name: str) -> dict:
+def load_client_state(name: str, extension: str | None = None) -> dict:
     """Load client deployment metadata from S3.
 
     Raises RuntimeError if the client state is not found.
@@ -400,23 +421,50 @@ def load_client_state(name: str) -> dict:
     try:
         resp = client.get_object(
             Bucket=S3_BUCKET,
-            Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+            Key=client_state_key(name, extension),
         )
         return json.loads(resp["Body"].read())
     except client.exceptions.NoSuchKey:
+        if extension is not None:
+            raise RuntimeError(
+                f"No client state found for extension '{extension}' of '{name}'. "
+                "Was it created with `clients up --config`?"
+            )
         raise RuntimeError(
             f"No client state found for '{name}'. "
             "Was this client deployment created with the infra-client command?"
         )
 
 
-def delete_client_state(name: str) -> None:
+def delete_client_state(name: str, extension: str | None = None) -> None:
     """Delete client deployment metadata from S3."""
     client = _get_s3_client()
     client.delete_object(
         Bucket=S3_BUCKET,
-        Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+        Key=client_state_key(name, extension),
     )
+
+
+def list_client_extensions(name: str) -> list[str]:
+    """Names of the client extensions that currently have state for ``name``.
+
+    This is the single source of truth for the teardown guard: an extension
+    exists exactly while its state object does, so ``deployments down`` /
+    ``nodes destroy`` / ``bootstraps destroy`` can refuse while one is standing
+    and succeed the moment ``clients down`` has removed it. Sorted, so the
+    refusal message is stable.
+    """
+    client = _get_s3_client()
+    paginator = client.get_paginator("list_objects_v2")
+    prefix = f"{S3_CLIENT_EXTENSION_KEY_PREFIX}/{name}/"
+    found: list[str] = []
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.endswith(".json"):
+                continue
+            found.append(key[len(prefix) : -len(".json")])
+    return sorted(found)
 
 
 S3_CLIENT_ADDRESSES_PREFIX = "saorsa-deploy/addresses"

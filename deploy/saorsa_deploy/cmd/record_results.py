@@ -39,6 +39,7 @@ from saorsa_db.models import (
     ProdUploadStatus,
 )
 
+from saorsa_deploy.client_extension import client_extension_tiers, terraform_name
 from saorsa_deploy.client_roles import is_wasm
 from saorsa_deploy.client_transport import (
     deployment_scoped_transport,
@@ -547,8 +548,31 @@ def _build_network_profile_lookup(deployment):
     return lambda host: None
 
 
+def _client_tiers(name: str) -> list[tuple[str | None, dict]]:
+    """``(extension, client_state)`` for every client tier of ``name``.
+
+    The deployment's own tier first (extension ``None``), then each client
+    extension's. An extension's VMs are the deployment's clients as far as a
+    recorded result is concerned: their operations land in the same Influx
+    buckets under the same deployment name.
+    """
+    tiers: list[tuple[str | None, dict]] = []
+    try:
+        tiers.append((None, load_client_state(name)))
+    except (RuntimeError, FileNotFoundError):
+        pass
+    tiers.extend(client_extension_tiers(name))
+    return tiers
+
+
 def _network_map_from_client_state(name: str) -> dict[str, str]:
     """Map hostname -> network profile name from the deployment's client state.
+
+    Covers every client TIER of the deployment: its own clients and each client
+    extension's. An extension's VMs are the deployment's clients as far as a
+    recorded result is concerned — their operations land in the same Influx
+    bucket under the same deployment — so leaving them out would record them as
+    unshaped whatever their manifest asked for.
 
     Missing or unreadable state yields an empty map, so recording degrades to "no
     profile recorded" rather than failing — the results themselves matter far more
@@ -556,23 +580,23 @@ def _network_map_from_client_state(name: str) -> dict[str, str]:
     """
     if not name:
         return {}
-    try:
-        state = load_client_state(name)
-    except (RuntimeError, FileNotFoundError):
-        return {}
     out: dict[str, str] = {}
-    for c in state.get("clients", []):
-        network = c.get("network")
-        if not network:
-            continue
-        label = network.get("name") if isinstance(network, dict) else str(network)
-        if not label or "=" in label:
-            # An inline (ad-hoc) set has no name worth denormalising; the full
-            # definition stays in deploy_args.
-            label = "inline"
-        out[
-            f"{name}-ant-client-{c.get('role', 'upload')}-{c.get('region')}-{c.get('client_index')}"
-        ] = label
+    for extension, state in _client_tiers(name):
+        prefix = terraform_name(name, extension)
+        for c in state.get("clients", []):
+            network = c.get("network")
+            if not network:
+                continue
+            label = network.get("name") if isinstance(network, dict) else str(network)
+            if not label or "=" in label:
+                # An inline (ad-hoc) set has no name worth denormalising; the full
+                # definition stays in deploy_args.
+                label = "inline"
+            host = (
+                f"{prefix}-ant-client-{c.get('role', 'upload')}"
+                f"-{c.get('region')}-{c.get('client_index')}"
+            )
+            out[host] = label
     return out
 
 
@@ -627,19 +651,25 @@ def _build_client_kind_lookup(deployment, repo=None, console=None):
     name = getattr(deployment, "name", "") or ""
     if not name:
         return lambda host: None
-    try:
-        state = load_client_state(name)
-    except (RuntimeError, FileNotFoundError):
+    # Every client tier of the deployment, extensions included: a WASM tier added
+    # by an extension is as much a browser-path measurement as one declared in
+    # the deployment manifest, and leaving it out would relabel its failures as
+    # native and push them into the NATIVE hard floors.
+    tiers = _client_tiers(name)
+    if not tiers:
         _warn_unclassifiable_wasm_hosts(repo, deployment, console)
         return lambda host: None
 
-    clients = state.get("clients", [])
-    if not any(is_wasm(c.get("role", "upload")) for c in clients):
+    if not any(
+        is_wasm(c.get("role", "upload")) for _, state in tiers for c in state.get("clients", [])
+    ):
         # Native-only deployment: leave every row NULL, exactly as it was before
         # this column existed.
         return lambda host: None
 
-    by_host = transport_map_from_client_state(name, state)
+    by_host: dict[str, str] = {}
+    for extension, state in tiers:
+        by_host.update(transport_map_from_client_state(terraform_name(name, extension), state))
     return lambda host: by_host.get(host)
 
 

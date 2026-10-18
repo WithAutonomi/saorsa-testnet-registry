@@ -3,6 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.client_extension import CLIENT_BINARIES_STATE_KEY
 from saorsa_deploy.client_roles import ROLE_LABELS, ROLE_UPLOAD, is_upload, is_wasm
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
@@ -291,7 +292,11 @@ def _wallet_label(client: dict) -> str:
 
 
 def _ensure_uploader_wallets(
-    name: str, clients: list[dict], funding_secret_key: str, console
+    name: str,
+    clients: list[dict],
+    funding_secret_key: str,
+    console,
+    extension: str | None = None,
 ) -> list[dict]:
     """Make sure every uploader has a per-VM Sepolia wallet at its target
     funding level, creating wallets and topping up balances as needed.
@@ -343,6 +348,7 @@ def _ensure_uploader_wallets(
                 wallet_address=wallet_obj.address,
                 wallet_secret_key=wallet_obj.secret_key,
                 role=client.get("role", "upload"),
+                extension=extension,
             )
             client["wallet_address"] = wallet_obj.address
             client["wallet_secret_key"] = wallet_obj.secret_key
@@ -414,14 +420,110 @@ def _resolve_wasm_bundle(args, console) -> str:
     return url
 
 
+def _record_client_binaries(args, console) -> None:
+    """Record the client-binary source on the deployment's S3 state.
+
+    Written by the deployment's own `clients provision`, read by a client
+    extension's. Best-effort: failing to record costs an extension the ability
+    to infer its binaries (it then says so and asks for the flags), which is
+    worse than provisioning not completing.
+    """
+    from saorsa_deploy.state import update_deployment_state
+
+    record = {
+        "ant": {
+            "branch": getattr(args, "branch_name", None),
+            "repo_owner": getattr(args, "repo_owner", None),
+            "version": getattr(args, "ant_version", None),
+        },
+        "ant_wasm": {
+            "branch": getattr(args, "wasm_branch_name", None) or getattr(args, "branch_name", None),
+            "repo_owner": (
+                getattr(args, "wasm_repo_owner", None) or getattr(args, "repo_owner", None)
+            ),
+        },
+    }
+    try:
+        update_deployment_state(args.name, {CLIENT_BINARIES_STATE_KEY: record})
+    except Exception as e:  # noqa: BLE001 — recording is best-effort
+        console.print(
+            f"[yellow]Warning: failed to record client binaries in deployment state: {e}[/yellow]"
+        )
+
+
+def _apply_recorded_client_binaries(args, console) -> None:
+    """Fill an extension's binary flags from what the deployment recorded.
+
+    An extension manifest deliberately declares no binaries, so this is the only
+    source. An explicitly-passed flag always wins — the escape hatch for a
+    deployment provisioned before this record existed, which is also the case
+    the error below names.
+    """
+    from saorsa_deploy.state import load_deployment_state
+
+    try:
+        record = (load_deployment_state(args.name) or {}).get(CLIENT_BINARIES_STATE_KEY) or {}
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(2)
+
+    ant = record.get("ant") or {}
+    wasm = record.get("ant_wasm") or {}
+    explicit = any(
+        getattr(args, field, None) for field in ("branch_name", "ant_version", "wasm_branch_name")
+    )
+    if not record and not explicit:
+        console.print(
+            f"[bold red]Error:[/bold red] '{args.name}' has no recorded client "
+            "binaries, so this extension cannot reuse them. The deployment was "
+            "provisioned before they were recorded — pass the binary flags "
+            "explicitly (--ant-version, or --branch-name/--repo-owner, plus "
+            "--wasm-branch-name/--wasm-repo-owner for a WASM tier) and make "
+            "sure they match what the deployment is running."
+        )
+        sys.exit(2)
+
+    if not explicit:
+        for field, value in (
+            ("branch_name", ant.get("branch")),
+            ("repo_owner", ant.get("repo_owner")),
+            ("ant_version", ant.get("version")),
+            ("wasm_branch_name", wasm.get("branch")),
+            ("wasm_repo_owner", wasm.get("repo_owner")),
+        ):
+            if value:
+                setattr(args, field, value)
+        described = (
+            f"branch {ant.get('repo_owner')}/{ant.get('branch')}"
+            if ant.get("branch")
+            else (f"release v{ant['version']}" if ant.get("version") else "latest release")
+        )
+        console.print(f"  Reusing the deployment's client binary: {described}")
+
+
 def cmd_provision_clients(args):
     """Execute the clients provision command: provision client VMs with uploader/downloader."""
     console = Console()
     prod_mode = getattr(args, "prod", False)
 
-    console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
+    extension = getattr(args, "extension", None)
+    if extension is not None:
+        # The extension reuses whatever `clients provision` recorded for the
+        # deployment, so the two tiers cannot run different client builds. Done
+        # here, before the state load, so a missing record is reported before
+        # anything else has been attempted.
+        _apply_recorded_client_binaries(args, console)
+        # An extension's operations land in the DEPLOYMENT's InfluxDB — that is
+        # the whole point of scoping it to a deployment — so default the
+        # monitoring name rather than making the orchestrator probe S3 to decide
+        # whether to emit the flag. A deployment with no monitoring state still
+        # warns and proceeds, exactly as it does on the deployment's own path.
+        if not getattr(args, "monitoring_name", None):
+            args.monitoring_name = args.name
+    scope = f"extension '{extension}' of '{args.name}'" if extension else f"'{args.name}'"
+    console.print(f"[bold]Loading client state for {scope}...[/bold]")
     try:
-        client_state = load_client_state(args.name)
+        client_state = load_client_state(args.name, extension)
     except RuntimeError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -437,7 +539,7 @@ def cmd_provision_clients(args):
     # re-pass the exact same --ssh-key-path. Best-effort: a failure here only
     # costs the convenience, not the provisioning run.
     try:
-        update_client_state(args.name, {"ssh_key_path": args.ssh_key_path})
+        update_client_state(args.name, {"ssh_key_path": args.ssh_key_path}, extension)
     except Exception as e:  # noqa: BLE001 — recording is best-effort
         console.print(
             f"[yellow]Warning: failed to record ssh_key_path in client state: {e}[/yellow]"
@@ -466,7 +568,9 @@ def cmd_provision_clients(args):
     # synthesis entirely.
     if has_uploaders and not prod_mode:
         try:
-            clients = _ensure_uploader_wallets(args.name, clients, wallet_secret_key, console)
+            clients = _ensure_uploader_wallets(
+                args.name, clients, wallet_secret_key, console, extension
+            )
         except Exception as e:
             console.print(
                 f"[bold red]Error:[/bold red] Failed to create or fund per-uploader wallets: {e}"
@@ -520,17 +624,23 @@ def cmd_provision_clients(args):
             f"  Heaptrack: enabled for {', '.join(sorted(heaptrack_targets))} "
             f"(profiles → /var/log/ant-heaptrack/ on each VM)"
         )
-    record_deploy_args_update(
-        args.name,
-        {
-            "ant_binary": build_binary_descriptor(
-                getattr(args, "branch_name", None),
-                getattr(args, "repo_owner", None),
-                getattr(args, "ant_version", None),
-            ),
-            "heaptrack": sorted(heaptrack_targets),
-        },
-    )
+    if extension is None:
+        record_deploy_args_update(
+            args.name,
+            {
+                "ant_binary": build_binary_descriptor(
+                    getattr(args, "branch_name", None),
+                    getattr(args, "repo_owner", None),
+                    getattr(args, "ant_version", None),
+                ),
+                "heaptrack": sorted(heaptrack_targets),
+            },
+        )
+        # Persist the resolved client-binary source into the DEPLOYMENT's S3
+        # state, which is what a later client extension reads back so it cannot
+        # run a different build. deploy_args would not do: it is in Postgres and
+        # the whole client lifecycle works without DATABASE_URL.
+        _record_client_binaries(args, console)
     influx_url, influx_token, influx_org, influx_bucket = _resolve_influx_config(args, console)
     # Client log forwarding (testnet path): reuse the deployment's own elastic
     # instance, different index. prod_mode flows forward via their own commands.

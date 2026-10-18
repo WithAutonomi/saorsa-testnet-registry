@@ -16,9 +16,11 @@ def cmd_start_clients(args):
     """Execute the clients start command: start uploader/downloader services."""
     console = Console()
 
-    console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
+    extension = getattr(args, "extension", None)
+    scope = f"extension '{extension}' of '{args.name}'" if extension else f"'{args.name}'"
+    console.print(f"[bold]Loading client state for {scope}...[/bold]")
     try:
-        client_state = load_client_state(args.name)
+        client_state = load_client_state(args.name, extension)
     except RuntimeError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)

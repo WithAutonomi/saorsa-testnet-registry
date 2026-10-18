@@ -105,6 +105,16 @@ def merge_manifest_dict(
     """Return the fully-merged manifest dict (extends + --set + --name), unvalidated."""
     path = Path(path).expanduser()
     data = _read_yaml(path)
+    # `extends` is refused for `kind: clients`: a client extension inherits its
+    # binaries, bootstraps and observability from the deployment it names, so
+    # there is nothing a base profile could usefully supply — and a half-merged
+    # role list reads as a description of a run it does not describe.
+    if data.get("kind") == "clients" and "extends" in data:
+        raise ManifestError(
+            f"manifest '{path}': `extends` is not supported for kind 'clients' "
+            "(a client extension inherits everything but its own tiers from the "
+            "deployment it names)"
+        )
     data = _resolve_extends(data, path.parent, {path.resolve()})
 
     for item in sets or []:

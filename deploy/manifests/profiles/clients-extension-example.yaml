@@ -1,0 +1,39 @@
+# A CLIENT EXTENSION: client tiers added to a deployment that is already running.
+#
+# Validate / preview / run it with:
+#
+#   saorsa-deploy clients config validate --config <this file>
+#   saorsa-deploy clients plan --config <this file>
+#   saorsa-deploy clients up --config <this file>
+#   saorsa-deploy clients down --config <this file>
+#
+# `plan` and `config validate` never touch the cloud and do not need the
+# deployment to exist. `up` refuses until it does.
+#
+# Copy this to deploy/manifests/runs/ and edit `deployment:` to a real testnet
+# name before running anything. The two downloaders below consume the EXISTING
+# address pool that deployment's uploaders publish into, which is the point of
+# an extension: no uploader is needed here, and the pairing rule a deployment
+# manifest applies deliberately does not apply.
+kind: clients
+
+# The extension's own name. Letters, digits and hyphens only — it becomes part
+# of every VM hostname (EXAMPLE-extra-downloaders-ant-client-download-lon1-N),
+# the Terraform workspace and the S3 state key.
+name: extra-downloaders
+
+# The deployment these VMs join. Its state supplies the bootstraps they dial,
+# the InfluxDB their operations land in, the Elasticsearch they forward logs to
+# and the S3 address pool they read.
+deployment: EXAMPLE
+
+purpose: "Example: two more native downloaders against a running testnet"
+ssh_key_path: ~/.ssh/ant_deploy
+
+# No `binaries:` — an extension reuses the client binary the deployment
+# recorded at provision time, so it can never run a different build from the
+# deployment it is measuring.
+clients:
+  downloaders:
+    - { provider: digital_ocean, region: lon1 }
+    - { provider: digital_ocean, region: lon1 }

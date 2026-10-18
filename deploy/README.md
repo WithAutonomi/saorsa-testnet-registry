@@ -62,9 +62,12 @@ local. (Profiles are deep-merge bases for `extends:`; examples are standalone
 templates to copy into `runs/`.)
 
 One manifest describes one deployment's full desired state, tagged by `kind`
-(`testnet`, `testnet-extension`, `prod-uploaders`, `prod-canary`,
+(`testnet`, `testnet-extension`, `clients`, `prod-uploaders`, `prod-canary`,
 `prod-continuous-downloader`, `prod-downloaders`, `prod-local-uploads`,
-`prod-local-downloads`). The orchestrator owns the ordering and flag-coupling
+`prod-local-downloads`). The one exception is `kind: clients` — a client tier
+added to a deployment that is already running, driven by `clients up` / `down`
+rather than `deployments up` / `down`; see "Client extensions (`kind: clients`)"
+below. The orchestrator owns the ordering and flag-coupling
 invariants (e.g. `bootstraps provision` only when bootstrap count > 1, `--testnet`
 on all three node-provision commands, telegraf after `nodes start`, destroy in
 reverse) so they can't be got wrong by hand. `up` executes each step by
@@ -674,6 +677,126 @@ touches the source's bootstrap VMs.
 `bootstraps destroy` will refuse to destroy a testnet's bootstraps while
 any extension references them — `deployments unextend` each dependent first.
 `--force` does not override this check.
+
+### Client extensions (`kind: clients`)
+
+A **client extension** adds client tiers to a deployment that is *already
+running*. Client VMs have always had a lifecycle of their own (`clients infra` /
+`provision` / `start` / `stop` / `destroy` all take a deployment name and work
+against a live testnet); this is the manifest-driven form of it. It is what lets
+a run bring a large client cohort up after the deployment has warmed up,
+measure, and tear the cohort down while the deployment carries on.
+
+It is unrelated to `deployments extend` above: that creates a second **node**
+fleet sharing the first's bootstraps. A client extension creates no nodes.
+
+```yaml
+kind: clients
+name: extra-downloaders          # the extension's name, ^[A-Za-z0-9-]+$
+                                 # (and not starting with a client role name)
+deployment: DEV-01               # the testnet whose state it reads
+purpose: "V2-NNNN: one line"
+ssh_key_path: ~/.ssh/ant_deploy
+clients:                         # same per-entry grammar as a testnet manifest
+  uploaders: []
+  downloaders:
+    - { provider: digital_ocean, region: lon1 }
+    - { provider: digital_ocean, region: lon1 }
+  wasm_uploaders: []
+  wasm_downloaders: []
+  pointers: []
+```
+
+A committed example is at `deploy/manifests/profiles/clients-extension-example.yaml`.
+
+| command | behaviour |
+| -- | -- |
+| `clients config validate --config <f>` | schema and rule checks; exit 2 on failure |
+| `clients config show --config <f>` | print the merged, validated manifest as YAML |
+| `clients plan --config <f>` | print the VMs that would be created (provider, region, size, role, hostname) and the exact `clients infra` / `provision` / `start` invocations. Does **not** need the deployment to exist — it says so, and that the indexes shown then start at 1 |
+| `clients up --config <f>` | `infra` → `provision` → `start`. Resumable, with `--resume` semantics identical to `deployments up` |
+| `clients down --config <f>` | stop services → drain any uploader wallets → destroy the extension's VMs → delete its state and journal. Also takes `--name <deployment> --extension <name>` when the manifest is not to hand |
+| `clients ls --name <deployment>` | list the deployment's extensions with VM counts and state |
+
+The five primitives also take `--extension <name>` directly, which is what the
+steps above are: `clients infra|provision|start|stop|destroy --name DEV-01
+--extension extra-downloaders`. Omitting it is the deployment's own client tier,
+and that path is byte-identical to before.
+
+**Rules.**
+
+- `deployment:` must name a deployment whose state
+  (`saorsa-deploy/deployments/<deployment>.json`) exists in S3; `clients up`
+  exits 2 naming the key otherwise. `plan` and `config validate` do not need it.
+- At least one role list must be non-empty.
+- `name:` must match `^[A-Za-z0-9-]+$` and must not begin with a client role
+  (`upload`, `download`, `wasm-upload`, `wasm-download`, `pointer`): the
+  tfstate key is `<prefix>-<tf name>-<role>-<region>-<index>.tfstate`, so
+  `DEV-01-upload-extra-download-lon1-1` would parse as role `upload` of DEV-01
+  and the deployment's own orphan-recovery scan would adopt the extension's VM.
+- **Binaries are not declared here.** The extension reuses the client binary the
+  deployment recorded at `clients provision` time (`client_binaries` in its S3
+  state), so an extension can never run a different client build from the
+  deployment it is measuring. A deployment provisioned before that record existed
+  is reported, with the flags to pass explicitly.
+- `extends:` is not supported for this kind — there is nothing to inherit. Nor
+  is `slack_post:`: `deployments slack-post` reports on a *deployment* and an
+  extension has no registry row of its own, so the step would look up a name
+  that does not exist.
+- **There is no uploader/downloader pairing rule.** A deployment manifest refuses
+  downloaders without uploaders, because a tier consuming addresses nobody
+  publishes measures nothing. An extension reads the deployment's *existing*
+  address pool, so "add 20 more downloaders at hour 3" is the point of it.
+- A WASM tier needs the deployment to have collected its bootstrap WebRTC
+  multiaddrs already (its own `up` does this after `nodes start`). `clients up`
+  emits no `deployments webrtc-addresses` step: that would SSH the deployment's
+  bootstrap VMs and rewrite its state — an extension touching what it extends.
+
+**Naming and state.**
+
+- VM names: `<deployment>-<name>-ant-client-<role>-<region>-<n>`, against the
+  deployment's own `<deployment>-ant-client-<role>-<region>-<n>`. One
+  substitution (the Terraform `name` variable becomes `<deployment>-<name>`)
+  namespaces the hostname, the Terraform workspace directory and the tfstate key
+  together, because all three are built from it.
+- S3 state: `saorsa-deploy/client-extensions/<deployment>/<name>.json`; step
+  journal `saorsa-deploy/journals/<deployment>--<name>.json` (a double hyphen, so
+  it cannot be mistaken for a deployment called `<deployment>-<name>`). The
+  deployment's own `clients/<deployment>.json` is never modified.
+- **`client_index` continues** from the highest index already in use for that
+  role across the deployment's own clients *and* its other extensions. The index
+  is part of the per-uploader S3 address key (`upload-<region>-<n>.txt`,
+  `wasm-upload-<region>-<n>.txt`) and each flush is a whole-object PUT, so two
+  uploaders sharing an index silently erase each other's address list on every
+  flush. The scan excludes the extension asking, so a resume allocates the same
+  indexes it allocated last time.
+- Each client record carries `extension: <name>`, and `generate-inventory --name
+  <deployment>` lists extension VMs in `client_vms[]` with that field. It is
+  present only on an extension's VMs, so every existing deployment's inventory is
+  byte-identical and the schema version does not move.
+- `record-results`, `print-uploads` and `print-downloads` resolve each tier the
+  same way, so an extension VM's `client_kind` and `network_profile` are recorded
+  and rendered exactly as the deployment's own are. A WASM tier added by an
+  extension is as much a browser-path measurement as one in the deployment
+  manifest; missing it would relabel its failures as native and push them into
+  the **native hard floors**.
+
+**`clients down` never touches the address pool.**
+`s3://saorsa-testnet-addresses/saorsa-deploy/addresses/<deployment>/` belongs to
+the deployment: its own clients and its other extensions publish into it and read
+from it. Wiping it here would silently empty a running deployment's download
+workload. Only the deployment's own `clients destroy` clears it. Nor does
+`clients down` touch the deployment's own clients, nodes or bootstraps.
+
+**The teardown guard.** `deployments down` (both the `--config` and the `--name`
+form), `bootstraps destroy` and `nodes destroy` **refuse with exit 2** while any
+client extension has state for the deployment, naming each one and the `clients
+down` that removes it. **No flag overrides it** — the same rule `bootstraps
+destroy` already applies to node extensions. The extensions' VMs run against
+this deployment's bootstraps, InfluxDB, Elasticsearch and address pool;
+destroying any of those out from under them leaves VMs running, billing, and
+failing every operation, with the measurements they were created to take
+unusable.
 
 ### `deployments slack-post`
 
