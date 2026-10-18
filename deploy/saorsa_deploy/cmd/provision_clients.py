@@ -3,6 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.browser_records import record_browser_config
 from saorsa_deploy.client_extension import CLIENT_BINARIES_STATE_KEY
 from saorsa_deploy.client_roles import (
     ROLE_LABELS,
@@ -816,6 +817,14 @@ def cmd_provision_clients(args):
     except Exception as e:
         console.print(f"[bold red]Client provisioning failed:[/bold red] {e}")
         sys.exit(1)
+
+    # Denormalise the browser tier's round period and instance count into the
+    # registry. The S3 client state carrying them is deleted by `clients
+    # destroy`, and `analysis browser-reads` reads Postgres alone precisely so
+    # it can be run once the VMs are gone. Rebuilt from every tier (the
+    # deployment's own and each extension's), so it converges whichever tier
+    # this pass provisioned, and a no-op for a deployment with no browser VMs.
+    record_browser_config(args.name, console)
 
     # Install client host-metrics Telegraf (InfluxDB, host_role=CLIENT) as part
     # of this clients pass, so it no longer needs a separate provision-telegraf

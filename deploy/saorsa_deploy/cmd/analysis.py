@@ -21,6 +21,7 @@ ANALYSIS_MODULES = (
     "saorsa_deploy.analysis.rot_chunks",
     "saorsa_deploy.analysis.es",
     "saorsa_deploy.analysis.pointer_commitments",
+    "saorsa_deploy.analysis.browser_reads",
     "saorsa_deploy.analysis.relay",
     "saorsa_deploy.analysis.phase_extract",
     "saorsa_deploy.analysis.recovery",

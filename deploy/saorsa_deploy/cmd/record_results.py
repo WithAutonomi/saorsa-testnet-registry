@@ -39,6 +39,7 @@ from saorsa_db.models import (
     ProdUploadStatus,
 )
 
+from saorsa_deploy.browser_records import extension_by_host
 from saorsa_deploy.client_extension import client_extension_tiers, terraform_name
 from saorsa_deploy.client_roles import is_wasm
 from saorsa_deploy.client_transport import (
@@ -50,6 +51,7 @@ from saorsa_deploy.influx import (
     aggregate_file_results,
     fetch_all_operation_points,
     fetch_all_prod_upload_points,
+    fetch_browser_download_points,
     fetch_pointer_points,
 )
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
@@ -169,6 +171,19 @@ def cmd_record_results(args):
         )
         if pointer_blocks:
             results_blocks = (results_blocks or []) + pointer_blocks
+        # Browser-downloader rounds, likewise: the cohort rides an ordinary
+        # testnet (usually as a `kind: clients` extension), so its rounds are
+        # picked up in the same pass. Nothing is added to the Slack summary --
+        # the report that reads these rows is `analysis browser-reads`.
+        _record_browser_downloads(
+            repo,
+            deployment,
+            args,
+            console,
+            influx_url,
+            influx_token,
+            influx_org,
+        )
 
     # Close the pool claims this deployment took. Only reached for the remote
     # kinds: prod-local-uploads resolves its claims inline as it uploads, and
@@ -503,6 +518,101 @@ def _record_pointer_ops(
         f"[/bold green]"
     )
     return pointer_result_blocks(records)
+
+
+#: What the harness's string `status` field maps onto. An unrecognised value is
+#: counted as unusable rather than coerced: a status this build does not
+#: understand must not be stored as `failure` in a column the report's
+#: completion gate reads.
+_BROWSER_STATUS = {
+    "success": OpRecordStatus.SUCCESS,
+    "failure": OpRecordStatus.FAILURE,
+    "skipped": OpRecordStatus.SKIPPED,
+}
+
+
+def _record_browser_downloads(
+    repo,
+    deployment,
+    args,
+    console,
+    influx_url,
+    influx_token,
+    influx_org,
+) -> None:
+    """Persist every `browser_download` round into ``deployment_browser_download_records``.
+
+    Always queried from epoch (``start="0"``), like the per-op file and pointer
+    records: ``--window`` narrows the file-op AGGREGATE, while the per-op tables
+    are the windowable ones and a re-run is expected to backfill the full
+    history.
+
+    Only the WASM bucket is read — the harness writes nowhere else — so a
+    deployment with no browser tier simply finds no points and says nothing.
+    """
+    try:
+        points = fetch_browser_download_points(
+            influx_url,
+            influx_token,
+            influx_org,
+            INFLUXDB_WASM_BUCKET,
+            "0",
+        )
+    except Exception as e:
+        console.print(
+            "[yellow]Warning: browser_download query failed, no browser "
+            f"records written: {e}[/yellow]"
+        )
+        return
+    if not points:
+        return
+
+    # Resolved only once there is something to label, so a deployment with no
+    # browser tier — every prod kind, and every testnet without one — does not
+    # pay for a client-state scan on each `record-results` pass.
+    extension_for_host = extension_by_host(_client_tiers(args.name), args.name)
+
+    recorded = 0
+    unusable = 0
+    for point in points:
+        status = _BROWSER_STATUS.get(point.get("status"))
+        start_ns = point.get("start_ns")
+        if status is None or start_ns is None:
+            unusable += 1
+            continue
+        # `start_ns` is the round's BOUNDARY, which is what makes a window
+        # selection over these rows select whole rounds.
+        started_at = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
+        repo.upsert_browser_download_record(
+            deployment_id=deployment.id,
+            client_hostname=point["host"],
+            round_id=point["round_id"],
+            instance=point["instance"],
+            status=status,
+            started_at=started_at,
+            extension=extension_for_host.get(point["host"]),
+            region=point.get("region"),
+            hot_file_index=point.get("hot_file_index"),
+            address=point.get("address"),
+            file_size_bytes=point.get("file_size"),
+            error_kind=point.get("error_kind"),
+            error_text=point.get("error_text"),
+            total_ms=point.get("total_ms"),
+            connect_ms=point.get("connect_ms"),
+            started_late_ms=point.get("started_late_ms"),
+            seeds=point.get("seeds"),
+            stalls=point.get("stalls"),
+            refused_dials=point.get("refused_dials"),
+            first_reads=point.get("first_reads"),
+        )
+        recorded += 1
+
+    rounds = len({p.get("round_id") for p in points})
+    console.print(
+        f"[bold green]Recorded {recorded} browser download(s) across {rounds} "
+        f"round(s) ({unusable} unusable point(s)) for deployment "
+        f"'{args.name}'.[/bold green]"
+    )
 
 
 def _build_network_profile_lookup(deployment):

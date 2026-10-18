@@ -1426,11 +1426,63 @@ clients` extension too, which is the normal way to use it.
   role only) expands to N VMs with consecutive `client_index`, as repeated
   `--browser-downloader` flags, because the argv is what the journal compares.
 - Traces land at `/var/lib/ant-browser-downloader/trace/<round>-<instance>.jsonl`
-  and are **never deleted** — `scp` before destroy. Persisting the points to
-  Postgres, the trace fetch, `print-downloads --browser` and
-  `analysis browser-reads` are **V2-1618**.
+  and are **never deleted** by the harness — `clients fetch-browser-traces`
+  before destroy (below).
 
 See `deploy/README.md` §"Browser client VMs (real Chromium, hot-read cohort)".
+
+#### Persisting the rounds, the traces, and the report (V2-1618)
+
+`record-results` copies every `browser_download` point into
+**`deployment_browser_download_records`** in the same pass as the file-op and
+pointer records, `clients fetch-browser-traces` archives the raw traces to S3
+before teardown, and **`analysis browser-reads`** is the report a hot-read run is
+judged by. `print-downloads --name <n> --browser` is the live Influx view (one
+row per round) and `print-recorded-results --id` gains a "Browser downloads"
+summary. `deployments archive` carries the table like the others.
+
+- **Its own table, and a `skipped` row is stored but in no denominator.** Pooling
+  a synchronised cohort's reads of ONE file with a client's reads of random files
+  would let any rate or percentile average the two — the same reason the harness
+  writes its own measurement. Keyed `(deployment, host, round_id, instance)`.
+- **`started_at` is the round's BOUNDARY**, not when the browser came up
+  (`started_late_ms` carries that), which is what makes a window selection over
+  these rows select whole rounds. The window is half-open on `round_id × period`.
+- **`trace_s3_key` is preserved by the upsert.** It is written by the trace fetch
+  and the Influx point never carries it, so an unconditional assignment would
+  erase the only pointer to a round's trace — and the traces die with the VM.
+- **`clients provision` denormalises the round period and instance count into
+  `deploy_args.browser_downloaders`**, because `clients destroy` deletes the S3
+  client state and the report reads Postgres alone by design. Rebuilt from every
+  client tier each pass (a shallow merge cannot append), best-effort; without it
+  the period is derived from the recorded boundaries.
+- **`fetch-browser-traces` exits 2 if any VM is unreachable** — it runs while the
+  VMs are up, and a partial archive exiting 0 is indistinguishable from a
+  complete one once they are gone. It **never creates a row**: an unmatched trace
+  is reported and the next `record-results` writes the row. VMs come from the S3
+  client state, not the inventory (a cohort is normally an extension added hours
+  after `up` wrote it).
+- **Four gates, none of them a staging gate** (`deployments compare` is
+  unchanged): G1 completion ≥ 0.99 in **every** round (per round, so one bad
+  round cannot be averaged away; an all-skip round is not gated), G2 zero
+  `not_found`, G3 busiest holder's share ≤ 0.25 for every chunk with **≥ 20**
+  first reads (below 20 a share is noise, so those are listed not gated), G4 zero
+  refused dials. **Exit 0 / 1 / 2**, and 2 ("I measured nothing") is deliberately
+  not 1 ("the read path got worse").
+- **G3 is the verdict on ADR-0023 and reads `first_reads` alone** — the holder
+  each chunk's FIRST read went to, because a fallback to a second holder has
+  already paid the first one's `NotFound` or silence. `known_holders` is the
+  download-wide discovery count, and `null` is its own bucket, never 0.
+- **§7 bootstrap load is the round's download count**: every download dials every
+  seed, so that IS the sessions one bootstrap sees at the round's start. The
+  per-round **maximum** is printed against the 256-session ceiling — an average
+  over a run that started small hides the peak.
+- Fixtures: `deploy/tests/fixtures/browser-reads/` — one cohort whose chunk is
+  spread over 6 holders (16.7%, PASS) and one nearest-first at 100% (FAIL), with
+  every expected figure worked out on paper in its README.
+
+See `deploy/README.md` §"Persisting the rounds", §"Archiving the traces" and
+§"The report (`analysis browser-reads`)".
 
 ### The pointer client tier (`clients.pointers[]`)
 

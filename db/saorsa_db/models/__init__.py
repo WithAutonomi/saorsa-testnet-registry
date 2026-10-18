@@ -1,3 +1,7 @@
+from saorsa_db.models.browser_download_record import (
+    BrowserDownloadErrorKind,
+    DeploymentBrowserDownloadRecord,
+)
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.derived_metric import (
     COMPONENT_METRICS,
@@ -121,6 +125,8 @@ from saorsa_db.models.release_candidate import (
 
 __all__ = [
     "BLOCKING_STATUSES",
+    "BrowserDownloadErrorKind",
+    "DeploymentBrowserDownloadRecord",
     "POINTER_SUCCESS_OUTCOMES",
     "POINTER_WRITE_OPS",
     "DeploymentPointerRecord",

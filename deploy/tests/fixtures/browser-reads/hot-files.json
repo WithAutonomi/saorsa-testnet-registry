@@ -1,0 +1,21 @@
+{
+  "deployment": "DEV-03",
+  "selected_at": "2026-10-18T08:55:00Z",
+  "size_bytes": 52428800,
+  "files": [
+    {
+      "index": 0,
+      "address": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+      "bytes": 52428800,
+      "source_key": "upload-lon1-1.txt",
+      "line": 4
+    },
+    {
+      "index": 1,
+      "address": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+      "bytes": 52428800,
+      "source_key": "upload-lon1-1.txt",
+      "line": 9
+    }
+  ]
+}
