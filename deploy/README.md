@@ -2,6 +2,26 @@
 
 CLI tool for deploying testnets for [ant-node](https://github.com/jacderida/ant-node) using Terraform and Pyinfra.
 
+## Versioning
+
+The tool is versioned, and all four workspace packages share that version
+number. Every merge to `main` that bumps it produces a tagged GitHub release
+carrying `saorsa_deploy-<version>-py3-none-any.whl` and
+`saorsa_db-<version>-py3-none-any.whl` — the GitHub release is the wheel store,
+there is no package index. An unattended antops run pins a version in its Linear
+issue and installs that wheel rather than running whatever a checkout happens to
+hold, so the command a run executed is recoverable from its issue alone.
+
+```bash
+gh release list                                    # the released versions
+gh release download v1.0.0 -p '*.whl' -D /tmp/wheels
+uvx --no-sources --find-links /tmp/wheels saorsa-deploy==1.0.0 --version
+```
+
+A PR that changes `deploy/` or `db/` must bump the version and declare the bump
+type in its body; CI's `version-bump` check enforces it. See the repository
+README's "Releasing" section.
+
 ## Prerequisites
 
 - Python >= 3.10

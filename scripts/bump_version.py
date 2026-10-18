@@ -1,12 +1,25 @@
-"""Bump the version across all workspace packages, commit, tag, and push.
+"""Bump the version across all workspace packages.
+
+The four packages share one version number, and CI enforces that a PR touching
+`deploy/` or `db/` moves it (see `.github/workflows/version-check.yml`). The
+normal use is therefore `--no-commit`, run while preparing a PR: it edits the
+four `pyproject.toml` files and `uv.lock` and stops, leaving the author to
+commit them with the change.
 
 Usage:
-    uv run scripts/bump_version.py <version>
+    uv run scripts/bump_version.py <version> --no-commit   # prepare a PR
+    uv run scripts/bump_version.py <version>               # emergencies only
+
+Without `--no-commit` the script also commits, tags and pushes. That path is
+for a by-hand release when CI cannot make one: the tag it pushes is the same
+`v<version>` the release workflow creates on merge, so running it on a branch
+that is also going to be merged would leave the release job with nothing to do.
 
 Example:
-    uv run scripts/bump_version.py 0.2.0
+    uv run scripts/bump_version.py 1.0.0 --no-commit
 """
 
+import argparse
 import re
 import subprocess
 import sys
@@ -14,6 +27,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT_FILES = [
+    REPO_ROOT / "db" / "pyproject.toml",
     REPO_ROOT / "web" / "pyproject.toml",
     REPO_ROOT / "mcp" / "pyproject.toml",
     REPO_ROOT / "deploy" / "pyproject.toml",
@@ -44,12 +58,16 @@ def run(cmd: list[str], **kwargs) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        print("Usage: uv run scripts/bump_version.py <version>")
-        print("Example: uv run scripts/bump_version.py 0.2.0")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("version", help="the new version, X.Y.Z")
+    parser.add_argument(
+        "--no-commit",
+        action="store_true",
+        help="edit the four pyproject.toml files and uv.lock and stop",
+    )
+    args = parser.parse_args()
 
-    version = sys.argv[1]
+    version = args.version
     validate_version(version)
     tag = f"v{version}"
 
@@ -60,11 +78,19 @@ def main() -> None:
     print("\nRegenerating lockfile...")
     run(["uv", "lock"])
 
+    if args.no_commit:
+        print(
+            f"\nDone. The four pyproject.toml files and uv.lock are at {version}; "
+            "commit them with your change and declare the bump type in the PR body."
+        )
+        return
+
     print(f"\nCommitting and tagging {tag}...")
     run(
         [
             "git",
             "add",
+            "db/pyproject.toml",
             "web/pyproject.toml",
             "mcp/pyproject.toml",
             "deploy/pyproject.toml",
