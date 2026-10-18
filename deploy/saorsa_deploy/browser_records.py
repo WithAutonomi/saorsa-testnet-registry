@@ -1,14 +1,15 @@
 """The browser-downloader tier's own facts: which VMs it is, and its round config.
 
-Three consumers need the same two things and none of them can reach the VMs:
+Three consumers need facts about the tier that none of them can reach a VM for:
 
 * `record-results` needs the **extension** each browser VM belongs to, so a
   cohort added at hour 3 as a `kind: clients` extension is distinguishable from
   the deployment's own tier.
 * `analysis browser-reads` needs the **round period** (to turn a `round_id` into
-  a wall-clock boundary) and the **instances per VM** (to say how many points a
-  round should have produced). It reads Postgres only, by design: it is meant to
-  run after the VMs and their InfluxDB are gone.
+  a wall-clock boundary), the **instances per VM** (to say how many points a
+  round should have produced) and the **hot-file selection** (to say which file
+  each round read). It reads Postgres only, by design: it is meant to run after
+  the VMs and their InfluxDB are gone.
 * `clients fetch-browser-traces` needs the VMs' addresses while they are up.
 
 The S3 client state answers all of it, but only while it exists — `clients
