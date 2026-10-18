@@ -36,6 +36,10 @@ packages = ["saorsa_deploy"]
 exclude = [
     "saorsa_deploy/resources/wasm-client/node_modules",
     "saorsa_deploy/resources/wasm-client/dist",
+    # Same trap, same reason: `resources/browser-client/.gitignore` is a nested
+    # one, so its `node_modules/` is invisible to hatchling. The browser
+    # harness's dependency is Playwright, which is larger again.
+    "saorsa_deploy/resources/browser-client/node_modules",
     "**/.terraform",
 ]
 

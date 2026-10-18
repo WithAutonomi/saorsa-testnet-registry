@@ -463,6 +463,19 @@ def main(argv=None):
         help="Path to SSH key for provisioning the build VM (default: ~/.ssh/id_rsa)",
     )
     build_ant_wasm_parser.add_argument(
+        "--features",
+        type=str,
+        default=None,
+        help="Cargo features to build ant-core with, passed to `wasm-pack build "
+        "--features` VERBATIM (default: browser-wasm). It REPLACES the feature "
+        "list rather than adding to it, so `browser-wasm` has to be named: "
+        "ant-core's default feature is `native` and is mutually exclusive with "
+        "it. The browser-downloader client role needs "
+        "'browser-wasm,test-utils' — `test-utils` is what compiles in the "
+        "`setBrowserTrace` per-dial trace hook, and it also links a "
+        "deterministic mock node, so it is deliberately not the default.",
+    )
+    build_ant_wasm_parser.add_argument(
         "--build-vm-size",
         type=str,
         default=None,
@@ -839,6 +852,27 @@ def main(argv=None):
         "--pointer 'digital_ocean:syd1:s-2vcpu-4gb:eth=1'",
     )
     clients_infra_parser.add_argument(
+        "--browser-downloader",
+        type=str,
+        action="append",
+        default=[],
+        help="Browser downloader VM spec: "
+        "'provider:region[:vm_size][:instances=N][:round_period_secs=N]"
+        "[:download_timeout_secs=N][:forward_logs=BOOL]'. Runs N real headless "
+        "Chromium instances (Playwright) per VM, all reading ONE operator-chosen "
+        "hot file on a shared wall-clock schedule, with a fresh client per round "
+        "and a per-dial trace — the only way to measure what many real browsers "
+        "reading the same record at the same moment experience (ADR-0023). "
+        "Default vm_size=s-4vcpu-8gb (four instances holding ~4x a 50 MiB file "
+        "in WASM memory do not fit in 4 GB). instances defaults to 4 and is "
+        "CAPPED at 4: a node admits at most 4 WebRTC sessions per source IPv4 "
+        "address, so a fifth would be refused by every node it dials. "
+        "round_period_secs defaults to 600 (minimum 120) and "
+        "download_timeout_secs to 300, which must be less than it. Needs a WASM "
+        "bundle built with the test-utils feature, and the deployment's hot "
+        "files selected with `clients select-hot-files`.",
+    )
+    clients_infra_parser.add_argument(
         "--force",
         action="store_true",
         help="Delete stale Terraform state files and proceed",
@@ -959,6 +993,16 @@ def main(argv=None):
         type=str,
         help="GitHub owner the WASM bundle was built from (defaults to "
         "--repo-owner). Only used when the deployment has WASM clients.",
+    )
+    clients_provision_parser.add_argument(
+        "--wasm-features",
+        type=str,
+        default=None,
+        help="Cargo features the WASM bundle was built with (default: "
+        "browser-wasm). Recorded in the deployment's state so a later client "
+        "extension reuses the same bundle shape. A browser-downloader tier is "
+        "REFUSED (exit 2) unless this names `test-utils`, which is what "
+        "compiles in the per-dial trace hook its whole output is derived from.",
     )
     clients_provision_parser.add_argument(
         "--forward-buffer-limit",
@@ -1143,6 +1187,54 @@ def main(argv=None):
         help="List a deployment's client extensions, with VM counts and state.",
     )
     clients_ls_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name.",
+    )
+
+    # clients select-hot-files
+    clients_select_hot_parser = clients_subparsers.add_parser(
+        "select-hot-files",
+        help="Choose the file(s) a browser-downloader cohort reads every round, "
+        "from the deployment's own published address pool.",
+    )
+    clients_select_hot_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (the address pool and the selection are its own).",
+    )
+    clients_select_hot_parser.add_argument(
+        "--count",
+        type=int,
+        required=True,
+        help="How many files to select. The cohort cycles them by round "
+        "(hot_file_index = round_id mod count), so every file gets the same "
+        "number of rounds.",
+    )
+    clients_select_hot_parser.add_argument(
+        "--size-mb",
+        type=int,
+        required=True,
+        help="Select only files of EXACTLY this size in MiB. Binary, matching "
+        "an uploader's file_size_mb, so 50 means 52,428,800 bytes and nothing "
+        "else — a cohort reading files of different sizes measures the sizes.",
+    )
+    clients_select_hot_parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Overwrite an existing selection. Without it an existing one is "
+        "printed and left alone, because re-selecting mid-run changes what the "
+        "next round reads while the measurement is in flight.",
+    )
+
+    # clients print-hot-files
+    clients_print_hot_parser = clients_subparsers.add_parser(
+        "print-hot-files",
+        help="Print a deployment's hot-file selection; exit 2 when there is none.",
+    )
+    clients_print_hot_parser.add_argument(
         "--name",
         type=str,
         required=True,
@@ -7775,6 +7867,14 @@ def main(argv=None):
             from saorsa_deploy.cmd.clients_cmds import cmd_clients_ls
 
             cmd_clients_ls(args)
+        elif args.clients_subcommand == "select-hot-files":
+            from saorsa_deploy.cmd.hot_files import cmd_select_hot_files
+
+            cmd_select_hot_files(args)
+        elif args.clients_subcommand == "print-hot-files":
+            from saorsa_deploy.cmd.hot_files import cmd_print_hot_files
+
+            cmd_print_hot_files(args)
     elif args.command == "deployments":
         if args.deployments_subcommand == "config":
             if args.config_subcommand == "show":

@@ -1,0 +1,77 @@
+{
+  "_comment": [
+    "Derived by lib/derive.mjs from read-startup.jsonl.gz, a REAL setBrowserTrace",
+    "capture. Every value here was independently reproduced with jq over the raw",
+    "records -- see README.md beside this file for the queries and the reasoning,",
+    "and test_browser_downloaders.py::TestTraceFixture for the Python-side pin.",
+    "",
+    "stalls = 42: of 43 dials attempted that never opened a channel, 41 died at",
+    "~10,004 ms (REQUEST_TIMEOUT_MS on the data-channel open select) and one at",
+    "30,002.5 ms (CONNECTION_SETUP_TIMEOUT_MS around the whole of",
+    "Connection::open). One failed at 4,082.6 ms, which is neither timeout, and is",
+    "counted as neither.",
+    "",
+    "refused_dials = 0: no trace record ever carries a refusal, so this is a timing",
+    "heuristic over the same condition note_refusal applies -- dialled, no channel",
+    "ever opened, dead inside REFUSAL_DETECTION_WINDOW (3 s). The fastest failed",
+    "dial in this capture is 4,082.6 ms, so 0 is a real answer, not a vacuous one.",
+    "",
+    "first_reads: the first holder for each of the 10 distinct chunks read, in read",
+    "order. known_holders is the discovery-reported count for that chunk and is",
+    "null for the eight whose discovery ended in cancelled-or-error with no count."
+  ],
+  "stalls": 42,
+  "refused_dials": 0,
+  "first_reads": [
+    {
+      "chunk": "134e4537ad1b2e29f0dc48f8e025a560989e91055ebf1c66bca2208ca8bba889",
+      "holder": "57a89f84e1652d22fd6b791c29d83f187fbed3ba8e08e265fe3031b3a6f725da",
+      "known_holders": null
+    },
+    {
+      "chunk": "69443b7fecbc2d04895a5155d84965a6b6f131c059dac3e108f014f4d24d8e78",
+      "holder": "57a89f84e1652d22fd6b791c29d83f187fbed3ba8e08e265fe3031b3a6f725da",
+      "known_holders": 7
+    },
+    {
+      "chunk": "187af5fe3f69c12b417e8ca51b6dea4963964e53042089b5536d9e7e8c1e7d84",
+      "holder": "1b060db2fa8b120b4f33b48ff65ccc4c63cf9f7e598bb5bb95add1c131d57ea4",
+      "known_holders": null
+    },
+    {
+      "chunk": "7f4b3e83ed0b434668dedbcd98023474e968bcf0b589436b2fbb9c1515e2bf33",
+      "holder": "57a89f84e1652d22fd6b791c29d83f187fbed3ba8e08e265fe3031b3a6f725da",
+      "known_holders": 7
+    },
+    {
+      "chunk": "ff3d6785df62a48dea6a4b48782261c6dbda7cb19d42e7193c5f7efc1c9f0ff3",
+      "holder": "7e5c30fb8d75fa7f18aefe8687f51a97c1125185d90dea9c8a0c8fada16e3ebc",
+      "known_holders": null
+    },
+    {
+      "chunk": "fb616ed61827bf78ee5e10e0e6d385279ff97b973898f31c1a80e1b0437eabf4",
+      "holder": "7e41f6c3dc8a4286751b59ebbd28db708f48d24c41f4b4a277e806c709fcd007",
+      "known_holders": null
+    },
+    {
+      "chunk": "0b132035a7cbd13119f7bea525f1761901dd305fc407efec7f1c53738cf08aff",
+      "holder": "1b060db2fa8b120b4f33b48ff65ccc4c63cf9f7e598bb5bb95add1c131d57ea4",
+      "known_holders": null
+    },
+    {
+      "chunk": "df610557d9f6f237af81f97b7bb343224729cb67fcc1103bdf1df6e7964a2b4d",
+      "holder": "57a89f84e1652d22fd6b791c29d83f187fbed3ba8e08e265fe3031b3a6f725da",
+      "known_holders": null
+    },
+    {
+      "chunk": "d6a517e181607f61572e109eaafb5f02fa602d79517c826a83283d39f87dd217",
+      "holder": "deb654a755e66d0f301b812a963c14398ea4139a77445949f5140a5e5c6fb365",
+      "known_holders": null
+    },
+    {
+      "chunk": "d9c0983983e92113bb77c5354a5f72e41334f1c85ef4de9aba5028e8df4e5a19",
+      "holder": "dac90975f872f6401519f7b14bfd860792c9052964ffdbd40d190f35469e4ad1",
+      "known_holders": null
+    }
+  ]
+}

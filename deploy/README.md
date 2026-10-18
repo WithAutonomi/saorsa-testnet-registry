@@ -705,6 +705,7 @@ clients:                         # same per-entry grammar as a testnet manifest
   wasm_uploaders: []
   wasm_downloaders: []
   pointers: []
+  browser_downloaders: []        # the hot-read cohort; `count:` works here
 ```
 
 A committed example is at `deploy/manifests/profiles/clients-extension-example.yaml`.
@@ -712,6 +713,8 @@ A committed example is at `deploy/manifests/profiles/clients-extension-example.y
 | command | behaviour |
 | -- | -- |
 | `clients config validate --config <f>` | schema and rule checks; exit 2 on failure |
+| `clients select-hot-files --name <d> --count N --size-mb N [--replace]` | choose the file(s) a browser cohort reads; exit 2 on a shortfall, writing nothing |
+| `clients print-hot-files --name <d>` | print the selection; exit 2 when there is none |
 | `clients config show --config <f>` | print the merged, validated manifest as YAML |
 | `clients plan --config <f>` | print the VMs that would be created (provider, region, size, role, hostname) and the exact `clients infra` / `provision` / `start` invocations. Does **not** need the deployment to exist — it says so, and that the indexes shown then start at 1 |
 | `clients up --config <f>` | `infra` → `provision` → `start`. Resumable, with `--resume` semantics identical to `deployments up` |
@@ -905,10 +908,12 @@ requires.
 
 Client VMs run the ant binary as long-running upload-or-download workers against a testnet. Each VM runs *either* an uploader *or* a downloader — not both — and the downloader VMs pull addresses produced by uploaders through a per-testnet S3 folder.
 
-Two further client roles exist and are documented separately: the WASM
-(browser-path) pair below, and the **pointer** role (`--pointer` /
-`clients.pointers[]`), which exercises paid mutable references rather than file
-transfers — see "Pointer client VMs".
+Three further client roles exist and are documented separately: the WASM
+(browser-path) pair below; the **browser downloader** (`--browser-downloader` /
+`clients.browser_downloaders[]`), which runs real headless Chromium instances
+against one chosen hot file — see "Browser client VMs"; and the **pointer** role
+(`--pointer` / `clients.pointers[]`), which exercises paid mutable references
+rather than file transfers — see "Pointer client VMs".
 
 Commands:
 
@@ -916,7 +921,7 @@ Commands:
 - `clients provision` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM). For each uploader, generates a fresh Arbitrum Sepolia EOA wallet, transfers the configured ANT + ETH from the funding wallet (`--wallet-secret-key` / `ANT_DEPLOY_SECRET_KEY`), persists wallet info in S3 client state, and writes the per-uploader secret key into `/etc/ant-client.env`. Idempotent: re-runs reuse wallets already recorded in client state. Skipped under `--prod`.
 - `clients start` / `clients stop` — start or stop the appropriate service per-VM based on role.
 - `clients destroy` — drains every per-uploader wallet (ANT + ETH back to the funding wallet on Arbitrum Sepolia, less a small ETH gas reserve), then tears down VMs and wipes the per-testnet addresses folder at `s3://saorsa-testnet-addresses/saorsa-deploy/addresses/<testnet>/`. Drain failures abort the destroy so VMs and state remain available for retry — pass `--wallet-secret-key` (or set `ANT_DEPLOY_SECRET_KEY`) so funds know where to return.
-- `clients clean` — remove services + artefacts without destroying the VMs. It is handed IPs, never roles, so it stops and removes **every** role's unit (`ant-uploader`, `ant-downloader`, `ant-wasm-uploader`, `ant-wasm-downloader`, `ant-pointer`) — a role missing from that list leaves its service running on a "cleaned" VM.
+- `clients clean` — remove services + artefacts without destroying the VMs. It is handed IPs, never roles, so it stops and removes **every** role's unit (`ant-uploader`, `ant-downloader`, `ant-wasm-uploader`, `ant-wasm-downloader`, `ant-pointer`, `ant-browser-downloader`) — a role missing from that list leaves its service running on a "cleaned" VM.
 
 Uploader flow (`uploader.sh`): uploads a random file via `ant`, appends the returned address to a local tail buffer capped at `ADDRESSES_TAIL_SIZE` (default 10k), and flushes the buffer to `upload-<region>-<client_index>.txt` under the testnet's addresses prefix every `S3_FLUSH_EVERY_N` addresses or `S3_FLUSH_INTERVAL_SECS` seconds, whichever comes first. The flush goes through a **presigned PUT URL** minted by `clients provision` (SigV4 max expiry: 7 days — re-provision to refresh on longer-lived testnets), so it keeps working on clock-skewed VMs whose own SigV4-signed requests S3 rejects (~15min tolerance); when no URL is provisioned it falls back to the signed `aws s3 cp` path.
 
@@ -1057,6 +1062,20 @@ Example profile: `deploy/manifests/profiles/webrtc-wasm.yaml`.
      --branch-name ant-cli-v0.3.8-rc.1 --repo-owner WithAutonomi
    ```
 
+   **`--features <list>`** (default `browser-wasm`) is passed to `wasm-pack
+   build --features` **verbatim**, and the manifest spells the same thing as
+   `binaries.ant_wasm.features`. It **replaces** the feature list rather than
+   adding to it, so `browser-wasm` has to be named: a build that forgets it
+   stops at ant-core's own `compile_error!` rather than quietly producing a
+   native-feature bundle. The one caller that needs more is the
+   browser-downloader client role, which needs
+   `"browser-wasm,test-utils"` — `test-utils` is what compiles in the
+   `setBrowserTrace` per-dial trace hook, and because it also links a
+   deterministic mock node it is emphatically not the default. The resolved
+   features are recorded in `build-info.json`, in the S3 sidecar beside the
+   bundle and in the deployment's own state, because the same commit built two
+   ways is two different artefacts and only one of them carries the hook.
+
    **`build ant-wasm-check`** runs that same build **locally**, in a temp
    directory, and deploys nothing. It exists because `build ant-wasm` costs a
    build VM and ~10 minutes before it can tell you ant-client's browser API has
@@ -1147,6 +1166,259 @@ the WASM client, which was necessarily native.
 - **Fleet size.** A WASM upload needs at least **7 initial PUT peers** before it
   will pay, so a small node fleet fails every upload with
   `Witnessed close group returned only N/7 initial PUT peers before payment`.
+
+### Browser client VMs (real Chromium, hot-read cohort)
+
+The WASM roles above run `ant-core` compiled to WASM under **Node.js** with a
+datachannel shim, one process per VM, drawing random files from the address
+pool. That cannot answer what ADR-0023 (hot-record read spreading, ant-node
+#250 / ant-client #225) changes: the behaviour of **many real browsers reading
+the same file at the same moment**.
+
+A **browser downloader** does. One VM runs N real headless Chromium instances
+under Playwright; at every round boundary each instance launches a fresh browser,
+a fresh context and a fresh page, loads the deployment's own WASM bundle from a
+loopback HTTP server the harness runs, and downloads **one operator-chosen "hot"
+file**. Nothing persists between rounds — not a browser, not a profile, not a
+peer cache — because the measurement is what a *new* browser client experiences,
+which is what a real user is.
+
+```yaml
+clients:
+  browser_downloaders:
+    - provider: digital_ocean      # any provider the other client roles accept
+      region: lon1
+      vm_size: s-4vcpu-8gb         # default
+      instances: 4                 # Chromium instances per VM, 1..4. Default 4
+      round_period_secs: 600       # rounds start on multiples of this. Default 600
+      download_timeout_secs: 300   # harness deadline per download. Default 300
+      forward_logs: true           # harness streams → the deployment's Elasticsearch
+      count: 1                     # identical VMs from this entry (default 1)
+```
+
+CLI parity: `clients infra --browser-downloader
+provider:region[:vm_size][:instances=N][:round_period_secs=N][:download_timeout_secs=N][:forward_logs=BOOL]`,
+repeatable. `clients provision` / `start` / `stop` / `destroy` / `clean` handle
+the role like any other. Declarable in a `kind: clients` extension manifest too,
+which is the normal way to use it — see below.
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `provider` / `region` | required | As every other client role |
+| `vm_size` | `s-4vcpu-8gb` | A size up from the other roles: four instances each holding ~4x their file in WASM memory do not fit in 4 GB |
+| `instances` | `4` | **1..4.** See the per-IP quota below |
+| `round_period_secs` | `600` | Minimum 120 |
+| `download_timeout_secs` | `300` | Must be **<** `round_period_secs` |
+| `forward_logs` | unset | Requires `elastic.enabled: true` |
+| `count` | `1` | **This role only.** Expands to N VMs with consecutive `client_index` values; `plan` prints each one |
+
+There is deliberately no `clock_skew`, `network` or `rust_log` on this role: what
+is measured is *when* each instance read and *which holder served it*, and a
+shifted clock or a shaped link distorts exactly that. All three are refused by
+name rather than dropped silently.
+
+#### Three facts the design rests on
+
+- **A node admits at most 4 WebRTC sessions per source IPv4 address**
+  (`max_connections_per_ip`, a `>=` check in saorsa-transport's
+  `src/webrtc/direct.rs`), and one browser client holds one session per node — so
+  a fifth instance on a VM is refused by every node it dials and would measure
+  the quota rather than the read path. `instances` is capped at 4 in the manifest
+  schema, in the spec parser and again in the harness's own config, because only
+  the last of those sees what actually reached the VM.
+- **Seeds are the deployment's bootstrap WebRTC-Direct multiaddrs, and nothing
+  else.** A fresh browser client dials all of them, four at a time
+  (`MAX_BOOTSTRAP_CONNECTIONS`), which is the production shape: every browser
+  gets the same published list. So `deployments webrtc-addresses` must have run,
+  exactly as for a WASM client tier.
+- **The bundle must be built with `test-utils`.** That feature is what compiles
+  in `setBrowserTrace`, the per-dial trace hook this role's entire output is
+  derived from. Set
+  `testnet.binaries.ant_wasm.features: "browser-wasm,test-utils"`; it is passed
+  to `wasm-pack build --features` verbatim and **replaces** the feature list, so
+  `browser-wasm` has to be named too (ant-core's default feature is `native` and
+  is mutually exclusive with it). `clients provision` **exits 2** for a browser
+  tier whose recorded features lack it, and the provisioning pass additionally
+  greps the installed bundle for the symbol. Both checks exist because on a
+  bundle without the hook every round runs, **succeeds**, and reports zero
+  stalls, zero refused dials and no first reads — which reads as a clean network
+  rather than as a missing instrument.
+
+#### Choosing the hot file
+
+```
+clients select-hot-files --name <deployment> --count 3 --size-mb 50 [--replace]
+clients print-hot-files  --name <deployment>
+```
+
+An explicit operator step, not a side effect of provisioning: a VM created inside
+`deployments up` exists before any upload does, so there is nothing to choose
+from at that point — and VMs choosing independently from a pool that grows under
+them would each pick a different file, leaving "which file was hot" with no
+answer.
+
+Candidates are every line in the deployment's own **native** `upload-*.txt` pool
+keys whose declared size is **exactly** `size-mb × 1048576` (binary, matching an
+uploader's `file_size_mb`), ordered by `(key name, line number)` — lines are
+appended as each upload completes, so that is upload order and the first N are
+the oldest files of that size. A bare line with no size is never a candidate:
+unknown is not a match for any size.
+
+The result is written once, to
+`s3://saorsa-testnet-addresses/saorsa-deploy/addresses/<deployment>/browser-hot-files.json`:
+
+```json
+{"deployment": "DEV-01", "selected_at": "2026-10-18T12:00:00Z", "size_bytes": 52428800,
+ "files": [{"index": 0, "address": "<hex>", "bytes": 52428800,
+            "source_key": "upload-sgp-1.txt", "line": 1}]}
+```
+
+- Fewer than `--count` candidates → prints how many it found, writes **nothing**,
+  exits 2. (Writing a short selection could half-replace a live cohort's.)
+- An existing selection is printed and left alone, exit 0; `--replace`
+  overwrites. Re-selecting silently would change what the next round reads while
+  the measurement is in flight.
+- `print-hot-files` renders it as a table and exits 2 when there is none.
+
+Every instance re-reads the manifest at every round start, unsigned over public
+HTTPS (the VM signs nothing, so a skewed clock cannot have its requests
+rejected). Round `r` reads `files[round_id mod len(files)]`, so a selection of
+three is cycled and every VM picks the same one without being told.
+
+#### Rounds
+
+`round_id = floor(epoch_secs / round_period_secs)`, boundary `round_id ×
+round_period_secs`. Anchored to the wall clock rather than to an interval slept
+after each round, for the same reason the prod continuous downloader's cycle is:
+a sleep moves the start by the round's own duration, so two VMs started minutes
+apart would drift apart indefinitely. With the anchor a VM that restarts mid-run
+rejoins the cohort at the next boundary with no coordination at all.
+
+A round whose manifest is absent emits one `skipped` point with
+`error_kind=no_hot_files` and launches no browser — the rounds before the
+operator selects are part of the series, not failures. A round still running for
+an instance when the next is due emits `skipped` / `round_overrun`; that cannot
+happen while `download_timeout_secs < round_period_secs`, which is enforced three
+times over, but two browsers per instance would quietly double the VM's session
+count against every node.
+
+#### Results: measurement `browser_download`, bucket `wasm-client-metrics`
+
+**One point per instance per round, always** — a round with no point from an
+instance is itself a finding, and that reading only works if a skip is a point
+rather than a silence. The existing `download` measurement is **not** written: a
+synchronised cohort hammering one file and a single client drawing random files
+are two unlike workloads, and sharing a series would let any panel average them.
+
+- Tags: `host`, `testnet_name`, `host_role=browser_downloader`, `region`,
+  `round_id`, `instance`, `hot_file_index`.
+- Fields: `status` (`success` / `failure` / `skipped`), `error_kind`,
+  `error_text`, `address`, `file_size`, `total_ms`, `connect_ms`, `start_ns`,
+  `started_late_ms`, `seeds`, `stalls`, `refused_dials`, `first_reads`.
+
+`error_kind` is classified from the thrown message, first match winning in this
+order: `are busy` → `busy`; `not found` → `not_found`; `payment` → `payment`;
+`quorum` → `quorum`; the harness deadline or a timeout → `timeout`;
+`connect`/`dial`/`channel` → `connection`; anything else → `other`. A download
+that resolved and returned the wrong number of bytes is a `failure` with
+`error_text` `size mismatch: got N` — a correctness finding, not a slow
+download, and nothing else would notice it.
+
+Nothing persists these points to Postgres yet; that, the trace fetch,
+`print-downloads --browser` and `analysis browser-reads` are V2-1618.
+
+#### The trace, and the three derived fields
+
+Each download's trace is written to
+`/var/lib/ant-browser-downloader/trace/<round_id>-<instance>.jsonl`: a header
+line `{"header": true, "round_id", "instance", "hot_file_index", "address",
+"seeds", "boundary", "started_at"}`, then one `setBrowserTrace` record per line
+(`{id, operation, target, peer, phase, elapsed_ms, detail}`, with `operation` one
+of `association` | `connect` | `rpc` | `discovery` | `lookup-progress`).
+**The harness never deletes them** — the traces are the dataset this role
+produces, so `scp` them off before destroy.
+
+Three summaries are computed from each trace before its point is written. Each
+is shaped by what `setBrowserTrace` actually emits — `{id, operation, target,
+peer, phase, elapsed_ms, detail}` with **`detail` always a string** — so none of
+them reads the way the field names suggest:
+
+- **`stalls`** — dials (`operation=association`, grouped by `id`) that were
+  attempted (a `dial` phase), **never** reached `channel-open`, ended in
+  `cancelled-or-error`, and died on one of the transport's **two** setup
+  timeouts: `REQUEST_TIMEOUT_MS` (10 s, on the data-channel open select) or
+  `CONNECTION_SETUP_TIMEOUT_MS` (30 s, wrapped by `ensure_connected` around the
+  whole of `Connection::open`, which fires when the dial hung in ICE gathering
+  or SDP before the 10 s one was armed). Both are counted and the 10 s one
+  dominates: in the committed capture the fixture comes from, of 43 dials that
+  never opened a channel, 41 died at ~10,004 ms and one at 30,002.5 ms. The
+  `dial` phase is required because the dial-failure-cache early return bails
+  before it, so its `cancelled-or-error` arrives having dialled nothing. A
+  failure at neither timeout is counted as neither.
+- **`refused_dials`** — **a timing heuristic, not a trace marker.** No record
+  ever carries a refusal: an association emits `start`, `dial`, `channel-open`,
+  then `finish("authenticated")` or, on drop, `cancelled-or-error` with an
+  **empty** detail, and `DialOutcome::Refused` is set by `note_refusal` into the
+  dial-failure cache which the trace never sees. So this reconstructs
+  `note_refusal`'s own condition from what the trace does carry: dialled, no
+  channel ever opened, dead inside the client's `REFUSAL_DETECTION_WINDOW` of
+  3 s. Counted separately from a stall precisely so a per-IP quota mistake (a
+  fifth instance on the VM) cannot be read as a NAT'd fleet.
+- **`first_reads`** — a JSON array of `{chunk, holder, known_holders}`: for each
+  chunk read, the **first** peer targeted for it (a fallback to a second holder
+  has already paid the first one's `NotFound` or silence). A chunk read is
+  identified by a **non-empty `target`**, which is what `Trace::new("rpc",
+  <chunk hex if GetRequest else "">, <peer hex>)` puts there — the detail is
+  empty on `start` and `found N bytes` / `NotFound { .. }` on `finish`, and the
+  word "GET" appears nowhere in a real trace.
+
+  **`known_holders` is the discovery-reported count for that chunk over the
+  whole download, not the count known at the moment of the read.** The only
+  holder count a trace carries is the integer in a `discovery` `finish` detail
+  (`"N peers"`), and in all fourteen committed ant-client captures that record
+  arrives *after* the first read of its own target — the client reads peers it
+  already holds while discovery is still running. A strictly-preceding reading
+  would be `null` on every real trace. It is `null` when no discovery for that
+  chunk reported a count at all (its trace ended in `cancelled-or-error` with an
+  empty detail), which is 8 of the fixture's 10 chunks; `null`, not 0, because
+  "nothing reported how many" is not "the client knew of no holders".
+
+`discovery` records carry a `target` with an **empty** `peer`, and
+`lookup-progress` carries **neither**, so neither can name a candidate peer —
+which is why the count above is the obtainable quantity and a peer set is not.
+
+The fixture these are tested against
+(`deploy/tests/fixtures/browser-trace/read-startup.jsonl.gz`) is a **real
+capture**, ant-client's own committed `read-startup.mjs` trace; see the
+`README.md` beside it for its provenance and the `jq` query behind every
+expected value.
+
+#### Logs
+
+The harness tees its own streams to
+`/var/log/ant-client-forward/browser-downloader.{stdout,stderr}.log`, capped at
+1 GiB exactly as the native roles' aggregates are, and the role is named in
+`_FORWARD_ROLE_FILES` so `forward_logs: true` forwards them to
+`telegraf-ant-clients-<name>`. One grep-able line per download:
+
+```
+round=<id> instance=<n> status=<s> kind=<k> total_ms=<n> address=<hex>
+```
+
+#### Adding a cohort to a running deployment
+
+This is the normal way to use the role, because a hot file only exists once the
+deployment's uploaders have published one. Declare it as a `kind: clients`
+extension (see §"Client extensions") and bring it up after selecting:
+
+```bash
+uv run saorsa-deploy clients select-hot-files --name DEV-01 --count 3 --size-mb 50
+uv run saorsa-deploy clients up --config deploy/manifests/runs/DEV-01-browsers.yaml
+```
+
+The extension inherits the deployment's recorded WASM bundle, **including its
+features**, so a deployment built without `test-utils` is refused at
+`clients provision` rather than producing a cohort that reports nothing.
 
 ### Pointer client VMs
 

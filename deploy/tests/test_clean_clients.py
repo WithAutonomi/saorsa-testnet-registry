@@ -107,6 +107,38 @@ class TestClientCleanProvisionerExecute:
         assert f"rm -f {ENV_FILE}" in cmds
         assert f"rm -rf {CLIENT_DATA_DIR}" in cmds
         assert f"rm -f {ANT_INSTALL_PATH}" in cmds
+        # Every client role's unit, including the browser downloader's. This
+        # command is given IPs, never roles -- it cannot know which unit a host
+        # runs -- so a role missing from the list leaves its service running on
+        # a "cleaned" VM, which is how both WASM roles were missed.
+        assert "rm -f /etc/systemd/system/ant-browser-downloader.service" in cmds
+        assert "rm -f /etc/systemd/system/ant-wasm-downloader.service" in cmds
+        assert "rm -f /etc/systemd/system/ant-pointer.service" in cmds
+
+    @patch("saorsa_deploy.provisioning.client_clean.disconnect_all")
+    @patch("saorsa_deploy.provisioning.client_clean.run_ops")
+    @patch("saorsa_deploy.provisioning.client_clean.add_op")
+    @patch("saorsa_deploy.provisioning.client_clean.connect_all")
+    @patch("saorsa_deploy.provisioning.client_clean.State")
+    @patch("saorsa_deploy.provisioning.client_clean.Inventory")
+    def test_stops_and_disables_the_browser_downloader_unit(
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
+    ):
+        mock_state_instance = MagicMock()
+        mock_state_instance.failed_hosts = set()
+        mock_state.return_value = mock_state_instance
+
+        _make_provisioner().execute()
+
+        cmds = " ".join(mock_add_op.call_args_list[0].kwargs.get("commands", []))
+        assert "systemctl stop ant-browser-downloader" in cmds
+        assert "systemctl disable ant-browser-downloader" in cmds
 
     @patch("saorsa_deploy.provisioning.client_clean.disconnect_all")
     @patch("saorsa_deploy.provisioning.client_clean.run_ops")

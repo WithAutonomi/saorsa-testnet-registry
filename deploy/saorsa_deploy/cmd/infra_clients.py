@@ -12,6 +12,13 @@ from saorsa_deploy.client_extension import (
 )
 from saorsa_deploy.client_roles import (  # noqa: F401  (re-exported for callers)
     ALL_CLIENT_ROLES,
+    BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+    BROWSER_DEFAULT_INSTANCES,
+    BROWSER_DEFAULT_ROUND_PERIOD_SECS,
+    BROWSER_DEFAULT_VM_SIZE,
+    BROWSER_MAX_INSTANCES,
+    BROWSER_MIN_ROUND_PERIOD_SECS,
+    ROLE_BROWSER_DOWNLOAD,
     ROLE_DOWNLOAD,
     ROLE_LABELS,
     ROLE_ORDER,
@@ -76,6 +83,17 @@ _VALID_POINTER_KEYS = (
     "chain_fraction",
     "transfer_interval_secs",
     "pointer_max",
+)
+# A browser downloader takes no wallet, no clock skew and no network shaping:
+# what it measures is WHEN each instance read and WHICH holder served it, and a
+# shifted clock or a shaped link would distort exactly that. `rust_log` is absent
+# too -- the transfers run inside Chromium, not in a Rust process whose
+# subscriber there is to configure.
+_VALID_BROWSER_DOWNLOADER_KEYS = (
+    "instances",
+    "round_period_secs",
+    "download_timeout_secs",
+    "forward_logs",
 )
 DEFAULT_ANT_FUNDING = "100"
 DEFAULT_ETH_FUNDING = "0.5"
@@ -381,6 +399,93 @@ def parse_wasm_downloader_spec(spec: str) -> dict:
     )
 
 
+def parse_browser_downloader_spec(spec: str) -> dict:
+    """Parse a browser-downloader spec.
+
+    Format: ``provider:region[:vm_size][:instances=N][:round_period_secs=N]``
+    ``[:download_timeout_secs=N][:forward_logs=BOOL]``
+
+    Positionals match ``--downloader`` (nothing is uploaded and there is no file
+    size — the file is named by `clients select-hot-files`). The three integer
+    options carry the same limits the manifest schema enforces, so a hand-typed
+    `clients infra` cannot stand up a cohort a manifest would have refused.
+    """
+    parsed = _parse_downloader_like(
+        spec, _VALID_BROWSER_DOWNLOADER_KEYS, ROLE_BROWSER_DOWNLOAD, "browser downloader"
+    )
+    _, options, _ = _split_spec(spec, _VALID_BROWSER_DOWNLOADER_KEYS, "browser downloader")
+
+    # `rust_log` is pulled off the end of every spec before the key check, so
+    # the unknown-key loop never sees it and it would be accepted here and then
+    # dropped. Refused by name instead: the transfers run inside Chromium, and
+    # an operator reading their own argv back as a description of the run must
+    # not find a setting in it that nothing applied.
+    if parsed.get("rust_log") is not None:
+        raise ValueError(
+            f"Invalid browser downloader spec '{spec}': rust_log has no meaning "
+            f"on this role — the transfers run inside Chromium, not in a Rust "
+            f"process whose tracing subscriber there is to configure."
+        )
+
+    # `_parse_downloader_like` applies the shared client default; this role's
+    # default is a size up, because four Chromium instances each holding ~4x
+    # their file in WASM memory do not fit in 4 GB.
+    if parsed["vm_size"] == DEFAULT_VM_SIZE and ":" + DEFAULT_VM_SIZE not in spec:
+        parsed["vm_size"] = BROWSER_DEFAULT_VM_SIZE
+
+    instances = (
+        _parse_browser_int(spec, "instances", options["instances"])
+        if "instances" in options
+        else BROWSER_DEFAULT_INSTANCES
+    )
+    if not 1 <= instances <= BROWSER_MAX_INSTANCES:
+        raise ValueError(
+            f"Invalid browser downloader spec '{spec}': instances must be between "
+            f"1 and {BROWSER_MAX_INSTANCES}, got {instances}. A node admits at "
+            f"most {BROWSER_MAX_INSTANCES} WebRTC sessions per source IPv4 "
+            f"address (max_connections_per_ip), and one browser client holds one "
+            f"session per node, so a further instance would be refused by every "
+            f"node it dials."
+        )
+    round_period = (
+        _parse_browser_int(spec, "round_period_secs", options["round_period_secs"])
+        if "round_period_secs" in options
+        else BROWSER_DEFAULT_ROUND_PERIOD_SECS
+    )
+    if round_period < BROWSER_MIN_ROUND_PERIOD_SECS:
+        raise ValueError(
+            f"Invalid browser downloader spec '{spec}': round_period_secs must be "
+            f">= {BROWSER_MIN_ROUND_PERIOD_SECS}, got {round_period}. A shorter "
+            f"round is less than a cold browser client's own startup."
+        )
+    download_timeout = (
+        _parse_browser_int(spec, "download_timeout_secs", options["download_timeout_secs"])
+        if "download_timeout_secs" in options
+        else BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS
+    )
+    if download_timeout >= round_period:
+        raise ValueError(
+            f"Invalid browser downloader spec '{spec}': download_timeout_secs "
+            f"({download_timeout}) must be < round_period_secs ({round_period}), "
+            f"or a round can still be running when the next one is due and the "
+            f"cohort stops being simultaneous."
+        )
+
+    parsed["instances"] = instances
+    parsed["round_period_secs"] = round_period
+    parsed["download_timeout_secs"] = download_timeout
+    return parsed
+
+
+def _parse_browser_int(spec: str, key: str, value: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(
+            f"Invalid browser downloader spec '{spec}': '{key}' must be an integer, got '{value}'."
+        )
+
+
 def _parse_positive_int(spec: str, key: str, value: str) -> int:
     """Validate an integer spec option that must be strictly positive."""
     try:
@@ -532,6 +637,13 @@ def _spec_signature(spec: dict) -> tuple:
         # mismatches, which is the point of the field being in the signature.
         spec.get("transfer_interval_secs") or 0,
         spec.get("pointer_max"),
+        # Browser-downloader knobs. In the signature for the same reason the
+        # pointer rates are: changing one in the manifest must be a spec
+        # MISMATCH rather than a silent reuse of VMs still running the old
+        # value. `None` on every other role, so their signature is unchanged.
+        spec.get("instances"),
+        spec.get("round_period_secs"),
+        spec.get("download_timeout_secs"),
     )
 
 
@@ -603,12 +715,14 @@ def cmd_infra_clients(args):
         (getattr(args, "wasm_uploader", None) or [], parse_wasm_uploader_spec),
         (getattr(args, "wasm_downloader", None) or [], parse_wasm_downloader_spec),
         (getattr(args, "pointer", None) or [], parse_pointer_spec),
+        (getattr(args, "browser_downloader", None) or [], parse_browser_downloader_spec),
     ]
 
     if not any(raw for raw, _ in role_inputs):
         console.print(
             "[bold red]Error:[/bold red] At least one --uploader, --downloader, "
-            "--wasm-uploader, --wasm-downloader or --pointer spec is required."
+            "--wasm-uploader, --wasm-downloader, --pointer or "
+            "--browser-downloader spec is required."
         )
         sys.exit(1)
 
@@ -676,6 +790,14 @@ def cmd_infra_clients(args):
                 f"chain {spec['chain_fraction']:.0%}, "
                 f"{handover}"
                 f"fund {ant} ANT + {eth} ETH{skew_str})"
+            )
+        elif spec["role"] == ROLE_BROWSER_DOWNLOAD:
+            console.print(
+                f"  {label} #{spec['client_index']}: {spec['provider']}:"
+                f"{spec['region']} ({spec['vm_size']}, "
+                f"{spec['instances']} Chromium instance(s), "
+                f"round/{spec['round_period_secs']}s, "
+                f"timeout {spec['download_timeout_secs']}s)"
             )
         elif spec["role"] in UPLOAD_ROLES:
             payment = spec.get("payment_type")

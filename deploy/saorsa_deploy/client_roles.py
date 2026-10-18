@@ -22,6 +22,14 @@ ROLE_WASM_DOWNLOAD = "wasm-download"
 # Terraform workspace and its S3 state key, and a pointer client is not a
 # file-transfer client with a flag set.
 ROLE_POINTER = "pointer"
+# Browser downloaders: N headless Chromium instances per VM, all reading ONE
+# chosen "hot" file on a shared wall-clock schedule (V2-1617). A role of its own
+# for the same reasons the WASM roles are -- the role names the VM, its
+# Terraform workspace and its S3 state key -- and a different instrument again:
+# the WASM roles measure one Node.js process drawing random files, which cannot
+# say anything about many real browsers reading the same record at the same
+# moment (ADR-0023, hot-record read spreading).
+ROLE_BROWSER_DOWNLOAD = "browser-download"
 
 ALL_CLIENT_ROLES = (
     ROLE_UPLOAD,
@@ -29,16 +37,23 @@ ALL_CLIENT_ROLES = (
     ROLE_WASM_UPLOAD,
     ROLE_WASM_DOWNLOAD,
     ROLE_POINTER,
+    ROLE_BROWSER_DOWNLOAD,
 )
 #: Roles that hold their own funded per-VM wallet. Every pointer write is a paid
 #: single-node quote, so a pointer client mints, tops up and drains a wallet
 #: exactly as an uploader does -- which is what makes it an "upload-type" role
 #: even though it uploads no files.
 UPLOAD_ROLES = (ROLE_UPLOAD, ROLE_WASM_UPLOAD, ROLE_POINTER)
-DOWNLOAD_ROLES = (ROLE_DOWNLOAD, ROLE_WASM_DOWNLOAD)
+DOWNLOAD_ROLES = (ROLE_DOWNLOAD, ROLE_WASM_DOWNLOAD, ROLE_BROWSER_DOWNLOAD)
 WASM_ROLES = (ROLE_WASM_UPLOAD, ROLE_WASM_DOWNLOAD)
 NATIVE_ROLES = (ROLE_UPLOAD, ROLE_DOWNLOAD, ROLE_POINTER)
 POINTER_ROLES = (ROLE_POINTER,)
+#: Roles whose transfers run inside a real browser (headless Chromium under
+#: Playwright). Deliberately NOT part of :data:`WASM_ROLES`: both run the same
+#: ant-core WASM bundle, but `is_wasm` selects the Node.js harness, its env file
+#: and its unit, so folding this role in would provision a browser VM as a
+#: `wasm-download` one and leave `clients start` looking for a unit nobody wrote.
+BROWSER_ROLES = (ROLE_BROWSER_DOWNLOAD,)
 
 #: ant-core refuses a browser-path file larger than this (a DECIMAL gigabyte,
 #: `MAX_BROWSER_FILE_BYTES`), on upload before touching the network and on
@@ -49,12 +64,40 @@ POINTER_ROLES = (ROLE_POINTER,)
 #: not in `config.models`, because the provisioner must not import the schema.
 WASM_MAX_FILE_BYTES = 1_000_000_000
 
+#: A node admits at most this many WebRTC sessions from one source IPv4 address
+#: (`max_connections_per_ip` in saorsa-transport's `src/webrtc/direct.rs`, a
+#: `>=` check), and one browser client holds one session per node -- so a fifth
+#: Chromium instance on a VM is refused by every node it dials. The cap is a
+#: property of the network, not of the VM, which is why it is here beside the
+#: file cap rather than in the manifest schema.
+BROWSER_MAX_INSTANCES = 4
+BROWSER_DEFAULT_INSTANCES = 4
+#: Rounds start on wall-clock multiples of this, so every instance on every VM
+#: in the cohort reads the same file at the same moment -- which is the whole
+#: measurement.
+BROWSER_DEFAULT_ROUND_PERIOD_SECS = 600
+#: Below this a round is shorter than a cold browser client's own startup and
+#: the cohort stops being synchronised in any useful sense.
+BROWSER_MIN_ROUND_PERIOD_SECS = 120
+BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS = 300
+#: Four Chromium instances each holding ~4x a 50 MiB file in WASM memory need
+#: more than 4 GB, so the browser role's default is a size up from every other
+#: client role's.
+BROWSER_DEFAULT_VM_SIZE = "s-4vcpu-8gb"
+
+#: The hot-file manifest, written by `clients select-hot-files` into the
+#: deployment's address prefix and read by every browser instance at every round
+#: start. One object, written once by the operator: VMs choosing independently
+#: from a pool that grows under them would disagree about which file was hot.
+HOT_FILES_OBJECT_NAME = "browser-hot-files.json"
+
 ROLE_UNITS = {
     ROLE_UPLOAD: "ant-uploader",
     ROLE_DOWNLOAD: "ant-downloader",
     ROLE_WASM_UPLOAD: "ant-wasm-uploader",
     ROLE_WASM_DOWNLOAD: "ant-wasm-downloader",
     ROLE_POINTER: "ant-pointer",
+    ROLE_BROWSER_DOWNLOAD: "ant-browser-downloader",
 }
 
 ROLE_LABELS = {
@@ -63,6 +106,7 @@ ROLE_LABELS = {
     ROLE_WASM_UPLOAD: "WASM uploader",
     ROLE_WASM_DOWNLOAD: "WASM downloader",
     ROLE_POINTER: "Pointer client",
+    ROLE_BROWSER_DOWNLOAD: "Browser downloader",
 }
 
 #: Ordering used when a client list is rendered or persisted, so a resumed state
@@ -94,3 +138,8 @@ def is_upload(role: str) -> bool:
 
 def is_pointer(role: str) -> bool:
     return role in POINTER_ROLES
+
+
+def is_browser(role: str) -> bool:
+    """Whether this role drives transfers through a real headless browser."""
+    return role in BROWSER_ROLES

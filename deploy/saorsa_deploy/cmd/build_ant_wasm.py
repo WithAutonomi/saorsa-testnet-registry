@@ -9,6 +9,7 @@ from saorsa_deploy.binary_source import validate_branch_exists
 from saorsa_deploy.build_droplet import create_build_vm, destroy_build_vm, wait_for_ssh
 from saorsa_deploy.provisioning.build_ant_wasm import AntWasmBuilder
 from saorsa_deploy.ssh import clear_known_hosts
+from saorsa_deploy.wasm_build import DEFAULT_FEATURES
 
 
 def cmd_build_ant_wasm(args):
@@ -26,9 +27,10 @@ def cmd_build_ant_wasm(args):
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
+    features = getattr(args, "features", None) or DEFAULT_FEATURES
     console.print(
         f"[bold]Building the WASM client from {args.repo_owner}/ant-client "
-        f"(branch: {args.branch_name})...[/bold]"
+        f"(branch: {args.branch_name}, features: {features})...[/bold]"
     )
     console.print()
 
@@ -63,6 +65,7 @@ def cmd_build_ant_wasm(args):
             repo_owner=args.repo_owner,
             branch_name=args.branch_name,
             console=console,
+            features=features,
         )
         s3_url = builder.execute()
 

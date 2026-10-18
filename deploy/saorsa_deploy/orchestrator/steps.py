@@ -167,6 +167,11 @@ def ant_wasm_build_steps(name: str, ssh_key: str, ant_wasm: Binary | None) -> li
         "--ssh-key-path",
         ssh_key,
     ]
+    # Only when the manifest asked for something other than the default, so the
+    # argv (and the `up` journal hash taken from it) of every existing WASM
+    # deployment is unchanged.
+    if getattr(ant_wasm, "features", None):
+        argv += ["--features", ant_wasm.features]
     return [Step(argv, "Build WASM client bundle from branch")]
 
 

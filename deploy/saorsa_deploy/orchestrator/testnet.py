@@ -20,6 +20,11 @@ invariants that previously lived as prose in the ``deploy-runbook`` skill:
 
 from __future__ import annotations
 
+from saorsa_deploy.client_roles import (
+    BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+    BROWSER_DEFAULT_INSTANCES,
+    BROWSER_DEFAULT_ROUND_PERIOD_SECS,
+)
 from saorsa_deploy.config.models import (
     POINTER_CHAIN_FRACTION,
     POINTER_CREATE_INTERVAL_SECS,
@@ -185,6 +190,31 @@ def _pointer_spec(p) -> str:
     return ":".join(parts)
 
 
+def _browser_downloader_spec(b) -> str:
+    """Token string for a browser downloader.
+
+    Each knob is emitted only when it differs from the CLI default, like the
+    pointer rates: a manifest taking the defaults emits the short spec, and the
+    step journal of a run that changed one shows exactly which one changed.
+    ``count`` is deliberately NOT in the token — it expands to repeated flags,
+    one per VM (see :func:`_clients_infra_argv`), because `clients infra` indexes
+    one VM per flag and that is what makes `count` land as consecutive
+    ``client_index`` values.
+    """
+    parts = [b.provider, b.region]
+    if b.vm_size:
+        parts.append(b.vm_size)
+    if b.instances != BROWSER_DEFAULT_INSTANCES:
+        parts.append(f"instances={b.instances}")
+    if b.round_period_secs != BROWSER_DEFAULT_ROUND_PERIOD_SECS:
+        parts.append(f"round_period_secs={b.round_period_secs}")
+    if b.download_timeout_secs != BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS:
+        parts.append(f"download_timeout_secs={b.download_timeout_secs}")
+    if b.forward_logs is not None:
+        parts.append(f"forward_logs={str(b.forward_logs).lower()}")
+    return ":".join(parts)
+
+
 def _nodes_infra_argv(name: str, nodes: Nodes) -> list[str]:
     argv = ["nodes", "infra", "--name", name]
     for provider in _PROVIDER_ORDER:
@@ -290,6 +320,13 @@ def _clients_infra_argv(name: str, clients, extension: str | None = None) -> lis
         argv += ["--wasm-downloader", _wasm_downloader_spec(d)]
     for c in clients.pointers:
         argv += ["--pointer", _pointer_spec(c)]
+    for b in getattr(clients, "browser_downloaders", []) or []:
+        # One flag per VM: `count` on the entry is shorthand for N identical
+        # VMs, and `clients infra` allocates one consecutive `client_index` per
+        # repeated flag. Expanding here rather than teaching the CLI a `count=`
+        # token keeps the argv the journal compares a literal description of the
+        # VMs that will exist.
+        argv += ["--browser-downloader", _browser_downloader_spec(b)] * b.count
     return argv
 
 
@@ -498,6 +535,11 @@ def _provision_and_start_steps(
                 "--wasm-repo-owner",
                 binaries.ant_wasm.repo_owner or "maidsafe",
             ]
+            if binaries.ant_wasm.features:
+                # Only when the manifest asked for something other than the
+                # default, so every existing WASM deployment's argv -- and the
+                # journal hash computed from it -- is unchanged.
+                argv += ["--wasm-features", binaries.ant_wasm.features]
         if monitoring.enabled:
             argv += ["--monitoring-name", name]
         # Scale the client→ES log forwarder's buffer with the same knob the node
