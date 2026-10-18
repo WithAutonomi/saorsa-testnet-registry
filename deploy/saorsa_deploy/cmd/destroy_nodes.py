@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.client_extension import refuse_while_client_extensions_exist
 from saorsa_deploy.cmd.infra_nodes import NO_VOLUME_PROVIDERS, OVH_REQUIRED_ENV_VARS
 from saorsa_deploy.contabo import missing_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
@@ -117,6 +118,11 @@ def cmd_destroy_nodes(args):
     main-VM tfstate files when no deployment state is found.
     """
     console = Console()
+
+    # A client extension's VMs run their workload against this node fleet, so
+    # the fleet cannot go first. Checked before the state load so the refusal
+    # also covers the orphan-tfstate path below.
+    refuse_while_client_extensions_exist(args.name, console, "destroy the nodes of")
 
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
     try:

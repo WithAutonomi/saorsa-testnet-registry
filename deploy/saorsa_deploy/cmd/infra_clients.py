@@ -4,6 +4,12 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.client_extension import (
+    ExtensionError,
+    highest_client_indexes,
+    terraform_name,
+    validate_extension_name,
+)
 from saorsa_deploy.client_roles import (  # noqa: F401  (re-exported for callers)
     ALL_CLIENT_ROLES,
     ROLE_DOWNLOAD,
@@ -567,9 +573,26 @@ def _client_specs_match(existing: list[dict], requested: list[dict]) -> bool:
     )
 
 
+def _resolve_extension(args, console) -> str | None:
+    """Validate ``--extension`` and return it, or None when it is absent."""
+    extension = getattr(args, "extension", None)
+    if extension is None:
+        return None
+    try:
+        return validate_extension_name(extension)
+    except ExtensionError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(2)
+
+
 def cmd_infra_clients(args):
     """Execute the clients infra command: create client VMs via Terraform."""
     console = Console()
+
+    extension = _resolve_extension(args, console)
+    # The Terraform `name` variable, which is what namespaces the VM hostname,
+    # the workspace directory and the tfstate key — all three are built from it.
+    tf_name = terraform_name(args.name, extension)
 
     # (flag value, parser) per role. Each role is indexed from 1 independently,
     # because the index is part of the VM hostname and the Terraform state key,
@@ -589,18 +612,49 @@ def cmd_infra_clients(args):
         )
         sys.exit(1)
 
+    # An extension's indexes CONTINUE from the highest already in use for that
+    # role across the deployment — its own clients and its other extensions —
+    # because the per-uploader S3 address key is `upload-<region>-<n>.txt` and
+    # each flush is a whole-object PUT. Two uploaders sharing an index silently
+    # erase each other's address list on every flush. The deployment's own tier
+    # keeps starting at 1, so nothing about it changes.
+    base_indexes: dict[str, int] = {}
+    if extension:
+        try:
+            base_indexes = highest_client_indexes(args.name, exclude=extension)
+        except Exception as e:  # noqa: BLE001 — any scan failure must stop the run
+            # Allocating from an incomplete scan would hand this tier an index a
+            # live uploader already owns, and each flush of the loser's address
+            # object is a whole-object PUT. Stop before any VM is created.
+            console.print(
+                f"[bold red]Error:[/bold red] could not determine the client "
+                f"indexes already in use for '{args.name}': {e}. Refusing to "
+                f"allocate, because an index that collides with a live "
+                f"uploader's would erase its S3 address list on every flush. "
+                f"Retry once the registry's S3 state is reachable."
+            )
+            sys.exit(2)
+
     client_specs: list[dict] = []
     try:
         for raw_specs, parser in role_inputs:
             for i, spec_str in enumerate(raw_specs, start=1):
                 spec = parser(spec_str)
-                spec["client_index"] = i
+                spec["client_index"] = base_indexes.get(spec["role"], 0) + i
+                if extension is not None:
+                    spec["extension"] = extension
                 client_specs.append(spec)
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
-    console.print(f"[bold]Creating {len(client_specs)} client VM(s) for {args.name}...[/bold]")
+    if extension is not None:
+        console.print(
+            f"[bold]Creating {len(client_specs)} client VM(s) for extension "
+            f"'{extension}' of {args.name}...[/bold]"
+        )
+    else:
+        console.print(f"[bold]Creating {len(client_specs)} client VM(s) for {args.name}...[/bold]")
     for spec in client_specs:
         skew_str = (
             f", clock-skew {format_skew_offset(spec['clock_skew'])}"
@@ -646,7 +700,7 @@ def cmd_infra_clients(args):
     # Mirrors `bootstraps infra` so re-running a deploy runbook after a
     # mid-pipeline failure doesn't trip on its own previously-provisioned VMs.
     try:
-        existing_state = load_client_state(args.name)
+        existing_state = load_client_state(args.name, extension)
     except RuntimeError:
         existing_state = None
 
@@ -658,13 +712,17 @@ def cmd_infra_clients(args):
     if existing_state and existing_state.get("clients"):
         existing_clients = existing_state["clients"]
         if not _client_specs_match(existing_clients, client_specs):
+            scope = f"extension '{extension}' of '{args.name}'" if extension else f"'{args.name}'"
+            destroy_flags = f"--name {args.name}" + (
+                f" --extension {extension}" if extension else ""
+            )
             console.print(
-                f"[bold red]Error:[/bold red] Client state for '{args.name}' "
+                f"[bold red]Error:[/bold red] Client state for {scope} "
                 f"already exists but does not match the requested spec. "
-                f"Run `clients destroy --name {args.name} --force` first if you "
+                f"Run `clients destroy {destroy_flags} --force` first if you "
                 f"want to recreate with a different layout."
             )
-            sys.exit(1)
+            sys.exit(2 if extension else 1)
 
         resumed_clients = [c for c in existing_clients if c.get("ip")]
         resumed_ips = {_spec_signature(c): c["ip"] for c in resumed_clients}
@@ -713,15 +771,15 @@ def cmd_infra_clients(args):
         info = CLIENT_PROVIDERS[spec["provider"]]
         tf_source = resources_dir / info.tf_dir
         workspace_dir = (
-            workspace_base / f"{info.name}-client-{args.name}-{spec['role']}"
+            workspace_base / f"{info.name}-client-{tf_name}-{spec['role']}"
             f"-{spec['region']}-{spec['client_index']}"
         )
         state_key = (
-            f"{info.state_key_prefix}-{args.name}-{spec['role']}"
+            f"{info.state_key_prefix}-{tf_name}-{spec['role']}"
             f"-{spec['region']}-{spec['client_index']}.tfstate"
         )
         variables = {
-            "name": args.name,
+            "name": tf_name,
             "role": spec["role"],
             "region": spec["region"],
             "client_index": str(spec["client_index"]),
@@ -763,7 +821,7 @@ def cmd_infra_clients(args):
     # or total failure. IPs get merged in after the apply completes.
     upfront_specs = _merge_client_specs(client_specs, resumed_clients, blank_new=True)
     try:
-        save_client_state(args.name, upfront_specs)
+        save_client_state(args.name, upfront_specs, extension)
     except Exception as e:
         console.print(f"[bold red]Failed to save initial client state:[/bold red] {e}")
         console.print(
@@ -785,6 +843,7 @@ def cmd_infra_clients(args):
         update_client_state(
             args.name,
             {"clients": _merge_client_specs(client_specs, resumed_clients)},
+            extension,
         )
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to update client state: {e}[/yellow]")

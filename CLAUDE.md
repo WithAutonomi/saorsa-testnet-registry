@@ -152,7 +152,9 @@ and the primitive `infra`/`provision` commands remain supported.
 - `deployments config show|validate --config <m>` — inspect/validate.
 
 One manifest = one deployment's full desired state, discriminated by `kind`
-(`testnet`, `testnet-extension`, `elasticsearch`, and the `prod-*` kinds). The
+(`testnet`, `testnet-extension`, `elasticsearch`, `clients` — a client tier
+added to a running deployment, see "Client extensions" below — and the `prod-*`
+kinds). The
 orchestrator (`deploy/saorsa_deploy/orchestrator/`, schema in `config/`) owns the
 ordering and flag-coupling invariants and is the single source of truth. `up`
 executes each step by re-entering the CLI in-process (`main(argv)`); a failing
@@ -278,6 +280,75 @@ The pipeline **skips the bootstrap/genesis stages entirely**: `extend` →
   `clients destroy` → `nodes destroy` → `unextend`.
 
 See `deploy/README.md` §"`deployments extend` / `deployments unextend`".
+
+### Client extensions (`kind: clients`)
+
+A **client extension** adds client tiers to a deployment that is already
+running: `kind: clients` names a `deployment:` and declares client tiers only,
+driven by `clients up|down|plan|ls|config --config` mirroring `deployments
+up`/`down` (journal, `--resume`, the lot). The five primitives take
+`--extension <name>` directly. Unrelated to `deployments extend`, which creates
+a second NODE fleet. Example:
+`deploy/manifests/profiles/clients-extension-example.yaml`.
+
+- **No binaries, ever.** The extension reuses what the deployment recorded at
+  `clients provision` time (`client_binaries` in its S3 state), so it cannot run
+  a different client build from the deployment it measures. `extends:` is
+  refused too (nothing to inherit), as is `slack_post:` (an extension has no
+  registry row of its own).
+- **No uploader/downloader pairing rule**, unlike a deployment manifest: an
+  extension reads the deployment's EXISTING address pool, which is the whole
+  point ("add 20 more downloaders at hour 3").
+- **One substitution namespaces everything**: the Terraform `name` variable
+  becomes `<deployment>-<name>`, so the VM hostname
+  (`<deployment>-<name>-ant-client-<role>-<region>-<n>`), the workspace dir and
+  the tfstate key are all distinguishable with no Terraform change. State:
+  `saorsa-deploy/client-extensions/<deployment>/<name>.json`; journal
+  `saorsa-deploy/journals/<deployment>--<name>.json` (double hyphen, so it
+  cannot collide with a deployment named `<deployment>-<name>`).
+- **`client_index` CONTINUES** from the highest in use for that role across the
+  deployment's own clients and its other extensions — the index is part of
+  `upload-<region>-<n>.txt` and each flush is a whole-object PUT, so a reused
+  index erases another uploader's address list on every flush. The scan excludes
+  the extension asking, or a resume would reallocate and read as a spec
+  mismatch against VMs running what was asked for.
+- **`clients down` never deletes under `addresses/<deployment>/`** — the pool
+  belongs to the deployment, and wiping it would empty a running deployment's
+  download workload. Only the deployment's own `clients destroy` clears it.
+- **`deployments down` (both forms), `nodes destroy`, `bootstraps destroy` and
+  `clients destroy` WITHOUT `--extension` refuse with exit 2 while any extension
+  has state**, naming each and its `clients down`; no flag overrides it. Checked
+  before the state load, so the orphan-tfstate paths are covered too. The
+  un-extended `clients destroy` is in the list because it is the command that
+  wipes the address pool, and the one most likely to be run by hand mid-run; an
+  extension's own destroy is never guarded (it is the way out).
+- **A scan that cannot complete REFUSES, in the guard and in the index scan.**
+  "Could not look" is not "nothing there": a swallowed `list_client_extensions`
+  error would wipe a live cohort's pool, or hand a second extension an index a
+  live uploader owns. Only a MISSING key is tolerated (`RuntimeError` from
+  `load_client_state`, and only that). The reporting path
+  (`client_extension_tiers`) makes the opposite choice on purpose — a tier
+  missing from a report costs an annotation, not a run — and `clients plan`,
+  being read-only, prints the failure as a note on the plan and carries on.
+- **`clients down` refuses `--name`/`--extension` together with `--config`.**
+  `--name` is the deployment on the state path, but the shared manifest loader
+  makes it override the manifest's `name:` — the EXTENSION — so
+  `clients down --config DEV-01-browsers.yaml --name DEV-01` would aim at an
+  extension called "DEV-01", print "Nothing to destroy", and leave the cohort
+  billing. `_add_manifest_args` takes a `name_help` override for the same
+  reason.
+- `record-results` / `print-uploads` / `print-downloads` / `generate-inventory`
+  walk every tier, so an extension's `client_kind` and `network_profile` are
+  recorded and rendered like the deployment's own — a missed WASM extension
+  would relabel its failures as native and push them into the NATIVE hard
+  floors. The inventory's `extension` key appears only on an extension's VMs, so
+  no existing deployment's inventory changes and the schema version does not
+  move.
+- `clients up` emits **no** `deployments webrtc-addresses` step: that would SSH
+  the deployment's bootstrap VMs and rewrite its state. A WASM extension needs
+  the deployment to have collected them already.
+
+See `deploy/README.md` §"Client extensions (`kind: clients`)".
 
 ### Running a prod continuous-downloader
 

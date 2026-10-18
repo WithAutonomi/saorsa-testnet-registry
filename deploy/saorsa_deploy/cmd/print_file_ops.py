@@ -25,6 +25,7 @@ from statistics import median
 from rich.console import Console
 from rich.table import Table
 
+from saorsa_deploy.client_extension import client_extension_tiers, terraform_name
 from saorsa_deploy.client_transport import (
     deployment_scoped_transport,
     transport_map_from_client_state,
@@ -334,6 +335,23 @@ def _print_transport_totals(
         console.print(f"  [{colour}]{tier:<7}[/{colour}] {ok}/{total} = {rate}{extra}")
 
 
+def _client_tiers(name: str) -> list[tuple[str | None, dict]]:
+    """``(extension, client_state)`` for every client tier of ``name``.
+
+    The deployment's own tier first (extension ``None``), then each client
+    extension's. Every per-host label below is derived from this, so an
+    extension's VMs get the same payment / transport / cache annotations the
+    deployment's own do — they are rendering the same run's operations.
+    """
+    tiers: list[tuple[str | None, dict]] = []
+    try:
+        tiers.append((None, load_client_state(name)))
+    except RuntimeError:
+        pass
+    tiers.extend(client_extension_tiers(name))
+    return tiers
+
+
 def _build_payment_map(name: str) -> dict[str, str]:
     """Map hostname → payment_type label for the deployment's upload clients.
 
@@ -342,16 +360,14 @@ def _build_payment_map(name: str) -> dict[str, str]:
     Missing client state returns an empty map — the caller falls back to
     rendering "default" for every host rather than blocking the print.
     """
-    try:
-        state = load_client_state(name)
-    except RuntimeError:
-        return {}
     out: dict[str, str] = {}
-    for c in state.get("clients", []):
-        if c.get("role") != "upload":
-            continue
-        host = f"{name}-ant-client-{c['role']}-{c['region']}-{c['client_index']}"
-        out[host] = c.get("payment_type") or "default"
+    for extension, state in _client_tiers(name):
+        prefix = terraform_name(name, extension)
+        for c in state.get("clients", []):
+            if c.get("role") != "upload":
+                continue
+            host = f"{prefix}-ant-client-{c['role']}-{c['region']}-{c['client_index']}"
+            out[host] = c.get("payment_type") or "default"
     return out
 
 
@@ -384,11 +400,10 @@ def _build_transport_map(name: str) -> dict[str, str]:
         # back to the per-VM rule below.
         pass
 
-    try:
-        state = load_client_state(name)
-    except RuntimeError:
-        return {}
-    return transport_map_from_client_state(name, state)
+    out: dict[str, str] = {}
+    for extension, state in _client_tiers(name):
+        out.update(transport_map_from_client_state(terraform_name(name, extension), state))
+    return out
 
 
 class _ConstantTransport(dict):
@@ -413,16 +428,15 @@ def _build_bootstrap_cache_map(name: str) -> dict[str, bool]:
     alike). Hosts whose client-state entry predates the option are simply
     absent from the map — the caller omits the label rather than guessing.
     """
-    try:
-        state = load_client_state(name)
-    except RuntimeError:
-        return {}
     out: dict[str, bool] = {}
-    for c in state.get("clients", []):
-        if c.get("bootstrap_cache") is None:
-            continue
-        host = f"{name}-ant-client-{c.get('role', 'upload')}-{c['region']}-{c['client_index']}"
-        out[host] = bool(c["bootstrap_cache"])
+    for extension, state in _client_tiers(name):
+        prefix = terraform_name(name, extension)
+        for c in state.get("clients", []):
+            if c.get("bootstrap_cache") is None:
+                continue
+            role = c.get("role", "upload")
+            host = f"{prefix}-ant-client-{role}-{c['region']}-{c['client_index']}"
+            out[host] = bool(c["bootstrap_cache"])
     return out
 
 

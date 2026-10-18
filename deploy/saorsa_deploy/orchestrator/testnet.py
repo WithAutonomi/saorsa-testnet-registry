@@ -269,8 +269,17 @@ def _monitoring_infra_argv(name: str, monitoring: Monitoring) -> list[str]:
     return argv
 
 
-def _clients_infra_argv(name: str, clients: Clients) -> list[str]:
+def _clients_infra_argv(name: str, clients, extension: str | None = None) -> list[str]:
+    """``clients infra`` argv for a client tier.
+
+    ``clients`` is anything exposing the five role lists -- a deployment
+    manifest's :class:`Clients` block or a ``kind: clients`` manifest's
+    :class:`ClientsExtensionSpec`. ``extension`` is appended only when set, so a
+    deployment manifest's argv (and its ``up`` journal hash) is unchanged.
+    """
     argv = ["clients", "infra", "--name", name]
+    if extension is not None:
+        argv += ["--extension", extension]
     for u in clients.uploaders:
         argv += ["--uploader", _uploader_spec(u)]
     for d in clients.downloaders:
@@ -307,8 +316,16 @@ def _observability_destroy_steps(name: str, elastic: Elastic, monitoring: Monito
     return steps
 
 
-def _clients_destroy_argv(name: str, ssh_key: str, skip_drain_failures: bool) -> list[str]:
-    argv = ["clients", "destroy", "--name", name, "--force", "--ssh-key-path", ssh_key]
+def _clients_destroy_argv(
+    name: str,
+    ssh_key: str,
+    skip_drain_failures: bool,
+    extension: str | None = None,
+) -> list[str]:
+    argv = ["clients", "destroy", "--name", name]
+    if extension is not None:
+        argv += ["--extension", extension]
+    argv += ["--force", "--ssh-key-path", ssh_key]
     if skip_drain_failures:
         argv.append("--skip-drain-failures")
     return argv

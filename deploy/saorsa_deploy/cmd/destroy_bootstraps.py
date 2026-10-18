@@ -7,6 +7,7 @@ from saorsa_deploy.bootstrap import (
     list_stale_bootstrap_state_keys,
     purge_stale_bootstrap_state,
 )
+from saorsa_deploy.client_extension import refuse_while_client_extensions_exist
 from saorsa_deploy.local_inventory import retire_local_inventory
 from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.state import (
@@ -25,6 +26,11 @@ def cmd_destroy_bootstraps(args):
     when no deployment state is found.
     """
     console = Console()
+
+    # Before anything: a client extension standing against this deployment is
+    # provisioned against these bootstraps. Checked ahead of the state load so
+    # the refusal also covers the orphan-tfstate path below.
+    refuse_while_client_extensions_exist(args.name, console, "destroy the bootstraps of")
 
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
     try:

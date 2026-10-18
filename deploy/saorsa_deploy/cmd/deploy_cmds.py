@@ -17,6 +17,7 @@ import time
 
 from rich.console import Console
 
+from saorsa_deploy.client_extension import refuse_while_client_extensions_exist
 from saorsa_deploy.config import ManifestError, load_manifest
 from saorsa_deploy.orchestrator import (
     Step,
@@ -381,6 +382,13 @@ def cmd_down(args):
     if getattr(args, "config", None):
         manifest = _load(args, console)
         name, kind = manifest.name, manifest.kind
+        if kind == "clients":
+            console.print(
+                "[bold red]Error:[/bold red] this is a `kind: clients` manifest "
+                "(a client extension). Tear it down with `clients down --config "
+                f"{args.config}`; `deployments down` destroys a whole deployment."
+            )
+            sys.exit(2)
         steps = build_destroy_steps(manifest, skip_drain_failures=skip_drain_failures)
         # The manifest — not the stored flag — decided the destroy steps above, so
         # it must also decide the retained report, or the two can disagree (a
@@ -388,6 +396,11 @@ def cmd_down(args):
         keep_overrides = _manifest_keep_overrides(manifest)
     elif getattr(args, "name", None):
         name, kind = args.name, "from state"
+        # Guard before the "nothing to destroy" report below: a deployment whose
+        # own state is already gone can still have a client extension standing,
+        # and saying "nothing to destroy" would leave those VMs billing with
+        # nothing left to point at them.
+        refuse_while_client_extensions_exist(name, console, "tear down")
         steps = build_destroy_steps_from_state(name, skip_drain_failures=skip_drain_failures)
         if not steps:
             # An all-kept observability stack also yields no steps, so check that
@@ -414,6 +427,12 @@ def cmd_down(args):
             "[bold red]Error:[/bold red] provide --config <manifest> or --name <deployment>."
         )
         sys.exit(1)
+
+    # A client extension standing against this deployment is provisioned
+    # against its bootstraps, InfluxDB, Elasticsearch and address pool, so the
+    # deployment cannot go first. Checked here, on both the --config and the
+    # --name path, before any step runs.
+    refuse_while_client_extensions_exist(name, console, "tear down")
 
     # Read the retained set BEFORE the teardown runs: the destroy steps delete
     # deployment state as they go, and a component's own state is what records

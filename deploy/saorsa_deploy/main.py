@@ -17,8 +17,32 @@ def _daily_at_arg(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def _add_manifest_args(p):
-    """Shared --config/--set/--name args for the manifest-driven commands."""
+#: Help for ``--name`` on the `clients` MANIFEST commands. A `kind: clients`
+#: manifest's `name:` is the extension's, not the deployment's — the deployment
+#: is the manifest's `deployment:` key — so the shared wording would be wrong.
+_CLIENTS_NAME_HELP = (
+    "Override the manifest's EXTENSION name (`name:`). The deployment comes "
+    "from the manifest's `deployment:` key and cannot be overridden here."
+)
+
+#: Help for the ``--extension`` flag shared by the `clients` lifecycle commands.
+_CLIENT_EXTENSION_HELP = (
+    "Scope this command to a client EXTENSION of the deployment — a client "
+    "tier added from a `kind: clients` manifest. Its state lives under "
+    "saorsa-deploy/client-extensions/<deployment>/<name>.json and its VMs are "
+    "named <deployment>-<name>-ant-client-..., so the deployment's own clients "
+    "are untouched. Omit for the deployment's own client tier."
+)
+
+
+def _add_manifest_args(p, name_help: str = "Override the manifest's deployment name."):
+    """Shared --config/--set/--name args for the manifest-driven commands.
+
+    ``name_help`` exists because a manifest's `name:` is not always a deployment
+    name: on a `kind: clients` manifest it is the EXTENSION's name, and the
+    deployment is a separate `deployment:` key. One help string for both would
+    describe the wrong thing for one of them.
+    """
     p.add_argument(
         "--config",
         type=str,
@@ -37,7 +61,7 @@ def _add_manifest_args(p):
         "--name",
         type=str,
         default=None,
-        help="Override the manifest's deployment name.",
+        help=name_help,
     )
 
 
@@ -575,6 +599,12 @@ def main(argv=None):
         help="Deployment name (must match the name used with `clients infra`)",
     )
     clients_destroy_parser.add_argument(
+        "--extension",
+        type=str,
+        default=None,
+        help=_CLIENT_EXTENSION_HELP,
+    )
+    clients_destroy_parser.add_argument(
         "--force",
         action="store_true",
         help="Skip confirmation prompt",
@@ -715,6 +745,12 @@ def main(argv=None):
         help="Deployment name (used as prefix in VM names)",
     )
     clients_infra_parser.add_argument(
+        "--extension",
+        type=str,
+        default=None,
+        help=_CLIENT_EXTENSION_HELP,
+    )
+    clients_infra_parser.add_argument(
         "--uploader",
         type=str,
         action="append",
@@ -818,6 +854,12 @@ def main(argv=None):
         type=str,
         required=True,
         help="Deployment name (must match the name used with `clients infra`)",
+    )
+    clients_provision_parser.add_argument(
+        "--extension",
+        type=str,
+        default=None,
+        help=_CLIENT_EXTENSION_HELP,
     )
     clients_provision_parser.add_argument(
         "--branch-name",
@@ -941,6 +983,12 @@ def main(argv=None):
         help="Deployment name (must match the name used with `clients infra`)",
     )
     clients_start_parser.add_argument(
+        "--extension",
+        type=str,
+        default=None,
+        help=_CLIENT_EXTENSION_HELP,
+    )
+    clients_start_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default="~/.ssh/id_rsa",
@@ -958,10 +1006,147 @@ def main(argv=None):
         help="Deployment name (must match the name used with `clients infra`)",
     )
     clients_stop_parser.add_argument(
+        "--extension",
+        type=str,
+        default=None,
+        help=_CLIENT_EXTENSION_HELP,
+    )
+    clients_stop_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key (default: ~/.ssh/id_rsa)",
+    )
+
+    # --- client extensions (`kind: clients` manifests) --------------------
+    # The manifest-driven form of the five primitives above: one manifest
+    # declaring client tiers only, against a deployment that is already
+    # running. Mirrors `deployments config|plan|up|down`.
+
+    # clients config
+    clients_config_parser = clients_subparsers.add_parser(
+        "config",
+        help="Inspect a client-extension manifest (`kind: clients`, read-only).",
+    )
+    clients_config_subparsers = clients_config_parser.add_subparsers(
+        dest="clients_config_subcommand", required=True
+    )
+    clients_config_show_parser = clients_config_subparsers.add_parser(
+        "show",
+        help="Print the fully-merged, validated client-extension manifest as YAML.",
+    )
+    _add_manifest_args(clients_config_show_parser, name_help=_CLIENTS_NAME_HELP)
+    clients_config_validate_parser = clients_config_subparsers.add_parser(
+        "validate",
+        help="Validate a client-extension manifest; exit 2 if invalid.",
+    )
+    _add_manifest_args(clients_config_validate_parser, name_help=_CLIENTS_NAME_HELP)
+
+    # clients plan
+    clients_plan_parser = clients_subparsers.add_parser(
+        "plan",
+        help=(
+            "Print the client VMs a `kind: clients` manifest would create and "
+            "the exact command sequence `clients up` would run (never executes). "
+            "Does not need the deployment to exist."
+        ),
+    )
+    _add_manifest_args(clients_plan_parser, name_help=_CLIENTS_NAME_HELP)
+
+    # clients up
+    clients_up_parser = clients_subparsers.add_parser(
+        "up",
+        help=(
+            "Add the client tiers of a `kind: clients` manifest to a running "
+            "deployment: clients infra -> provision -> start. Resumable."
+        ),
+    )
+    _add_manifest_args(clients_up_parser, name_help=_CLIENTS_NAME_HELP)
+    clients_up_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the deploy plan without executing it.",
+    )
+    clients_up_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "If a step journal exists from a previous failed run, skip the "
+            "steps it records as completed without prompting (required for "
+            "non-interactive use; interactively a prompt offers the same "
+            "choice)."
+        ),
+    )
+
+    # clients down
+    clients_down_parser = clients_subparsers.add_parser(
+        "down",
+        help=(
+            "Tear down one client extension: stop services, drain any uploader "
+            "wallets, destroy its VMs and delete its state. Leaves the "
+            "deployment's own clients, nodes, bootstraps and address pool alone."
+        ),
+    )
+    clients_down_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to a `kind: clients` manifest (YAML). Optional — omit and "
+        "use --name/--extension to derive the teardown from S3 state.",
+    )
+    clients_down_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a manifest value by dotted key (only with --config).",
+    )
+    clients_down_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Deployment name, paired with --extension to destroy from S3 "
+        "state. REFUSED with --config: the manifest already names both the "
+        "deployment and the extension.",
+    )
+    clients_down_parser.add_argument(
+        "--extension",
+        type=str,
+        default=None,
+        help="Extension name to destroy, paired with --name instead of "
+        "--config. Refused with --config.",
+    )
+    clients_down_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help="SSH key used to stop services before draining wallets. Defaults "
+        "to the key recorded in the extension's state at provision time.",
+    )
+    clients_down_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the destroy plan without executing it.",
+    )
+    clients_down_parser.add_argument(
+        "--skip-drain-failures",
+        action="store_true",
+        help=(
+            "Continue with teardown even if a per-uploader wallet drain fails. "
+            "Abandoned balances are reported on stdout."
+        ),
+    )
+
+    # clients ls
+    clients_ls_parser = clients_subparsers.add_parser(
+        "ls",
+        help="List a deployment's client extensions, with VM counts and state.",
+    )
+    clients_ls_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name.",
     )
 
     # =========================================================================
@@ -7563,6 +7748,33 @@ def main(argv=None):
             )
 
             cmd_estimate_client_gas(args)
+        elif args.clients_subcommand == "config":
+            if args.clients_config_subcommand == "show":
+                from saorsa_deploy.cmd.clients_cmds import cmd_clients_config_show
+
+                cmd_clients_config_show(args)
+            elif args.clients_config_subcommand == "validate":
+                from saorsa_deploy.cmd.clients_cmds import (
+                    cmd_clients_config_validate,
+                )
+
+                cmd_clients_config_validate(args)
+        elif args.clients_subcommand == "plan":
+            from saorsa_deploy.cmd.clients_cmds import cmd_clients_plan
+
+            cmd_clients_plan(args)
+        elif args.clients_subcommand == "up":
+            from saorsa_deploy.cmd.clients_cmds import cmd_clients_up
+
+            cmd_clients_up(args)
+        elif args.clients_subcommand == "down":
+            from saorsa_deploy.cmd.clients_cmds import cmd_clients_down
+
+            cmd_clients_down(args)
+        elif args.clients_subcommand == "ls":
+            from saorsa_deploy.cmd.clients_cmds import cmd_clients_ls
+
+            cmd_clients_ls(args)
     elif args.command == "deployments":
         if args.deployments_subcommand == "config":
             if args.config_subcommand == "show":

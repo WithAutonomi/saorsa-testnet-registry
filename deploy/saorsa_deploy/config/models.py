@@ -159,6 +159,10 @@ KIND_TO_BLOCK: dict[str, str] = {
     "prod-nodes": "prod_nodes",
     "prod-debug-nodes": "prod_debug_nodes",
     "elasticsearch": "elasticsearch",
+    # A client tier added to a deployment that is already running. The block IS
+    # the role lists, so the kind maps onto `clients:` itself rather than a
+    # wrapper -- there is nothing else in such a manifest to configure.
+    "clients": "clients",
 }
 
 Payment = Literal["merkle", "no-merkle"]
@@ -673,6 +677,61 @@ class Clients(_Base):
     @property
     def all_entries(self) -> list:
         """Every client entry across both transports, for cross-cutting checks."""
+        return [
+            *self.uploaders,
+            *self.downloaders,
+            *self.wasm_uploaders,
+            *self.wasm_downloaders,
+            *self.pointers,
+        ]
+
+    @property
+    def has_wasm(self) -> bool:
+        return bool(self.wasm_uploaders or self.wasm_downloaders)
+
+    @property
+    def has_pointers(self) -> bool:
+        return bool(self.pointers)
+
+
+class ClientsExtensionSpec(_Base):
+    """The client tiers of a ``kind: clients`` manifest — a client EXTENSION.
+
+    Reuses the same per-entry models as a deployment manifest's ``clients:``
+    block, so the grammar an operator already knows carries over verbatim. Two
+    rules differ, both deliberately:
+
+    * **There is no uploader/downloader pairing rule.** A deployment manifest
+      refuses downloaders without uploaders, because a tier that consumes
+      addresses nobody publishes measures nothing. An extension reads the
+      deployment's EXISTING address pool, so "add 20 more downloaders at hour 3"
+      is the point of it, not a mistake.
+    * **At least one role list must be non-empty.** An extension with no VMs is
+      an S3 state object and a teardown guard standing in the way of a
+      ``deployments down``, which is strictly worse than not creating it.
+
+    No binaries: see :mod:`saorsa_deploy.client_extension`.
+    """
+
+    uploaders: list[Uploader] = []
+    downloaders: list[Downloader] = []
+    wasm_uploaders: list[WasmUploader] = []
+    wasm_downloaders: list[WasmDownloader] = []
+    pointers: list[PointerClient] = []
+
+    @model_validator(mode="after")
+    def _at_least_one_tier(self) -> "ClientsExtensionSpec":
+        if not self.all_entries:
+            raise ValueError(
+                "clients: at least one of uploaders / downloaders / "
+                "wasm_uploaders / wasm_downloaders / pointers must be non-empty "
+                "(an extension with no VMs would only stand in the way of a "
+                "`deployments down`)"
+            )
+        return self
+
+    @property
+    def all_entries(self) -> list:
         return [
             *self.uploaders,
             *self.downloaders,
@@ -1665,6 +1724,51 @@ class Manifest(_Base):
     prod_nodes: Optional[ProdNodesSpec] = None
     prod_debug_nodes: Optional[ProdDebugNodesSpec] = None
     elasticsearch: Optional[ElasticsearchSpec] = None
+    clients: Optional[ClientsExtensionSpec] = None
+
+    #: The deployment a `kind: clients` manifest extends. Required for that kind
+    #: and refused for every other -- a deployment manifest IS the deployment,
+    #: so a `deployment:` key on one would name something that does not exist.
+    deployment: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _deployment_only_on_clients_kind(self) -> "Manifest":
+        if self.kind == "clients":
+            if not self.deployment:
+                raise ValueError(
+                    "kind 'clients' requires a top-level `deployment:` naming the "
+                    "testnet whose state this client tier reads (its bootstraps, "
+                    "InfluxDB, Elasticsearch and address pool)"
+                )
+            # The extension's own name becomes part of a VM hostname, a
+            # Terraform workspace path and an S3 key, so it is checked here
+            # rather than at the first command that would build one of them.
+            from saorsa_deploy.client_extension import (
+                ExtensionError,
+                validate_extension_name,
+            )
+
+            try:
+                validate_extension_name(self.name)
+            except ExtensionError as exc:
+                raise ValueError(str(exc)) from exc
+            if self.slack_post:
+                # `deployments slack-post` takes a DEPLOYMENT name and reads its
+                # registry row. An extension has no row of its own, so the step
+                # would look up the extension's name and find nothing — and the
+                # deployment's own post already describes the run.
+                raise ValueError(
+                    "clients: slack_post is not supported for kind 'clients' — "
+                    "`deployments slack-post` reports on a deployment, and an "
+                    "extension has no registry row of its own. Post about the "
+                    "deployment instead."
+                )
+        elif self.deployment is not None:
+            raise ValueError(
+                f"`deployment:` is only valid on kind 'clients' (got kind "
+                f"'{self.kind}'); a deployment manifest names itself with `name:`"
+            )
+        return self
 
     @model_validator(mode="after")
     def _kind_block_consistent(self) -> "Manifest":

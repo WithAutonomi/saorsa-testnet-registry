@@ -11,6 +11,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.client_extension import (
+    refuse_while_client_extensions_exist,
+    terraform_name,
+)
 from saorsa_deploy.client_roles import (
     ALL_CLIENT_ROLES,
     ROLE_DOWNLOAD,  # noqa: F401  (re-exported; used by callers and tests)
@@ -49,12 +53,29 @@ def cmd_destroy_clients(args):
     """Execute the clients destroy command: tear down client VMs."""
     console = Console()
 
-    console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
+    extension = getattr(args, "extension", None)
+    # The Terraform `name` variable: the deployment's own clients use the bare
+    # deployment name, an extension uses `<deployment>-<extension>`. It is what
+    # the workspace directory, the tfstate key and the VM name were built from
+    # at create time, so destroy has to resolve it the same way.
+    tf_name = terraform_name(args.name, extension)
+    scope = f"extension '{extension}' of '{args.name}'" if extension else f"'{args.name}'"
+
+    if extension is None:
+        # Destroying the deployment's OWN tier wipes `addresses/<deployment>/`
+        # below, and that pool is what an extension's downloaders read — so the
+        # same guard `deployments down` / `nodes destroy` / `bootstraps destroy`
+        # carry applies here. This is the path an operator is most likely to run
+        # by hand mid-run, which is exactly when an extension is standing.
+        # An extension's own destroy is never guarded: it is the way out.
+        refuse_while_client_extensions_exist(args.name, console, "destroy the clients of")
+
+    console.print(f"[bold]Loading client state for {scope}...[/bold]")
     clients: list[dict] = []
     state_ssh_key_path: str | None = None
     has_persisted_state = False
     try:
-        client_state = load_client_state(args.name)
+        client_state = load_client_state(args.name, extension)
         clients = client_state.get("clients", []) or []
         state_ssh_key_path = client_state.get("ssh_key_path")
         has_persisted_state = True
@@ -62,12 +83,11 @@ def cmd_destroy_clients(args):
         console.print(
             "[yellow]No client state in S3 — scanning for orphan client tfstate files...[/yellow]"
         )
-        clients = _recover_clients_from_tfstate(args.name, console)
+        clients = _recover_clients_from_tfstate(tf_name, console)
 
     if not clients:
         console.print(
-            f"[yellow]No client infrastructure found for '{args.name}'. "
-            "Nothing to destroy.[/yellow]"
+            f"[yellow]No client infrastructure found for {scope}. Nothing to destroy.[/yellow]"
         )
         return
 
@@ -82,9 +102,7 @@ def cmd_destroy_clients(args):
     console.print()
 
     if not args.force:
-        confirm = input(
-            f"This will destroy all client VMs for '{args.name}'. Type 'yes' to confirm: "
-        )
+        confirm = input(f"This will destroy all client VMs for {scope}. Type 'yes' to confirm: ")
         if confirm.strip().lower() != "yes":
             console.print("[yellow]Aborted.[/yellow]")
             sys.exit(0)
@@ -155,15 +173,15 @@ def cmd_destroy_clients(args):
         info = CLIENT_PROVIDERS[spec.get("provider") or "digitalocean"]
         tf_source = resources_dir / info.tf_dir
         workspace_dir = (
-            workspace_base / f"{info.name}-client-{args.name}-{role}"
+            workspace_base / f"{info.name}-client-{tf_name}-{role}"
             f"-{spec['region']}-{spec['client_index']}"
         )
         state_key = (
-            f"{info.state_key_prefix}-{args.name}-{role}"
+            f"{info.state_key_prefix}-{tf_name}-{role}"
             f"-{spec['region']}-{spec['client_index']}.tfstate"
         )
         variables = {
-            "name": args.name,
+            "name": tf_name,
             "role": role,
             "region": spec["region"],
             "client_index": str(spec["client_index"]),
@@ -211,7 +229,7 @@ def cmd_destroy_clients(args):
             if has_persisted_state:
                 remaining_clients.remove(spec)
                 try:
-                    update_client_state(args.name, {"clients": remaining_clients})
+                    update_client_state(args.name, {"clients": remaining_clients}, extension)
                 except Exception as e:
                     console.print(
                         f"[yellow]Warning: failed to prune destroyed client from "
@@ -229,22 +247,33 @@ def cmd_destroy_clients(args):
 
     # Clean up client state
     try:
-        delete_client_state(args.name)
+        delete_client_state(args.name, extension)
         console.print("[dim]Client state deleted from S3.[/dim]")
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to delete client state: {e}[/yellow]")
 
-    # Wipe the per-testnet addresses S3 folder so a future testnet with the
-    # same name doesn't see stale uploader addresses.
-    try:
-        deleted = delete_client_addresses_prefix(args.name)
-        if deleted:
-            console.print(
-                f"[dim]Deleted {deleted} address file(s) from "
-                f"s3://.../saorsa-deploy/addresses/{args.name}/[/dim]"
-            )
-    except Exception as e:
-        console.print(f"[yellow]Warning: Failed to delete addresses prefix: {e}[/yellow]")
+    if extension is not None:
+        # The address pool belongs to the DEPLOYMENT, not to this tier: its own
+        # clients and its other extensions publish into it and read from it, and
+        # it is what makes an extension's downloaders able to fetch anything at
+        # all. Wiping it here would silently empty a running deployment's
+        # download workload. The deployment's own teardown is what clears it.
+        console.print(
+            f"[dim]Address pool s3://.../saorsa-deploy/addresses/{args.name}/ "
+            f"left untouched (it belongs to the deployment).[/dim]"
+        )
+    else:
+        # Wipe the per-testnet addresses S3 folder so a future testnet with the
+        # same name doesn't see stale uploader addresses.
+        try:
+            deleted = delete_client_addresses_prefix(args.name)
+            if deleted:
+                console.print(
+                    f"[dim]Deleted {deleted} address file(s) from "
+                    f"s3://.../saorsa-deploy/addresses/{args.name}/[/dim]"
+                )
+        except Exception as e:
+            console.print(f"[yellow]Warning: Failed to delete addresses prefix: {e}[/yellow]")
 
     console.print()
     console.print(

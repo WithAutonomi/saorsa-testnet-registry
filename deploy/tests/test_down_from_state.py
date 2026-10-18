@@ -1,5 +1,7 @@
 """Tests for `deployments down` state-driven teardown (--name without --config)."""
 
+import pytest
+
 from saorsa_deploy.orchestrator import (
     build_destroy_steps_from_state,
     retained_observability,
@@ -358,3 +360,49 @@ def test_manifest_keep_overrides_for_testnet_and_prod_kinds():
         "elastic_kept": False,
         "monitoring_kept": True,
     }
+
+
+def test_down_by_name_refuses_while_a_client_extension_stands(monkeypatch, capsys):
+    """And refuses BEFORE the "nothing to destroy" report.
+
+    A deployment whose own state is already gone can still have a client
+    extension standing; reporting "nothing to destroy" would leave those VMs
+    billing with nothing left pointing at them.
+    """
+    import saorsa_deploy.state as state
+    from saorsa_deploy.cmd import deploy_cmds
+
+    monkeypatch.setattr(state, "list_client_extensions", lambda name: ["browsers"])
+    monkeypatch.setattr(
+        deploy_cmds,
+        "build_destroy_steps_from_state",
+        lambda *a, **k: pytest.fail("built destroy steps under a live extension"),
+    )
+    monkeypatch.setattr(deploy_cmds, "_execute", lambda *a, **k: pytest.fail("ran a destroy step"))
+
+    with pytest.raises(SystemExit) as exc:
+        deploy_cmds.cmd_down(_down_args())
+
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "browsers" in out
+    assert "clients down --name DEV-01 --extension browsers" in out
+
+
+def test_down_by_name_refuses_when_the_extension_scan_cannot_complete(monkeypatch):
+    """The scan reaching S3 unauthenticated is what turned CI red, and the
+    now-strict guard is right to refuse: the destroy would have failed a moment
+    later reading its own state from the same bucket."""
+    import saorsa_deploy.state as state
+    from saorsa_deploy.cmd import deploy_cmds
+
+    def boom(name):
+        raise OSError("Unable to locate credentials")
+
+    monkeypatch.setattr(state, "list_client_extensions", boom)
+    monkeypatch.setattr(deploy_cmds, "_execute", lambda *a, **k: pytest.fail("ran a destroy step"))
+
+    with pytest.raises(SystemExit) as exc:
+        deploy_cmds.cmd_down(_down_args())
+
+    assert exc.value.code == 2

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.client_extension import client_extension_tiers
 from saorsa_deploy.client_roles import is_pointer, unit_for_role
 from saorsa_deploy.evm import get_evm_network_info
 from saorsa_deploy.local_inventory import (
@@ -189,6 +190,13 @@ def _build_client_vms_field(name: str, clients: list[dict] | None, ssh_key: str)
     entries = []
     for client in sorted(clients, key=lambda c: c.get("client_index", 0)):
         index = client["client_index"]
+        # A client added by a `kind: clients` extension carries its extension
+        # name, and its VM is named `<deployment>-<extension>-ant-client-...`.
+        # Named in the entry too: an inventory that lists an extension's VMs
+        # indistinguishably from the deployment's own would have an operator
+        # reading one tier's teardown command as the other's.
+        extension = client.get("extension")
+        prefix = f"{name}-{extension}" if extension else name
         region = client["region"]
         # client_index is assigned PER ROLE (uploaders 1..N and downloaders
         # 1..N independently), so the role must be part of the name or an
@@ -227,7 +235,7 @@ def _build_client_vms_field(name: str, clients: list[dict] | None, ssh_key: str)
         )
         entries.append(
             {
-                "name": f"{name}-ant-client-{role}-{region}-{index}",
+                "name": f"{prefix}-ant-client-{role}-{region}-{index}",
                 "provider": client.get("provider", "digitalocean"),
                 "provider_id": client.get("provider_id", ""),
                 "region": region,
@@ -246,6 +254,12 @@ def _build_client_vms_field(name: str, clients: list[dict] | None, ssh_key: str)
                 "nodes": [{"service_name": service}],
                 "services": [service],
                 **({"pointer_config": pointer_fields} if pointer_fields else {}),
+                # Only present on an extension's VMs, the way `pointer_config`
+                # is only present on a pointer client's. So every existing
+                # deployment's inventory stays byte-identical and the schema
+                # version does not move: nothing an existing consumer reads
+                # changes meaning, a new key simply appears on new VMs.
+                **({"extension": extension} if extension else {}),
             }
         )
     return entries
@@ -1010,6 +1024,13 @@ def cmd_generate_inventory(args):
         client_state = None
     if client_state:
         clients = client_state.get("clients") or []
+    # Plus each client extension's VMs. They are the deployment's client VMs —
+    # nothing else inventories them, and their per-VM paths (a pointer client's
+    # owner keys, a diagnostics log) die with the VM. Tagged with the extension
+    # they belong to, so the two tiers' teardown commands cannot be confused.
+    for extension, tier in client_extension_tiers(args.name):
+        for client in tier.get("clients") or []:
+            clients.append({**client, "extension": extension})
 
     # The deployment's own monitoring / logging stack, if any (best-effort).
     try:
