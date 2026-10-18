@@ -220,7 +220,9 @@ def cmd_clients_up(args):
     _print_vm_plan(console, manifest, base_indexes, None)
     _print_plan(console, _plan_label(manifest), manifest.kind, steps, "Deploy", done=resume_index)
     console.print()
-    _execute(console, steps, journal=journal, start=resume_index)
+    # The journal key (`<deployment>--<extension>`) names the lane-log directory
+    # too: it is already the collision-safe key for this extension's own state.
+    _execute(console, steps, deployment_name=journal_key, journal=journal, start=resume_index)
     delete_step_journal(journal_key)
     console.print(
         f"\n[bold green]Client extension '{manifest.name}' of "
@@ -349,7 +351,7 @@ def cmd_clients_down(args):
     if getattr(args, "dry_run", False):
         return
     console.print()
-    _execute(console, steps)
+    _execute(console, steps, deployment_name=journal_name(deployment, extension))
     delete_step_journal(journal_name(deployment, extension))
     console.print(
         f"\n[bold green]Client extension '{extension}' of {deployment} "

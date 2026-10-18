@@ -1,13 +1,13 @@
 import os
 import sys
 from dataclasses import replace
-from pathlib import Path
 
 from rich.console import Console
 
 from saorsa_deploy.contabo import missing_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.hetzner_availability import resolve_hetzner_regions
+from saorsa_deploy.paths import state_dir
 from saorsa_deploy.providers import PROVIDERS, ProviderSpec, resolve_regions
 from saorsa_deploy.registry import (
     record_deploy_args_update,
@@ -301,7 +301,7 @@ def cmd_infra_nodes(args):
     # Build main-VM Terraform configs.
     vm_count_by_provider = {spec.name: spec.vm_count for spec in provider_specs}
     resources_dir = get_resources_dir()
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+    workspace_base = state_dir() / "workspaces"
 
     configs = []
     for provider_name, region in region_pairs:

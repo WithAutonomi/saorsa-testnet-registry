@@ -31,6 +31,7 @@ from saorsa_deploy.migration_registry import (
     MigrationRegistryError,
     get_migration_repository,
 )
+from saorsa_deploy.paths import state_dir
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import check_terraform_state_exists
 from saorsa_deploy.terraform import TerraformRunConfig
@@ -182,7 +183,7 @@ def _state_key(migration_name: str, location: str) -> str:
 
 
 def _workspace_dir(migration_name: str, location: str) -> Path:
-    return Path.cwd() / ".saorsa" / "workspaces" / f"migration-{migration_name}-{location}"
+    return state_dir() / "workspaces" / f"migration-{migration_name}-{location}"
 
 
 def _contabo_secret_name(migration_name: str, location: str) -> str:

@@ -154,6 +154,38 @@ uv run saorsa-deploy --help
 uv run ruff check .
 ```
 
+## The local state directory (never the working directory)
+
+Everything `saorsa-deploy` writes locally lives under
+**`~/.local/share/saorsa-deploy/`** — `workspaces/` (the Terraform working copies,
+one per tier/region) and `infra-logs/<deployment>/` (the `up` lane logs) —
+overridable with **`SAORSA_DEPLOY_STATE_DIR`** — in the environment or in the
+settings file, since `main()` loads that first and `state_dir()` reads the
+environment when called — which is also how the tests isolate themselves.
+`state_dir()` in `deploy/saorsa_deploy/paths.py` is the one
+definition; `grep -rn '"\.saorsa"' deploy/saorsa_deploy` is empty and a test
+asserts it stays that way.
+
+- **No command's state depends on where it was invoked from.** These paths were
+  `<cwd>/.saorsa/...`, so the working state of a deployment was a property of
+  whichever directory created it: every directory a run was launched from grew
+  its own multi-gigabyte set of Terraform copies (2.8 GB in the registry
+  checkout), and a `down` from elsewhere re-copied and re-`init`ed all of them.
+  `up` from one directory and `down --name X` from another now share workspaces.
+- **Lane logs are keyed by deployment name**, because a log is named after its
+  lane index and the step only (`lane00-nodes-infra.log`) — two `up` runs from
+  one directory overwrote each other's. The workspaces need no key: they already
+  carry name, tier and region. A client extension uses its journal key,
+  `<deployment>--<extension>`.
+- **Nothing is migrated.** A deployment whose workspaces exist only under an old
+  `<cwd>/.saorsa/` is re-initialised at the new location on its next command —
+  `prepare_workspace` copies the `.tf` files and `terraform init -reconfigure
+  -backend-config=key=...` pulls the state from the S3 backend **every** tier's
+  module declares (there is no local `terraform.tfstate` anywhere). One `init`,
+  no infrastructure change. The old directories are dead weight; delete them.
+
+See `deploy/README.md` §"The local state directory".
+
 ## Declarative manifests (`deployments up` / `down` / `plan`)
 
 A deployment is described by one declarative YAML **manifest** and run with one

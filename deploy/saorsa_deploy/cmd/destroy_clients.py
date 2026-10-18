@@ -2,7 +2,6 @@ import os
 import shutil
 import sys
 import time
-from pathlib import Path
 
 from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
@@ -24,6 +23,7 @@ from saorsa_deploy.client_roles import (
     unit_for_role,
 )
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
+from saorsa_deploy.paths import state_dir
 from saorsa_deploy.providers import CLIENT_PROVIDERS
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.ssh import clear_known_hosts
@@ -165,7 +165,7 @@ def cmd_destroy_clients(args):
             sys.exit(1)
 
     resources_dir = get_resources_dir()
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+    workspace_base = state_dir() / "workspaces"
 
     configs = []
     for spec in clients:

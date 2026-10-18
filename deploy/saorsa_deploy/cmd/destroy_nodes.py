@@ -1,7 +1,6 @@
 import os
 import shutil
 import sys
-from pathlib import Path
 
 from rich.console import Console
 
@@ -10,6 +9,7 @@ from saorsa_deploy.cmd.infra_nodes import NO_VOLUME_PROVIDERS, OVH_REQUIRED_ENV_
 from saorsa_deploy.contabo import missing_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.local_inventory import retire_local_inventory
+from saorsa_deploy.paths import state_dir
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.resources import get_resources_dir
@@ -179,7 +179,7 @@ def cmd_destroy_nodes(args):
     record_status(args.name, DeploymentStatus.DESTROYING)
 
     resources_dir = get_resources_dir()
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+    workspace_base = state_dir() / "workspaces"
     providers_config = terraform_variables.get("providers", {})
     fallback_vm_count = terraform_variables.get("vm_count")
 
@@ -379,7 +379,7 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
         console.print()
 
     resources_dir = get_resources_dir()
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+    workspace_base = state_dir() / "workspaces"
     configs = []
     for provider_name, state_key in orphans:
         provider = PROVIDERS[provider_name]

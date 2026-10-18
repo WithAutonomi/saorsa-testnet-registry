@@ -1,9 +1,9 @@
 import shutil
-from pathlib import Path
 
 from rich.console import Console
 
 from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.paths import state_dir
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
@@ -92,7 +92,7 @@ def _build_bootstrap_configs(
     """
     resources_dir = get_resources_dir()
     tf_source = resources_dir / "digitalocean-bootstrap"
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+    workspace_base = state_dir() / "workspaces"
 
     configs = []
     for i, region in enumerate(regions):
@@ -155,7 +155,7 @@ def purge_stale_bootstrap_state(
 
     resources_dir = get_resources_dir()
     tf_source = resources_dir / "digitalocean-bootstrap"
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+    workspace_base = state_dir() / "workspaces"
 
     configs = []
     for key in stale_keys:
