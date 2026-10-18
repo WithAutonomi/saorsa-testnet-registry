@@ -75,6 +75,50 @@ Terraform state and deployment metadata are stored in the `maidsafe-org-infra-tf
 
 The `ANT_BUILD_AWS_*` credentials are for the `ant-build-uploader` IAM user, which has `s3:PutObject` on the `ant-node-builds` bucket. Create the access key manually after applying the Terraform in `saorsa_deploy/resources/aws-build-infra/`.
 
+### Where the credentials come from (`~/.config/saorsa-deploy/env`)
+
+Every credential is read from the environment, and the tool assembles that
+environment from two files at startup, in this order:
+
+| Precedence | Source |
+|------------|--------|
+| 1 (wins) | the environment the command inherits |
+| 2 | `$SAORSA_DEPLOY_ENV_FILE`, else `~/.config/saorsa-deploy/env` |
+| 3 | `./.env` in the working directory |
+
+Neither file ever overrides a variable that is already set, so
+`DATABASE_URL=… saorsa-deploy …` overrides the file for one invocation, and the
+checkout's `.env` keeps working for `uv run` in the checkout.
+
+The settings file exists because an **installed** copy of the tool has neither
+of the other two sources. `saorsa_db.db` used to call `load_dotenv()` at import
+time, and python-dotenv searches upward from the *calling module's* file — a
+checkout for `uv run`, and `~/.cache/uv/…` for a wheel, where there is no `.env`
+to find. So a wheel install reported `DATABASE_URL is not set` while the
+checkout's copy of the same command worked.
+
+The format is flat `KEY=value`, one per line, `#` comments, optional single or
+double quotes, an `export ` prefix tolerated, and **no evaluation** — `$` is a
+literal character, as it is in a systemd `EnvironmentFile=`. One file therefore
+serves both the tool and a runner that exports it into a session so its own
+`psql "$DATABASE_URL"` sees the same values.
+
+A missing settings file is not an error (the operator may export everything in
+their shell). A file that exists and cannot be read **is** one, and the error
+names the path: "could not look" must not read as "nothing there".
+
+```bash
+# Which file was read, and which of the variables the tool reads are set.
+# Never prints a value, so it is safe in a run log.
+saorsa-deploy config env-file
+```
+
+`config env-file` exits 0 whatever it finds. Most of the variables are provider-
+or kind-specific — an operator who never deploys to OVH is not misconfigured for
+having none of the four OVH values — so there is no set whose absence is a
+failure for every command. Read the report.
+
+
 ## Declarative manifests (`deployments up` / `down` / `plan`)
 
 The per-phase commands below are the primitives. For day-to-day work, prefer a

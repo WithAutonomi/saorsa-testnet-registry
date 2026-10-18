@@ -115,6 +115,19 @@ def _add_telegraf_fold_args(p):
 
 
 def main(argv=None):
+    # Before anything else, and in particular before `saorsa_db.db` is imported
+    # by the first command module: the settings file is where an installed copy
+    # of the tool finds DATABASE_URL and the provider tokens, and nothing it
+    # loads overrides a variable the caller already set. See
+    # `saorsa_deploy.env_file`.
+    from saorsa_deploy.env_file import EnvFileError, load_env_files
+
+    try:
+        load_env_files()
+    except EnvFileError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(
         prog="saorsa-deploy",
         description="Deploy testnets for ant-node using Terraform and Pyinfra",
@@ -7767,6 +7780,26 @@ def main(argv=None):
 
     add_analysis_parser(subparsers)
 
+    # =========================================================================
+    # === config group (env-file) ===
+    # =========================================================================
+    # Top-level, because the two existing `config` groups (`deployments config`,
+    # `clients config`) are manifest-scoped and every one of their subcommands
+    # requires --config <manifest>. This one inspects the tool's own settings,
+    # which is what an unattended runner checks before it deploys anything.
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Inspect saorsa-deploy's own settings (read-only).",
+    )
+    config_subparsers = config_parser.add_subparsers(dest="config_verb", required=True)
+    config_subparsers.add_parser(
+        "env-file",
+        help=(
+            "Print the resolved settings-file path and which of the variables "
+            "the tool reads are set. Never prints a value."
+        ),
+    )
+
     utils_parser = subparsers.add_parser(
         "utils",
         help="Provider/region introspection helpers.",
@@ -8500,6 +8533,11 @@ def main(argv=None):
         from saorsa_deploy.cmd.analysis import dispatch_analysis
 
         dispatch_analysis(args)
+    elif args.command == "config":
+        if args.config_verb == "env-file":
+            from saorsa_deploy.cmd.config_cmds import cmd_config_env_file
+
+            cmd_config_env_file(args)
     elif args.command == "utils":
         if args.utils_subcommand == "hetzner-availability":
             from saorsa_deploy.cmd.hetzner_availability import cmd_hetzner_availability
