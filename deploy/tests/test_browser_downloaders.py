@@ -10,7 +10,9 @@ client role: roles, spec parsing, manifest validation, orchestrator emission,
 provisioner rendering, and the "everything else is unchanged" guards.
 """
 
+import gzip
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -568,6 +570,18 @@ class TestHarnessSources:
         page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
         assert page.index("setBrowserTrace") < page.index("new mod.BrowserNetworkClient")
 
+    def test_the_download_result_is_read_as_an_object_not_as_bytes(self):
+        # `downloadPublicFile` resolves to a `BrowserDownloadResult {content:
+        # Uint8Array, hash, file, dataMapNode?}` (serde_wasm_bindgen), so the
+        # payload is `result.content`. Reading `.length` off the result itself
+        # is `undefined`, and a fallback to 0 then fails the size check on every
+        # SUCCESSFUL download — the cohort would report 0% completion against a
+        # healthy network.
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        assert "BrowserDownloadResult" in page
+        assert "value.content" in page
+        assert "resultByteLength" in page
+
     def test_the_client_is_closed_and_freed(self):
         # A leaked client holds its WebRTC sessions open, and the next round's
         # instance would then be the fifth session from this address.
@@ -607,54 +621,120 @@ class TestHarnessSources:
 
 
 class TestTraceFixture:
-    """The hand-checked expectations the harness's own tests assert against.
+    """The expectations the harness's own tests assert against.
 
     Pinned here as well as in `expected.json` so the Python suite states the
     values independently: the node tests prove the implementation produces
     them, and these prove nobody edited the expectations to match a change in
     the implementation.
+
+    The fixture is a REAL `setBrowserTrace` capture (ant-client's own committed
+    `read-startup.mjs` trace — see `README.md` beside it for provenance and the
+    `jq` query behind every number). It replaced a hand-written one that encoded
+    a format the bundle does not emit, against which every test passed while two
+    of the three derived fields would have been 0 on every real round.
     """
 
+    def _records(self):
+        with gzip.open(FIXTURES / "read-startup.jsonl.gz", "rt") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
     def test_the_fixture_and_its_expectations_are_committed(self):
-        assert (FIXTURES / "hot-read.jsonl").exists()
+        assert (FIXTURES / "read-startup.jsonl.gz").exists()
         assert (FIXTURES / "expected.json").exists()
+        # The provenance is part of the fixture: without it nobody can tell a
+        # real capture from a plausible-looking invention.
+        readme = (FIXTURES / "README.md").read_text()
+        assert "read-startup.mjs" in readme
+        assert "a205d06d" in readme
 
     def test_the_expected_derived_values(self):
         expected = json.loads((FIXTURES / "expected.json").read_text())
-        # Two dials hit the ~10 s channel-open timeout without opening a
-        # channel (dial-2 at 10012 ms, dial-3 at 9340 ms). dial-4 failed in
-        # 74 ms, which is a refusal; dial-5 failed at 9600 ms having opened its
-        # channel, which is an admission failure.
-        assert expected["stalls"] == 2
-        # dial-4 alone; counted separately from a stall so a per-IP quota
-        # mistake cannot be read as a NAT'd fleet.
-        assert expected["refused_dials"] == 1
-        assert expected["first_reads"] == [
-            {"chunk": "chunk01", "holder": "peerA", "known_holders": 3},
-            {"chunk": "chunk02", "holder": "peerE", "known_holders": 1},
-            {"chunk": "chunk03", "holder": "peerA", "known_holders": 0},
-            {"chunk": "chunk06", "holder": "peerG", "known_holders": 4},
+        # 43 dials were attempted and never opened a channel: 41 died at
+        # ~10,004 ms (REQUEST_TIMEOUT_MS on the data-channel open select), one
+        # at 30,002.5 ms (CONNECTION_SETUP_TIMEOUT_MS around the whole of
+        # Connection::open). The 43rd failed at 4,082.6 ms, which is neither
+        # timeout, and is counted as neither.
+        assert expected["stalls"] == 42
+        # No trace record ever carries a refusal, so this is a timing heuristic
+        # over note_refusal's own condition. The fastest failed dial here is
+        # 4,082.6 ms, outside the 3 s window, so 0 is a real answer.
+        assert expected["refused_dials"] == 0
+        assert len(expected["first_reads"]) == 10
+        # Two chunks had a discovery peer count; the other eight had none.
+        counted = [r for r in expected["first_reads"] if r["known_holders"] is not None]
+        assert [r["known_holders"] for r in counted] == [7, 7]
+        assert len(expected["first_reads"]) - len(counted) == 8
+
+    def test_the_expected_values_are_reproducible_from_the_raw_records(self):
+        """Re-derive each number here, independently of `lib/derive.mjs`."""
+        expected = json.loads((FIXTURES / "expected.json").read_text())
+        records = self._records()
+
+        dials: dict = {}
+        for record in records:
+            if record["operation"] != "association":
+                continue
+            dial = dials.setdefault(record["id"], {"phases": set(), "elapsed": 0.0})
+            dial["phases"].add(record["phase"])
+            dial["elapsed"] = max(dial["elapsed"], record["elapsed_ms"])
+        failed = [
+            d
+            for d in dials.values()
+            if "dial" in d["phases"]
+            and "cancelled-or-error" in d["phases"]
+            and "channel-open" not in d["phases"]
+        ]
+        assert len(failed) == 43
+        stalls = [d for d in failed if any(abs(d["elapsed"] - t) <= 1000 for t in (10_000, 30_000))]
+        assert len(stalls) == expected["stalls"]
+        assert [d for d in failed if d["elapsed"] < 3000] == []
+
+        first: dict = {}
+        for record in records:
+            if record["operation"] != "rpc" or not record["target"] or not record["peer"]:
+                continue
+            first.setdefault(record["target"], record["peer"])
+        assert [{"chunk": c, "holder": h} for c, h in first.items()] == [
+            {"chunk": r["chunk"], "holder": r["holder"]} for r in expected["first_reads"]
         ]
 
-    def test_the_fixture_exercises_every_decision(self):
-        lines = [
-            json.loads(line)
-            for line in (FIXTURES / "hot-read.jsonl").read_text().splitlines()
-            if line.strip()
-        ]
-        header = lines[0]
-        assert header["header"] is True
-        assert {"round_id", "instance", "hot_file_index", "address", "seeds", "boundary"} <= set(
-            header
+        counts = {
+            r["target"]: r["detail"]
+            for r in records
+            if r["operation"] == "discovery" and r["phase"] == "finish"
+        }
+        assert sorted(counts.values()) == ["7 peers", "7 peers"]
+
+    def test_the_fixture_has_the_shape_the_emitter_produces(self):
+        """Guards against the hand-written format coming back.
+
+        Each assertion is a property of `Trace::event` and its call sites, and
+        each one was false in the fixture this replaced.
+        """
+        records = self._records()
+        assert len(records) == 1058
+        keys = {"id", "operation", "target", "peer", "phase", "elapsed_ms", "detail"}
+        for record in records:
+            assert set(record) == keys
+            # `detail` is a `&str` at every call site, so `detail.peers` can
+            # never be an array.
+            assert isinstance(record["detail"], str)
+        by_op = {r["operation"] for r in records}
+        assert by_op == {"association", "connect", "discovery", "lookup-progress", "rpc"}
+        # `lookup-progress` has both empty, `discovery` has an empty peer: neither
+        # can supply a per-target candidate peer.
+        assert all(
+            r["target"] == "" and r["peer"] == ""
+            for r in records
+            if r["operation"] == "lookup-progress"
         )
-        records = lines[1:]
-        # A fallback read (a second GET for a chunk already read), a PUT rpc, a
-        # peer-less GET and a candidate record carrying its set in `detail` are
-        # all present — each is a case `first_reads` has to decide.
-        assert sum(1 for r in records if r.get("target") == "chunk01") >= 5
-        assert any("PUT" in str(r.get("detail")) for r in records)
-        assert any(r.get("operation") == "rpc" and "peer" not in r for r in records)
-        assert any(isinstance(r.get("detail"), dict) for r in records)
+        assert all(r["peer"] == "" for r in records if r["operation"] == "discovery")
+        # A dropped Trace passes "", so nothing is readable off a failure.
+        assert all(r["detail"] == "" for r in records if r["phase"] == "cancelled-or-error")
+        # The word GET appears nowhere, and no record mentions a refusal.
+        assert not any(re.search(r"\bget\b", r["detail"], re.I) for r in records)
+        assert not any("refus" in r["detail"].lower() for r in records)
 
 
 BOOTSTRAP_ADDR = (

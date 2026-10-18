@@ -10,6 +10,7 @@ whole behaviour, and none of them needs a bucket.
 """
 
 import json
+import pathlib
 
 import pytest
 
@@ -269,5 +270,19 @@ class TestHarnessContract:
         # The VM signs nothing: SigV4 rejects requests from a clock-skewed
         # client, and the addresses bucket is public-read for exactly this.
         url = hot_files.addresses_base_url("DEV-01")
-        assert url.startswith("https://saorsa-testnet-addresses.s3.amazonaws.com/")
         assert url.endswith("/saorsa-deploy/addresses/DEV-01")
+
+    def test_the_base_url_is_the_regional_endpoint(self):
+        # Matching `downloader.sh`, which reads the same pool via
+        # `https://<bucket>.s3.${AWS_DEFAULT_REGION:-eu-west-2}.amazonaws.com`.
+        # The global form reaches a non-us-east-1 bucket only through S3's
+        # redirect, and two readers of one pool must not differ in how they get
+        # to it.
+        from saorsa_deploy.state import S3_ADDRESSES_BUCKET, S3_REGION
+
+        url = hot_files.addresses_base_url("DEV-01")
+        assert url.startswith(f"https://{S3_ADDRESSES_BUCKET}.s3.{S3_REGION}.amazonaws.com/")
+        script = (
+            pathlib.Path(hot_files.__file__).parent / "resources" / "scripts" / "downloader.sh"
+        ).read_text()
+        assert f".s3.${{AWS_DEFAULT_REGION:-{S3_REGION}}}.amazonaws.com" in script

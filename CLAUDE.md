@@ -1394,14 +1394,33 @@ clients` extension too, which is the normal way to use it.
   unlike workloads. **One point per instance per round, always**: a round with no
   point is itself a finding, which only reads that way if a skip is a point. No
   hot files yet → `skipped`/`no_hot_files`, no browser launched.
-- **The three derived fields each need all their conditions.** `stalls` = dials
-  ending `cancelled-or-error`, **never** `channel-open`, 9–11 s (the client's 10 s
-  channel-open timeout = an unreachable NAT'd holder); a 74 ms failure is a
-  refusal and a post-`channel-open` failure is an admission failure.
-  `refused_dials` is separate so a per-IP quota mistake is not read as a NAT'd
-  fleet. `first_reads` takes the **first** holder per chunk and the candidates
-  **preceding** that read — the whole trace's would include peers learned
-  afterwards.
+- **The derived fields are shaped by what `setBrowserTrace` ACTUALLY emits**
+  (`{id, operation, target, peer, phase, elapsed_ms, detail}`, `detail` always a
+  **string**), and none of them reads the way its name suggests. A chunk read is
+  a **non-empty `target`** on an `rpc`, never the word "GET" (which appears in no
+  trace). `stalls` = dials with a `dial` phase, **never** `channel-open`, ending
+  `cancelled-or-error` at EITHER setup timeout — `REQUEST_TIMEOUT_MS` 10 s on the
+  data-channel open (41 of 43 in the reference capture) or
+  `CONNECTION_SETUP_TIMEOUT_MS` 30 s around all of `Connection::open` (1 of 43);
+  the `dial` phase excludes the dial-failure-cache early return, which bails
+  before it. **`refused_dials` is a TIMING HEURISTIC**: no record ever carries a
+  refusal (`DialOutcome::Refused` goes to the dial-failure cache and
+  `cancelled-or-error` has an empty detail), so it reconstructs `note_refusal`'s
+  condition — dialled, no channel, dead inside `REFUSAL_DETECTION_WINDOW` (3 s).
+  **`known_holders` is the `discovery` `"N peers"` count for the whole
+  download**, not what was known at the read: in all 14 committed ant-client
+  captures the discovery finish arrives AFTER the first read of its target, so
+  "preceding" would be null on every real trace. `null` = no count was reported
+  (8 of 10 chunks in the fixture), never 0. `discovery` has an empty `peer` and
+  `lookup-progress` has neither target nor peer, so no peer SET is obtainable.
+- **`downloadPublicFile` resolves to an OBJECT**, `BrowserDownloadResult
+  {content: Uint8Array, hash, file, dataMapNode?}` — the bytes are
+  `result.content`. Reading `.length` off the result is `undefined`, and a
+  fallback to 0 marks every SUCCESSFUL download `size mismatch: got 0`.
+- **The trace fixture is a REAL capture** (ant-client's committed
+  `read-startup.mjs` trace, gzipped, with provenance in its own README), not a
+  hand-written one. A hand-written fixture encoding the assumed shape passed
+  every test while two of three fields would have been 0 on every live round.
 - **`clock_skew`, `network` and `rust_log` are refused by name**: the measurement
   is *when* each instance read and *which holder served it*. `count: N` (this
   role only) expands to N VMs with consecutive `client_index`, as repeated

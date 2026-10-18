@@ -32,8 +32,32 @@ export const PAGE_HTML =
  * * The byte length is compared against what the manifest declared. A short
  *   read that resolved successfully is a correctness finding, not a slow
  *   download, and nothing else would notice it.
+ * * **`downloadPublicFile` resolves to an OBJECT, not to the bytes.** It is a
+ *   `BrowserDownloadResult { content: Uint8Array, hash: String, file,
+ *   dataMapNode? }` serialised with `serde_wasm_bindgen` (ant-client
+ *   `wasm_transport.rs`), so the payload is `result.content` and its length is
+ *   `result.content.length`. Reading `.length` off the result itself yields
+ *   `undefined`, and a fallback to 0 then fails the size check on every
+ *   SUCCESSFUL download -- the whole cohort would report 0% completion against
+ *   a healthy network. (`result.hash` is a blake3 hex of the same bytes and a
+ *   stronger integrity check than the length; it is left to V2-1618, which owns
+ *   the result schema.)
  */
 export async function downloadInPage({ bundleUrl, address, expectedBytes, seeds, timeoutMs }) {
+  // Declared inside, not imported: Playwright serialises this function's own
+  // source and evaluates it in the page, so it can close over nothing.
+  const resultByteLength = (value) => {
+    if (!value) return 0;
+    const content = value.content;
+    if (content && typeof content.byteLength === "number") return content.byteLength;
+    if (content && typeof content.length === "number") return content.length;
+    // A future bundle resolving to the bytes directly lands here rather than
+    // silently reporting 0.
+    if (typeof value.byteLength === "number") return value.byteLength;
+    if (typeof value.length === "number") return value.length;
+    return 0;
+  };
+
   const trace = [];
   const push = (record) => {
     try {
@@ -66,8 +90,8 @@ export async function downloadInPage({ bundleUrl, address, expectedBytes, seeds,
     const deadline = new Promise((_resolve, reject) => {
       setTimeout(() => reject(new Error("harness deadline")), timeoutMs);
     });
-    const bytes = await Promise.race([client.downloadPublicFile(address), deadline]);
-    byteLength = bytes && bytes.length !== undefined ? bytes.length : (bytes || "").length || 0;
+    const result = await Promise.race([client.downloadPublicFile(address), deadline]);
+    byteLength = resultByteLength(result);
     if (expectedBytes && byteLength !== expectedBytes) {
       return {
         ok: false,

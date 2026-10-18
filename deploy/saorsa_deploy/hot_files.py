@@ -31,6 +31,7 @@ from saorsa_deploy.client_roles import HOT_FILES_OBJECT_NAME
 from saorsa_deploy.state import (
     S3_ADDRESSES_BUCKET,
     S3_CLIENT_ADDRESSES_PREFIX,
+    S3_REGION,
 )
 
 #: ``size_mb`` is binary, matching every other file size in this tool
@@ -76,8 +77,16 @@ def addresses_base_url(deployment: str) -> str:
     bucket is public-read and the VMs sign nothing, exactly as the native
     downloader fetches address lists — a clock-skewed VM's own SigV4 requests
     would be rejected.
+
+    The **regional** endpoint, matching `downloader.sh`'s
+    ``https://${ADDRESSES_S3_BUCKET}.s3.${AWS_DEFAULT_REGION:-eu-west-2}.amazonaws.com``:
+    the global `s3.amazonaws.com` form reaches a bucket outside us-east-1 only
+    through S3's redirect, and two readers of one pool must not differ in how
+    they get to it.
     """
-    return f"https://{S3_ADDRESSES_BUCKET}.s3.amazonaws.com/{addresses_prefix(deployment)}"
+    return (
+        f"https://{S3_ADDRESSES_BUCKET}.s3.{S3_REGION}.amazonaws.com/{addresses_prefix(deployment)}"
+    )
 
 
 def _s3():

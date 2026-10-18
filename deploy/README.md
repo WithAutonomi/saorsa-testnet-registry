@@ -1338,24 +1338,60 @@ of `association` | `connect` | `rpc` | `discovery` | `lookup-progress`).
 **The harness never deletes them** — the traces are the dataset this role
 produces, so `scp` them off before destroy.
 
-Three summaries are computed from each trace before its point is written:
+Three summaries are computed from each trace before its point is written. Each
+is shaped by what `setBrowserTrace` actually emits — `{id, operation, target,
+peer, phase, elapsed_ms, detail}` with **`detail` always a string** — so none of
+them reads the way the field names suggest:
 
-- **`stalls`** — dials (`operation=association`, grouped by `id`) that ended in
-  `cancelled-or-error`, **never** reached `channel-open`, and ran for 9,000–11,000
-  ms. All three conditions together: a failed dial that returned in 200 ms was
-  refused, and one that reached `channel-open` and failed later failed at the
-  authentication layer. The window brackets the client's 10-second channel-open
-  timeout, i.e. an unreachable (NAT'd) holder.
-- **`refused_dials`** — dials whose `detail` records a refusal. Counted
-  separately from a stall precisely so a per-IP quota mistake cannot be read as
-  a NAT'd fleet.
+- **`stalls`** — dials (`operation=association`, grouped by `id`) that were
+  attempted (a `dial` phase), **never** reached `channel-open`, ended in
+  `cancelled-or-error`, and died on one of the transport's **two** setup
+  timeouts: `REQUEST_TIMEOUT_MS` (10 s, on the data-channel open select) or
+  `CONNECTION_SETUP_TIMEOUT_MS` (30 s, wrapped by `ensure_connected` around the
+  whole of `Connection::open`, which fires when the dial hung in ICE gathering
+  or SDP before the 10 s one was armed). Both are counted and the 10 s one
+  dominates: in the committed capture the fixture comes from, of 43 dials that
+  never opened a channel, 41 died at ~10,004 ms and one at 30,002.5 ms. The
+  `dial` phase is required because the dial-failure-cache early return bails
+  before it, so its `cancelled-or-error` arrives having dialled nothing. A
+  failure at neither timeout is counted as neither.
+- **`refused_dials`** — **a timing heuristic, not a trace marker.** No record
+  ever carries a refusal: an association emits `start`, `dial`, `channel-open`,
+  then `finish("authenticated")` or, on drop, `cancelled-or-error` with an
+  **empty** detail, and `DialOutcome::Refused` is set by `note_refusal` into the
+  dial-failure cache which the trace never sees. So this reconstructs
+  `note_refusal`'s own condition from what the trace does carry: dialled, no
+  channel ever opened, dead inside the client's `REFUSAL_DETECTION_WINDOW` of
+  3 s. Counted separately from a stall precisely so a per-IP quota mistake (a
+  fifth instance on the VM) cannot be read as a NAT'd fleet.
 - **`first_reads`** — a JSON array of `{chunk, holder, known_holders}`: for each
-  chunk GET, the **first** peer targeted for that chunk (a fallback to a second
-  holder has already paid the first one's latency) and the number of distinct
-  candidate peers the `discovery` / `lookup-progress` records **preceding** that
-  read had reported for it. Preceding, because counting the whole trace's
-  candidates would include peers the client learned about afterwards and make
-  every spread look wider than it was.
+  chunk read, the **first** peer targeted for it (a fallback to a second holder
+  has already paid the first one's `NotFound` or silence). A chunk read is
+  identified by a **non-empty `target`**, which is what `Trace::new("rpc",
+  <chunk hex if GetRequest else "">, <peer hex>)` puts there — the detail is
+  empty on `start` and `found N bytes` / `NotFound { .. }` on `finish`, and the
+  word "GET" appears nowhere in a real trace.
+
+  **`known_holders` is the discovery-reported count for that chunk over the
+  whole download, not the count known at the moment of the read.** The only
+  holder count a trace carries is the integer in a `discovery` `finish` detail
+  (`"N peers"`), and in all fourteen committed ant-client captures that record
+  arrives *after* the first read of its own target — the client reads peers it
+  already holds while discovery is still running. A strictly-preceding reading
+  would be `null` on every real trace. It is `null` when no discovery for that
+  chunk reported a count at all (its trace ended in `cancelled-or-error` with an
+  empty detail), which is 8 of the fixture's 10 chunks; `null`, not 0, because
+  "nothing reported how many" is not "the client knew of no holders".
+
+`discovery` records carry a `target` with an **empty** `peer`, and
+`lookup-progress` carries **neither**, so neither can name a candidate peer —
+which is why the count above is the obtainable quantity and a peer set is not.
+
+The fixture these are tested against
+(`deploy/tests/fixtures/browser-trace/read-startup.jsonl.gz`) is a **real
+capture**, ant-client's own committed `read-startup.mjs` trace; see the
+`README.md` beside it for its provenance and the `jq` query behind every
+expected value.
 
 #### Logs
 
