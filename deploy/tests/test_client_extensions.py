@@ -163,12 +163,13 @@ class TestManifest:
         with pytest.raises(ManifestError, match="binaries"):
             _manifest(tmp_path, body)
 
-    def test_slack_post_is_refused(self, tmp_path):
-        # `deployments slack-post` reports on a deployment; an extension has no
-        # registry row, so the step would look up a name that does not exist.
+    def test_slack_post_is_accepted(self, tmp_path):
+        # It no longer appends `deployments slack-post` (which would look up the
+        # extension's name in the registry and find nothing) but the extension's
+        # own `clients slack-post`, threaded under the deployment's post.
         body = EXTENSION.replace("    purpose:", "    slack_post: true\n    purpose:")
-        with pytest.raises(ManifestError, match="slack_post is not supported"):
-            _manifest(tmp_path, body)
+        m = _manifest(tmp_path, body)
+        assert m.slack_post is True
 
     def test_wasm_file_cap_still_applies(self, tmp_path):
         body = """\

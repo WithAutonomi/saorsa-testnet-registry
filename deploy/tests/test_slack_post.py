@@ -1213,3 +1213,76 @@ class TestNetworkImpairmentSurfacing:
             ]
         )["text"]["text"]
         assert text.count("🐌 home-fttc (60mbit/18mbit)") == 2
+
+
+class TestBrowserCohortRendering:
+    """A browser-downloader tier in the client list (V2-1639).
+
+    Without a branch of its own it fell through to the generic downloader line,
+    losing the instance count and the round period — the two numbers that say
+    what a hot-read cohort is.
+    """
+
+    def test_browser_line_carries_instances_round_and_deadline(self):
+        from saorsa_deploy.cmd.slack_post import _client_line
+
+        line = _client_line(
+            {
+                "role": "browser-download",
+                "region": "lon1",
+                "vm_size": "s-4vcpu-8gb",
+                "instances": 4,
+                "round_period_secs": 600,
+                "download_timeout_secs": 300,
+            }
+        )
+        assert line == (
+            "• browser-download — lon1 (s-4vcpu-8gb, 4 Chromium, round 600s, deadline 300s)"
+        )
+
+    def test_browser_line_renders_a_missing_field_as_a_question_mark(self):
+        from saorsa_deploy.cmd.slack_post import _client_line
+
+        line = _client_line({"role": "browser-download", "region": "lon1"})
+        assert line == "• browser-download — lon1 (?, ? Chromium, round ?s, deadline ?s)"
+
+    def test_browser_entries_get_their_own_heading(self):
+        from saorsa_deploy.cmd.slack_post import _clients_block
+
+        text = _clients_block(
+            [
+                {"role": "download", "region": "tor1", "vm_size": "s-2vcpu-4gb"},
+                {
+                    "role": "browser-download",
+                    "region": "lon1",
+                    "vm_size": "s-4vcpu-8gb",
+                    "instances": 4,
+                    "round_period_secs": 600,
+                    "download_timeout_secs": 300,
+                },
+            ]
+        )["text"]["text"]
+        assert "_Native (QUIC):_" in text
+        assert "_Browser (WebRTC-Direct, headless Chromium):_" in text
+
+    def test_a_native_only_list_is_unchanged(self):
+        # The headings appear only when there is something to tell the native
+        # tier apart from, so every existing deployment's post is byte-identical.
+        from saorsa_deploy.cmd.slack_post import _clients_block
+
+        text = _clients_block(
+            [
+                {
+                    "role": "upload",
+                    "region": "nyc1",
+                    "vm_size": "s-2vcpu-4gb",
+                    "file_size_mb": 100,
+                },
+                {"role": "download", "region": "tor1", "vm_size": "s-2vcpu-4gb"},
+            ]
+        )["text"]["text"]
+        assert text == (
+            "*Clients:*\n"
+            "• upload — nyc1 (s-2vcpu-4gb, 100MB files) — payment: default\n"
+            "• download — tor1 (s-2vcpu-4gb)"
+        )

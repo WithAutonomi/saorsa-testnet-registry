@@ -16,7 +16,7 @@ from pathlib import Path
 import requests
 from rich.console import Console
 
-from saorsa_deploy.client_roles import is_pointer, is_upload, is_wasm
+from saorsa_deploy.client_roles import is_browser, is_pointer, is_upload, is_wasm
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.slack_api import SlackApiError, post_message
 from saorsa_deploy.state import (
@@ -598,6 +598,18 @@ def _client_line(c: dict) -> str:
             f"• pointer — {region} ({vm_size}{rates}{transfer_str}{chain_str})"
             f"{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
         )
+    if is_browser(role):
+        # Tested BEFORE is_upload (it is a download role, so it would otherwise
+        # render as the generic downloader line): what defines a hot-read cohort
+        # is how many Chromium instances a VM runs and the wall-clock round they
+        # all read on, and neither appears on that line.
+        instances = c.get("instances") or "?"
+        period = c.get("round_period_secs") or "?"
+        deadline = c.get("download_timeout_secs") or "?"
+        return (
+            f"• browser-download — {region} ({vm_size}, {instances} Chromium, "
+            f"round {period}s, deadline {deadline}s){fwd_str}{rust_str}"
+        )
     if is_upload(role):
         file_size = c.get("file_size_mb")
         # file_size_mb is 0 for prod uploaders (real files of arbitrary
@@ -626,9 +638,10 @@ def _clients_block(clients: list[dict]) -> dict:
     """
     pointers = [c for c in clients if is_pointer(c.get("role", "upload"))]
     wasm = [c for c in clients if is_wasm(c.get("role", "upload"))]
-    native = [c for c in clients if c not in pointers and c not in wasm]
+    browser = [c for c in clients if is_browser(c.get("role", "upload"))]
+    native = [c for c in clients if c not in pointers and c not in wasm and c not in browser]
 
-    if not (wasm or pointers):
+    if not (wasm or pointers or browser):
         return _section("*Clients:*\n" + "\n".join(_client_line(c) for c in native))
 
     lines: list[str] = []
@@ -640,6 +653,13 @@ def _clients_block(clients: list[dict]) -> dict:
     if wasm:
         lines.append("_WASM (WebRTC-Direct):_")
         lines.extend(_client_line(c) for c in wasm)
+    if browser:
+        # Its own heading beside WASM rather than inside it: both run the same
+        # ant-core bundle, but a synchronised cohort of real browsers reading
+        # ONE hot file is a different instrument from one Node.js process
+        # drawing random files.
+        lines.append("_Browser (WebRTC-Direct, headless Chromium):_")
+        lines.extend(_client_line(c) for c in browser)
     if pointers:
         # Its own heading because a pointer client measures something else
         # entirely: whether a paid mutable reference can be read back, not

@@ -1855,7 +1855,10 @@ class Manifest(_Base):
     kind: str
     purpose: str
     ssh_key_path: str = "~/.ssh/id_rsa"
-    slack_post: bool = False  # append a final `deployments slack-post` step to `up`
+    # Append a final `deployments slack-post` step to `up` — or, on
+    # `kind: clients`, a `clients slack-post` step to each of `clients up` and
+    # `clients down`, threaded under the deployment's own post.
+    slack_post: bool = False
 
     testnet: Optional[TestnetSpec] = None
     extension: Optional[ExtensionSpec] = None
@@ -1897,17 +1900,6 @@ class Manifest(_Base):
                 validate_extension_name(self.name)
             except ExtensionError as exc:
                 raise ValueError(str(exc)) from exc
-            if self.slack_post:
-                # `deployments slack-post` takes a DEPLOYMENT name and reads its
-                # registry row. An extension has no row of its own, so the step
-                # would look up the extension's name and find nothing — and the
-                # deployment's own post already describes the run.
-                raise ValueError(
-                    "clients: slack_post is not supported for kind 'clients' — "
-                    "`deployments slack-post` reports on a deployment, and an "
-                    "extension has no registry row of its own. Post about the "
-                    "deployment instead."
-                )
         elif self.deployment is not None:
             raise ValueError(
                 f"`deployment:` is only valid on kind 'clients' (got kind "
