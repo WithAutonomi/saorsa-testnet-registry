@@ -10,6 +10,7 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import files, server
 from rich.console import Console
 
+from saorsa_deploy.client_extension import client_vm_name
 from saorsa_deploy.client_roles import (
     ROLE_BROWSER_DOWNLOAD,
     ROLE_POINTER,
@@ -75,6 +76,31 @@ SCRIPTS_DIR = "/root/ant-client"
 #: key is a pointer that can never be updated again.
 POINTER_DATA_DIR = "/var/lib/ant-pointer"
 POINTER_UNIT = unit_for_role(ROLE_POINTER)
+
+
+def os_hostnames_by_ip(
+    deployment: str, extension: str | None, clients: list[dict]
+) -> dict[str, str]:
+    """The OS hostname to set on each client VM, keyed by its address.
+
+    :func:`client_vm_name` is the only construction, so a VM's OS hostname is
+    its Terraform VM name — carrying the extension segment for an extension's
+    tier. A client with no address, no region or no index is omitted: there is
+    nothing to SSH to, or nothing to name it with.
+    """
+    if not deployment:
+        return {}
+    return {
+        c["ip"]: client_vm_name(
+            deployment,
+            extension,
+            c.get("role", ROLE_UPLOAD),
+            c["region"],
+            c["client_index"],
+        )
+        for c in clients
+        if c.get("ip") and c.get("region") is not None and c.get("client_index") is not None
+    }
 
 
 def _build_env_file(
@@ -258,6 +284,7 @@ class AntClientProvisioner:
         addresses_file_content: str | None = None,
         heaptrack_targets: frozenset[str] = frozenset(),
         deployment_name: str = "",
+        extension: str | None = None,
         elasticsearch_url: str = "",
         elasticsearch_username: str = "",
         elasticsearch_password: str = "",
@@ -270,6 +297,11 @@ class AntClientProvisioner:
     ):
         self.clients = clients
         self.deployment_name = deployment_name
+        # The client extension these VMs belong to, if any. It namespaces their
+        # names only -- `deployment_name` keeps its meaning everywhere else
+        # (TESTNET_NAME, ADDRESSES_BASE_URL, the Telegraf testnet_name and the
+        # addresses prefix are all the bare deployment).
+        self.extension = extension
         self.bootstrap_peers = bootstrap_peers
         self.aws_access_key_id = aws_access_key_id
         self.aws_secret_access_key = aws_secret_access_key
@@ -1008,27 +1040,23 @@ ENV_EOF"""
                 commands=[build_disable_firewall_command()],
             )
 
-            # Set each VM's OS hostname to its inventory name. Only the
+            # Set each VM's OS hostname to its Terraform VM name. Only the
             # vultr-client terraform module sets the hostname from the VM name;
             # DO / OVH / Hetzner client images boot with a provider-assigned
             # machine-id hostname. uploader.sh / downloader.sh tag their Influx
-            # points with `$(hostname)` and Telegraf captures it too, so an
-            # unset hostname makes a client's metrics land under an opaque tag.
-            # Apply it here (one op per host) so it is correct even when
-            # monitoring is disabled and the Telegraf path never runs. The
-            # hostname format matches vultr-client/main.tf and the inventory:
-            # `<name>-ant-client-<role>-<region>-<index>`.
-            ip_to_hostname = {
-                c["ip"]: (
-                    f"{self.deployment_name}-ant-client-"
-                    f"{c.get('role', 'upload')}-{c['region']}-{c['client_index']}"
-                )
-                for c in self.clients
-                if c.get("ip")
-                and self.deployment_name
-                and c.get("region") is not None
-                and c.get("client_index") is not None
-            }
+            # points with `$(hostname)`, the browser harness tags with
+            # `os.hostname()` and Telegraf captures it too, so an unset hostname
+            # makes a client's metrics land under an opaque tag. Apply it here
+            # (one op per host) so it is correct even when monitoring is
+            # disabled and the Telegraf path never runs.
+            #
+            # For an EXTENSION the name carries the extension segment
+            # (`<deployment>-<extension>-ant-client-...`), because the registry
+            # joins a browser trace to its row and labels a row with its
+            # extension on this string alone. Setting the deployment's own
+            # `<deployment>-ant-client-...` form on an extension's VM left every
+            # one of its rows with no `trace_s3_key` and no `extension`.
+            ip_to_hostname = os_hostnames_by_ip(self.deployment_name, self.extension, self.clients)
             if ip_to_hostname:
                 for host in state.inventory.get_active_hosts():
                     hostname = ip_to_hostname.get(host.name)

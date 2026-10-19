@@ -307,6 +307,34 @@ class TestStateKeys:
     def test_journal_name_cannot_collide_with_a_deployment_name(self):
         assert client_extension.journal_name("DEV-01", "browsers") == "DEV-01--browsers"
 
+    def test_client_vm_name_carries_the_extension_segment(self):
+        """The name is the Terraform VM name, so an extension's VMs are
+        distinguishable from the deployment's own in every consumer."""
+        assert (
+            client_extension.client_vm_name(
+                "DEV-03", "DEV-03-browsers", "browser-download", "lon1", 1
+            )
+            == "DEV-03-DEV-03-browsers-ant-client-browser-download-lon1-1"
+        )
+        assert (
+            client_extension.client_vm_name("DEV-03", None, "upload", "lon1", 1)
+            == "DEV-03-ant-client-upload-lon1-1"
+        )
+
+    def test_client_hostname_is_the_same_construction(self):
+        """`browser_records.client_hostname` and the provisioner must agree, or
+        a browser row can never be joined to its trace."""
+        from saorsa_deploy.browser_records import client_hostname
+
+        own = {"role": "upload", "region": "lon1", "client_index": 1}
+        ext = {"role": "browser-download", "region": "sgp1", "client_index": 3}
+        assert client_hostname("DEV-03", None, own) == client_extension.client_vm_name(
+            "DEV-03", None, "upload", "lon1", 1
+        )
+        assert client_hostname("DEV-03", "DEV-03-browsers", ext) == client_extension.client_vm_name(
+            "DEV-03", "DEV-03-browsers", "browser-download", "sgp1", 3
+        )
+
 
 def _tiers(monkeypatch, own, extensions):
     """Patch the client-state loaders to present ``own`` plus ``extensions``.

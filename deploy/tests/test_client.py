@@ -528,3 +528,173 @@ class TestProvisionLogForwardersBuffer:
         kwargs = mock_forwarder.call_args.kwargs
         # Falls through to ClientTelegrafProvisioner's own default.
         assert "metric_buffer_limit" not in kwargs
+
+
+class TestOsHostnamesByIp:
+    """The OS hostname `clients provision` sets is the Terraform VM name.
+
+    Run 683 (DEV-03, 2026-10-19) is the reason this is a test: the provisioner
+    set the deployment's own `<deployment>-ant-client-...` form on an
+    extension's VMs, so the browser harness tagged every Influx point with a
+    name no reader builds — and all 72 recorded rows came out with no
+    `trace_s3_key` and no `extension`.
+    """
+
+    BROWSERS = [
+        {
+            "ip": "157.245.43.75",
+            "role": "browser-download",
+            "region": "lon1",
+            "client_index": 1,
+        },
+        {
+            "ip": "165.22.184.186",
+            "role": "browser-download",
+            "region": "nyc1",
+            "client_index": 2,
+        },
+        {
+            "ip": "157.230.243.56",
+            "role": "browser-download",
+            "region": "sgp1",
+            "client_index": 3,
+        },
+    ]
+
+    def test_an_extensions_vms_carry_the_extension_segment(self):
+        from saorsa_deploy.provisioning.client import os_hostnames_by_ip
+
+        assert os_hostnames_by_ip("DEV-03", "DEV-03-browsers", self.BROWSERS) == {
+            "157.245.43.75": "DEV-03-DEV-03-browsers-ant-client-browser-download-lon1-1",
+            "165.22.184.186": "DEV-03-DEV-03-browsers-ant-client-browser-download-nyc1-2",
+            "157.230.243.56": "DEV-03-DEV-03-browsers-ant-client-browser-download-sgp1-3",
+        }
+
+    def test_the_deployments_own_tier_is_unchanged(self):
+        from saorsa_deploy.provisioning.client import os_hostnames_by_ip
+
+        assert os_hostnames_by_ip("DEV-03", None, self.BROWSERS) == {
+            "157.245.43.75": "DEV-03-ant-client-browser-download-lon1-1",
+            "165.22.184.186": "DEV-03-ant-client-browser-download-nyc1-2",
+            "157.230.243.56": "DEV-03-ant-client-browser-download-sgp1-3",
+        }
+
+    def test_the_role_defaults_to_upload(self):
+        from saorsa_deploy.provisioning.client import os_hostnames_by_ip
+
+        clients = [{"ip": "1.2.3.4", "region": "lon1", "client_index": 1}]
+        assert os_hostnames_by_ip("DEV-01", None, clients) == {
+            "1.2.3.4": "DEV-01-ant-client-upload-lon1-1"
+        }
+
+    def test_a_client_without_an_ip_region_or_index_is_omitted(self):
+        from saorsa_deploy.provisioning.client import os_hostnames_by_ip
+
+        clients = [
+            {"role": "upload", "region": "lon1", "client_index": 1},
+            {"ip": "1.2.3.4", "role": "upload", "client_index": 1},
+            {"ip": "5.6.7.8", "role": "upload", "region": "lon1"},
+            {"ip": "9.9.9.9", "role": "upload", "region": "nyc1", "client_index": 7},
+        ]
+        assert os_hostnames_by_ip("DEV-01", None, clients) == {
+            "9.9.9.9": "DEV-01-ant-client-upload-nyc1-7"
+        }
+
+    def test_no_deployment_name_names_nothing(self):
+        from saorsa_deploy.provisioning.client import os_hostnames_by_ip
+
+        assert os_hostnames_by_ip("", None, self.BROWSERS) == {}
+
+
+class TestProvisionerCarriesItsExtension:
+    """The provisioner has to be told the extension: `deployment_name` alone
+    cannot name an extension's VMs, and it must keep meaning the bare
+    deployment for TESTNET_NAME, the addresses prefix and Telegraf."""
+
+    def _provisioner(self, **kwargs):
+        from saorsa_deploy.provisioning.client import AntClientProvisioner
+
+        return AntClientProvisioner(
+            clients=[],
+            bootstrap_peers=["9.9.9.9:10000"],
+            aws_access_key_id="ak",
+            aws_secret_access_key="sk",
+            addresses_s3_bucket="bucket",
+            addresses_s3_prefix="prefix",
+            **kwargs,
+        )
+
+    def test_extension_is_stored(self):
+        p = self._provisioner(deployment_name="DEV-03", extension="DEV-03-browsers")
+        assert p.extension == "DEV-03-browsers"
+        assert p.deployment_name == "DEV-03"
+
+    def test_extension_defaults_to_none(self):
+        assert self._provisioner(deployment_name="DEV-03").extension is None
+
+
+class TestCmdProvisionClientsPassesTheExtension:
+    """`clients provision --extension` must hand the extension to the
+    provisioner, or its VMs are named after the deployment."""
+
+    def _args(self, extension):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            name="DEV-03",
+            extension=extension,
+            ssh_key_path="~/.ssh/id_rsa",
+            ssh_user="root",
+            monitoring_name=None,
+            prod=False,
+            forward_buffer_limit=None,
+            heaptrack=None,
+        )
+
+    def _run(self, extension):
+        from saorsa_deploy.cmd import provision_clients as mod
+
+        clients = [
+            {
+                "ip": "157.245.43.75",
+                "role": "download",
+                "region": "lon1",
+                "client_index": 1,
+            }
+        ]
+        with (
+            patch.object(mod, "AntClientProvisioner") as prov,
+            patch.object(mod, "_apply_recorded_client_binaries"),
+            patch.object(mod, "load_client_state", return_value={"clients": clients}),
+            patch.object(mod, "update_client_state"),
+            patch.object(mod, "_resolve_addresses_file_content", return_value=None),
+            patch.object(
+                mod,
+                "load_deployment_state",
+                return_value={
+                    "bootstrap_nodes": [{"ip": "9.9.9.9", "port": 10000}],
+                    "bootstrap_port": 10000,
+                },
+            ),
+            patch.object(mod, "_resolve_ant_binary", return_value=("http://ant", False)),
+            patch.object(
+                mod, "_resolve_influx_config", return_value=("", "", "ant", "testnet-metrics")
+            ),
+            patch.object(mod, "_resolve_elastic_config", return_value=("", "", "")),
+            patch.object(mod, "clear_known_hosts"),
+            patch.object(mod, "record_browser_config"),
+            patch(
+                "saorsa_deploy.cmd.provision_telegraf_metrics.provision_client_telegraf_best_effort"
+            ),
+        ):
+            mod.cmd_provision_clients(self._args(extension))
+        return prov.call_args.kwargs
+
+    def test_an_extensions_provision_passes_its_name(self):
+        assert self._run("DEV-03-browsers")["extension"] == "DEV-03-browsers"
+
+    def test_the_deployments_own_provision_passes_none(self):
+        kwargs = self._run(None)
+        assert kwargs["extension"] is None
+        # The deployment name keeps its own meaning either way.
+        assert kwargs["deployment_name"] == "DEV-03"

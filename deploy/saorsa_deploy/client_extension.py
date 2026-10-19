@@ -86,6 +86,29 @@ def terraform_name(deployment: str, extension: str | None) -> str:
     return f"{deployment}-{extension}"
 
 
+def client_vm_name(
+    deployment: str,
+    extension: str | None,
+    role: str,
+    region: str | None,
+    client_index: int | None,
+) -> str:
+    """The one name a client VM is known by, everywhere.
+
+    It is the Terraform VM name, the OS hostname ``clients provision`` sets, the
+    Influx ``host`` tag every client service and the browser harness emit, the
+    ``browser-traces/<hostname>/`` segment of the trace archive and
+    ``deployment_browser_download_records.client_hostname``. One string, so one
+    function: the registry joins a trace to its row and labels a row with its
+    extension on this value alone, and before 1.4.4 the provisioner built it
+    without the extension segment while every reader built it with one, so an
+    extension's rows could never be joined or labelled at all.
+
+    ``client_index`` restarts at 1 per role, so the role is part of it.
+    """
+    return f"{terraform_name(deployment, extension)}-ant-client-{role}-{region}-{client_index}"
+
+
 def journal_name(deployment: str, extension: str) -> str:
     """Step-journal name for an extension's ``clients up`` run.
 
