@@ -235,27 +235,19 @@ What will bite you:
   with no stack is a validation error. Retention is untouched — a kept ES index
   still expires on `elastic.retention_days` (default 7).
 
-Unattended runs are driven from a Linear issue: `scripts/run-testnet-issues.sh`
-/ `run-testnet-chain.sh` → the `run-testnet-from-issue` skill, and
-`scripts/run-maintenance-issues.sh` → the **`run-prod-maintenance-from-issue`**
-skill for production maintenance. Both sit on `scripts/lib/issue-runs.sh` (one
-loop, one `RUN COMPLETE <issue> <verdict> <field>` parser) and differ in their
-**interrupt policy**: a testnet Ctrl-C kills the `deployments up` it started,
-while a maintenance Ctrl-C **never signals a running `saorsa-deploy prod …`** —
-it waits for that command and stops the session only afterwards (the command is
-a grandchild of the session, so the other order could kill it by proxy), because
-only the live command can run its own rollback and a host left between the
-binary swap and the restart has none. The maintenance skill treats the issue as a
-**goal** (`## Purpose` + `## Validation`) with the Procedure as the intended path:
-when a step fails or cannot run as written it diagnoses, fixes and carries on,
-inside hard **boundaries** — only the named targets, no destruction or spend the
-issue did not sanction, no secrets printed, repo fixes via a branch and PR, and
-`retry: never` steps (the one-host-at-a-time commands with built-in rollback)
-never re-run or signalled. Every fix is reported under `### Fixes applied` and a
-fixed run is `WARN` at best. It starts nothing new at the hard ceiling. The
-testnet skill's ceiling bounds the measurement phases only: once recording has
-started it runs to completion, and no tier a recording reads from (ES,
-monitoring, the S3 client state) is destroyed before that recording exits.
+Unattended runs are driven from a Linear issue by **antops**, which lives in its
+own repository at `~/dev/github.com/jacderida/antops` and **owns the job skills**
+— `run-testnet-from-issue`, `run-prod-maintenance-from-issue` and
+`implement-issue` are under its `.claude/skills/`, and it hands every `claude`
+session the antops checkout as an `--add-dir`, so the skill a run executes is
+antops's and not whatever branch this checkout is on. A testnet run therefore
+needs no checkout here at all; the `saorsa-deploy-change` job type runs *in* this
+checkout because that job's work is the checkout. The skills, the run-spec
+template, the queue, the per-job working directories and the two interrupt
+policies (a testnet Ctrl-C kills the `deployments up` it started; a maintenance
+Ctrl-C **never signals a running `saorsa-deploy prod …`**) are documented in the
+antops README. This repository no longer carries copies of them, nor the bash
+drivers that invoked them before antops had a queue.
 
 Reusable profiles are **package data shipped inside the `saorsa-deploy` wheel**,
 at `deploy/saorsa_deploy/resources/profiles/` (`reference.yaml` = every option,

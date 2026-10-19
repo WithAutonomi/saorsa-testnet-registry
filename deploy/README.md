@@ -3935,89 +3935,23 @@ bootstrap no longer comes up with the single genesis peer it used to get.
 
 ### Running production maintenance from an issue (unattended)
 
-Testnet runs are driven unattended from a Linear issue by the
-`run-testnet-from-issue` skill plus `scripts/run-testnet-issues.sh` (independent
-runs) or `scripts/run-testnet-chain.sh` (a chain, where the first run that is not a
-clean `PASS` stops the rest). Production maintenance has the same shape and a
-deliberately different discipline:
+Both unattended job types — a testnet run and a production maintenance — are driven
+from a Linear issue by **antops**, in its own repository at
+`~/dev/github.com/jacderida/antops`. It owns the skills that execute them
+(`run-testnet-from-issue`, `run-prod-maintenance-from-issue` and `implement-issue`,
+under its `.claude/skills/`) and hands each `claude` session the antops checkout as an
+`--add-dir`, so a run executes antops's copy of the skill rather than whatever branch
+this checkout is on.
 
-```bash
-scripts/run-maintenance-issues.sh V2-1445[,V2-1446,...]
-```
+The issue contract each job type requires, the verdicts it reports, the per-job working
+directories, the resume-on-API-error behaviour and the two interrupt policies — a
+testnet Ctrl-C kills the `deployments up` it started, a maintenance Ctrl-C **waits for**
+a running `saorsa-deploy prod …` and never signals it — are documented in the antops
+README. The bash drivers that invoked these skills before antops had a queue
+(`scripts/run-testnet-issues.sh` and friends) have been removed from this repository.
 
-Each issue is handed to the **`run-prod-maintenance-from-issue`** skill in a headless
-`claude -p` session. Independent mode only — a maintenance that depends on another one
-finishing is a judgement a human makes between the two. Exit `0` only if every run was
-a `PASS`; `130` on Ctrl-C. `CLAUDE_MODEL`, `MAX_RESUMES` and `LOG_DIR` (default
-`~/.autonomi/maintenance-runs`) are the same knobs the testnet scripts take.
-
-`scripts/lib/issue-runs.sh` holds what both share: the loop, the verdict parser, the
-resume-on-API-error behaviour and the interrupt handler, parameterised by skill name,
-session-name prefix and interrupt policy. `scripts/lib/testnet-runs.sh` is a thin
-wrapper over it that selects the testnet skill and the testnet policy.
-
-**The two interrupt policies are the point of the split.** A testnet run's Ctrl-C
-kills any `saorsa-deploy deployments up` it started and names what may be left — the
-fleet is scratch, and a half-built one bills for nothing. A maintenance run's Ctrl-C
-**waits** for any `saorsa-deploy prod …` process to finish and stops the session only
-after it has; **the command is never signalled**. Killing one part way through —
-between the binary swap and the restart, say — is the one way this tooling can itself
-break a production host, and only the live command can run its own rollback. The order
-matters: the command runs as a grandchild of the claude session, via its Bash tool, so
-stopping the session first could kill it by proxy. Ctrl-C therefore blocks until the
-command finishes. The operator who truly must kill it does so by hand, knowingly.
-
-#### The issue contract
-
-The skill refuses an issue, before doing anything, that is missing any of these
-headings, naming the one it could not find: `## Purpose`, `## Target` (tier, hosts,
-inventory, SSH key), `## Procedure` (the exact commands, in order),
-`## Preconditions`, `## Validation` (checks with **expected values**),
-`## Stop conditions`, `## Hard ceiling` (a duration from the start of the Procedure)
-and `## Rollback`.
-
-It also refuses an issue whose Procedure or Validation contains a step that is not a
-`uv run saorsa-deploy …` command, a read-only check (SSH running only
-`stat`/`cat`/`ls`/`find`/`grep`/`systemctl is-active`/`--version`, `git` reads, an
-HTTP GET) or a Linear update. **A raw mutating SSH or shell step is refused.** If a
-maintenance needs something no command can do, the answer is a change to
-`saorsa-deploy`, with tests, not a skill that types shell at production.
-
-Three rules it runs under, all for the same reason:
-
-* **A mutating command is never re-run after a failure.** A non-zero exit is a stop
-  condition: these commands are serial and gated, so the host they stopped on is the
-  only one in an unknown state and the hosts after it are untouched. The run is
-  abandoned, the host's final state is reported — in particular whether the command
-  printed `RESTORED` or `RESTORE INCOMPLETE` — and the next step is a human's, most
-  likely a second maintenance issue.
-* **At the hard ceiling no new command is started**, and one already running is waited
-  for however long it takes.
-* **A command whose log exists was started and is never started again**, which is what
-  makes a resumed session (the driver resumes one that died on an API error) safe. The
-  Procedure's commands are written to `commands.sh` in the run directory before any of
-  them runs, and each is teed to its own `<n>-<verb>.log` in the same directory with its
-  UTC start, end and exit code. That directory is **`$ANTOPS_RUN_DIR`** when antops
-  started the session and `~/.autonomi/maintenance-runs/<issue>` when the script did;
-  the run says which one it got as it creates it.
-
-#### Verdicts
-
-| verdict | when |
-| -- | -- |
-| `PASS` | the whole Procedure ran, every Validation check matched, no warning |
-| `WARN` | no check failed, but there is a warning — including "the run did nothing because a precondition made it unnecessary" |
-| `FAIL` | at least one Validation check did not match |
-| `ABANDONED` | a precondition failed, a stop condition fired, or the ceiling was reached before the Procedure completed |
-
-The results comment leads with the verdict and then the warnings — `RESTORE INCOMPLETE`
-is always the first warning — followed by the Validation table, a per-host before/after
-table from the read-only status the issue names (`prod bootstrap status --json` for the
-bootstrap tier), every command with its times and exit code, and the deviations. The
-issue **always** ends `In Review`, never `Done` or `Canceled`, whatever the verdict.
-
-The final line is `RUN COMPLETE <issue> <verdict> -`; the trailing dash keeps the field
-count identical to the testnet line, so one parser serves both.
+What remains this repository's concern is the commands those runs call, documented in
+the rest of this file.
 
 ### Running continuous downloaders against production (`prod continuous-downloader`)
 
