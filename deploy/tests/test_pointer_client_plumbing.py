@@ -12,7 +12,6 @@ then does nothing. Each test below is one of those hops.
 """
 
 import argparse
-from pathlib import Path
 
 import pytest
 import yaml
@@ -45,8 +44,6 @@ from saorsa_deploy.config.models import (
 )
 from saorsa_deploy.orchestrator import build_deploy_steps
 from saorsa_deploy.provisioning.client_clean import ALL_CLIENT_UNITS
-
-RESOURCES = Path(__file__).parent.parent / "saorsa_deploy" / "resources"
 
 _MANIFEST = {
     "name": "PTR-TEST",
@@ -267,13 +264,10 @@ def test_the_destroy_time_service_stop_uses_each_vm_s_own_unit():
     assert "unit_for_role" in source
 
 
-def test_every_client_terraform_module_accepts_the_role():
-    """The `role` variable is validated in each module, so a role missing from
-    one provider's list fails the apply for that provider alone — which reads as
-    a provider outage rather than a missing branch."""
-    for provider in ("digitalocean", "hetzner", "ovh", "vultr"):
-        variables = (RESOURCES / f"{provider}-client" / "variables.tf").read_text()
-        assert f'"{ROLE_POINTER}"' in variables, provider
+# The Terraform hop of this path is pinned in `test_client_role_terraform.py`,
+# which asserts set equality between `ALL_CLIENT_ROLES` and every module's
+# allow-list. This file used to assert `ROLE_POINTER` alone, which passed while
+# the browser role was missing from all four modules.
 
 
 def test_the_forward_log_files_cover_the_pointer_role():

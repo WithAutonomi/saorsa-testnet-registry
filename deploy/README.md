@@ -904,8 +904,9 @@ and that path is byte-identical to before.
   exits 2 naming the key otherwise. `plan` and `config validate` do not need it.
 - At least one role list must be non-empty.
 - `name:` must match `^[A-Za-z0-9-]+$` and must not begin with a client role
-  (`upload`, `download`, `wasm-upload`, `wasm-download`, `pointer`): the
-  tfstate key is `<prefix>-<tf name>-<role>-<region>-<index>.tfstate`, so
+  (`upload`, `download`, `wasm-upload`, `wasm-download`, `pointer`,
+  `browser-download`): the tfstate key is
+  `<prefix>-<tf name>-<role>-<region>-<index>.tfstate`, so
   `DEV-01-upload-extra-download-lon1-1` would parse as role `upload` of DEV-01
   and the deployment's own orphan-recovery scan would adopt the extension's VM.
 - **Binaries are not declared here.** The extension reuses the client binary the
@@ -1372,6 +1373,12 @@ provider:region[:vm_size][:instances=N][:round_period_secs=N][:download_timeout_
 repeatable. `clients provision` / `start` / `stop` / `destroy` / `clean` handle
 the role like any other. Declarable in a `kind: clients` extension manifest too,
 which is the normal way to use it — see below.
+
+The role is in the `role` allow-list of all four client Terraform modules, and a
+unit test pins every role in `ALL_CLIENT_ROLES` to each module's list by set
+equality — so a role added in Python without its Terraform value now fails CI
+rather than a deployment, which is how this role shipped unusable in 1.4.0 and
+1.4.1.
 
 | Key | Default | Notes |
 |-----|---------|-------|
