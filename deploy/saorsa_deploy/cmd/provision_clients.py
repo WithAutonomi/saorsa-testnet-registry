@@ -792,6 +792,9 @@ def cmd_provision_clients(args):
         addresses_file_content=addresses_file_content,
         heaptrack_targets=heaptrack_targets,
         deployment_name=args.name,
+        # Names these VMs after their Terraform module, extension segment and
+        # all, which is the string the registry joins their rows on.
+        extension=extension,
         elasticsearch_url=es_url,
         elasticsearch_username=es_username,
         elasticsearch_password=es_password,

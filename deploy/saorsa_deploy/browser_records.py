@@ -29,7 +29,7 @@ is idempotent and converges whichever tier was provisioned last.
 
 from __future__ import annotations
 
-from saorsa_deploy.client_extension import client_extension_tiers, terraform_name
+from saorsa_deploy.client_extension import client_extension_tiers, client_vm_name
 from saorsa_deploy.client_roles import (
     BROWSER_DEFAULT_INSTANCES,
     BROWSER_DEFAULT_ROUND_PERIOD_SECS,
@@ -48,15 +48,18 @@ BROWSER_HOT_FILES_KEY = "browser_hot_files"
 
 
 def client_hostname(deployment: str, extension: str | None, client: dict) -> str:
-    """The hostname a client VM reports under, as its Terraform module names it.
+    """The hostname a client VM reports under, from its client-state entry.
 
-    The same construction `client_transport.transport_map_from_client_state`
-    uses; `client_index` restarts at 1 per role, so the role is part of it.
+    :func:`client_extension.client_vm_name` is the one definition of that name —
+    the same string `clients provision` sets as the OS hostname and
+    `client_transport.transport_map_from_client_state` keys on.
     """
-    role = client.get("role", ROLE_BROWSER_DOWNLOAD)
-    return (
-        f"{terraform_name(deployment, extension)}-ant-client-"
-        f"{role}-{client.get('region')}-{client.get('client_index')}"
+    return client_vm_name(
+        deployment,
+        extension,
+        client.get("role", ROLE_BROWSER_DOWNLOAD),
+        client.get("region"),
+        client.get("client_index"),
     )
 
 

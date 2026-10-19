@@ -940,6 +940,15 @@ and that path is byte-identical to before.
   substitution (the Terraform `name` variable becomes `<deployment>-<name>`)
   namespaces the hostname, the Terraform workspace directory and the tfstate key
   together, because all three are built from it.
+- **`clients provision` sets each VM's OS hostname to that same name, on every
+  provider**, so the Influx `host` tag every client service and the browser
+  harness emit, the `browser-traces/<hostname>/` segment of the trace archive and
+  `client_hostname` in `deployment_browser_download_records` are one string, and a
+  browser row joins to its trace and carries its `extension`. Before **1.4.4** the
+  provisioner set the deployment's own `<deployment>-ant-client-<role>-<region>-<n>`
+  form on an extension's VMs while every reader built the `<deployment>-<name>-…`
+  form, which is why an extension's rows recorded by any release before 1.4.4
+  (1.0.0–1.4.3) carry no `extension` and no `trace_s3_key`.
 - S3 state: `saorsa-deploy/client-extensions/<deployment>/<name>.json`; step
   journal `saorsa-deploy/journals/<deployment>--<name>.json` (a double hyphen, so
   it cannot be mistaken for a deployment called `<deployment>-<name>`). The
