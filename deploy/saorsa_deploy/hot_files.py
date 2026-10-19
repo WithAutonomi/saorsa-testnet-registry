@@ -17,6 +17,12 @@ Candidates come from the deployment's own native address pool (the
 and ordered by ``(key name, line number)`` — the lines are appended in upload
 order, so that ordering is upload order, and the first N are the oldest files of
 that size.
+
+A pool line is ``<address> <bytes> [<sha256>]``. Two producers write into the
+one shared pool and they write different numbers of fields: ``uploader.sh``
+publishes all three (the hash is what ``downloader.sh`` checks the bytes it got
+back against), the WASM uploaders publish the first two. So every reader of the
+pool — this one included — takes the first two fields and ignores the rest.
 """
 
 from __future__ import annotations
@@ -94,7 +100,15 @@ def _s3():
 
 
 def parse_pool_line(line: str) -> tuple[str, int] | None:
-    """``<address> <bytes>`` → ``(address, bytes)``, or None.
+    """``<address> <bytes> [<sha256>]`` → ``(address, bytes)``, or None.
+
+    Two or more fields with a numeric second field, and **anything after the
+    second is ignored** rather than counted: the native ``uploader.sh`` writes
+    ``<address> <bytes> <sha256>`` and the WASM uploaders write
+    ``<address> <bytes>`` into the same pool, so a field count is not a property
+    of a pool line. Requiring exactly two discarded every native line published
+    since 2026-09-29 — the whole pool of a run — and reported it as a pool with
+    no files of the requested size (V2-1629).
 
     A bare address line (no size) returns None rather than a zero size: the
     candidate set is "files of exactly this size", and an unknown size is not a
@@ -102,9 +116,9 @@ def parse_pool_line(line: str) -> tuple[str, int] | None:
     the same outcome by accident rather than by rule.
     """
     fields = line.strip().split()
-    if len(fields) != 2:
+    if len(fields) < 2:
         return None
-    address, size = fields
+    address, size = fields[0], fields[1]
     if not size.isdigit():
         return None
     return address.lower(), int(size)

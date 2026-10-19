@@ -20,6 +20,17 @@ from saorsa_deploy.cmd.hot_files import cmd_print_hot_files, cmd_select_hot_file
 
 FIFTY_MIB = 50 * 1024 * 1024
 
+#: The first two lines of `addresses/DEV-02/upload-lon1-1.txt` as they stood on
+#: registry run 681 (2026-10-19), verbatim. `uploader.sh` has published
+#: `<address> <bytes> <sha256>` since 2026-09-29, and a parser that counted
+#: fields found nothing in a pool made entirely of 50 MiB files (V2-1629).
+RUN_681_LINES = (
+    "dca2d2ab6cc24da56f69993719b6fc81882631f85b733a64ae6d2fac85b07711 52428800"
+    " 0eb8f9ec44481eed8ed640fa00df2e06fd15d6be0b8d980f2f59548c9a6f78f4",
+    "13e192e100d8dbc38b2f889737d8a1751931125b9187d5e50b50d6283982eed3 52428800"
+    " ff0926b4891680fabc2a85abb9006dc5533da3daed3228f14fc3d1a5273ec0b2",
+)
+
 
 def _addr(n: int) -> str:
     return f"{n:064x}"
@@ -97,6 +108,36 @@ class TestCandidateSelection:
             ("upload-sgp-1.txt", 1),
         ]
 
+    def test_the_real_pool_of_run_681_yields_every_line(self):
+        # The exact object `collect_candidates` read on 2026-10-19 and found
+        # nothing in: three-field native lines, all of them 50 MiB. This is the
+        # regression test for the run V2-1629 abandoned.
+        s3 = _pool(**{"upload-lon1-1.txt": "".join(f"{line}\n" for line in RUN_681_LINES)})
+        found = hot_files.collect_candidates("DEV-01", FIFTY_MIB, s3=s3)
+        assert [(c.address, c.bytes, c.line) for c in found] == [
+            (RUN_681_LINES[0].split()[0], FIFTY_MIB, 1),
+            (RUN_681_LINES[1].split()[0], FIFTY_MIB, 2),
+        ]
+
+    def test_native_three_field_and_wasm_two_field_lines_both_count(self):
+        # One shared pool with two producers writing different numbers of
+        # fields, which is what `uploader.sh`'s own comment describes. The
+        # candidate set is per KEY, so the two-field lines here are a native
+        # uploader's pre-2026-09-29 lines in the same object.
+        s3 = _pool(
+            **{
+                "upload-lon1-1.txt": (
+                    f"{RUN_681_LINES[0]}\n{_addr(2)} {FIFTY_MIB}\n{RUN_681_LINES[1]}\n"
+                )
+            }
+        )
+        found = hot_files.collect_candidates("DEV-01", FIFTY_MIB, s3=s3)
+        assert [c.address for c in found] == [
+            RUN_681_LINES[0].split()[0],
+            _addr(2),
+            RUN_681_LINES[1].split()[0],
+        ]
+
     def test_a_bare_line_is_never_a_candidate(self):
         # The candidate set is "files of exactly this size"; an unknown size is
         # not a match for any size. Treating it as 0 would never match either,
@@ -160,9 +201,25 @@ class TestPoolLineParsing:
     def test_an_address_and_a_size(self):
         assert hot_files.parse_pool_line(f"{_addr(1)} 1024") == (_addr(1), 1024)
 
+    def test_the_native_uploaders_three_field_line(self):
+        # `<address> <bytes> <sha256>`, verbatim from run 681. The hash is for
+        # `downloader.sh` to verify the bytes it got back; it is nothing to the
+        # hot-file selector, which reads the first two fields and stops.
+        assert hot_files.parse_pool_line(RUN_681_LINES[0]) == (
+            "dca2d2ab6cc24da56f69993719b6fc81882631f85b733a64ae6d2fac85b07711",
+            52428800,
+        )
+
+    def test_trailing_fields_beyond_the_hash_are_ignored_too(self):
+        # A field count is not the rule: whatever a future producer appends,
+        # the first two fields are the address and the size.
+        assert hot_files.parse_pool_line(f"{_addr(1)} 1024 deadbeef extra") == (_addr(1), 1024)
+
     def test_case_is_normalised(self):
         assert hot_files.parse_pool_line(f"{_addr(1).upper()} 1024")[0] == _addr(1)
 
+    # `"a b c"` has three fields, like a native line, but its second field is
+    # not a number — so it is None for the right reason, not for its length.
     @pytest.mark.parametrize("line", ["", "   ", _addr(1), f"{_addr(1)} notanumber", "a b c"])
     def test_anything_else_is_not_a_candidate_line(self, line):
         assert hot_files.parse_pool_line(line) is None
