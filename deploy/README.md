@@ -1176,10 +1176,17 @@ uploader in the same region would both own `upload-<region>-1.txt`, and since
 each flush is a whole-object PUT they would repeatedly erase each other's
 address lists.
 
-**Each published line is `<address> <bytes>`.** ant-core refuses a browser-path
-file larger than 1,000,000,000 bytes, but only after resolving its data map, so
-a WASM downloader that drew the native 1000 MiB uploads from the shared pool
-spent a fetch on every one to be told `invalid public file size 1048576000`.
+**Each published line is `<address> <bytes>` from the WASM uploaders and
+`<address> <bytes> <sha256>` from the native `uploader.sh`** (see "Content
+verification" below for the hash). Every reader of the pool parses the first two
+fields and **ignores whatever follows**, so the two producers share one pool
+without either having to know how many fields the other writes — a reader that
+counted fields discarded every native line instead (V2-1629).
+
+ant-core refuses a browser-path file larger than 1,000,000,000 bytes, but only
+after resolving its data map, so a WASM downloader that drew the native 1000 MiB
+uploads from the shared pool spent a fetch on every one to be told
+`invalid public file size 1048576000`.
 Uploaders of both tiers now record the uploaded size beside the address, and
 each downloader parses the first field. A downloader with `MAX_DOWNLOAD_BYTES`
 set (`clients provision` sets it to the browser cap for the WASM roles; `0` or
@@ -1439,8 +1446,10 @@ Candidates are every line in the deployment's own **native** `upload-*.txt` pool
 keys whose declared size is **exactly** `size-mb × 1048576` (binary, matching an
 uploader's `file_size_mb`), ordered by `(key name, line number)` — lines are
 appended as each upload completes, so that is upload order and the first N are
-the oldest files of that size. A bare line with no size is never a candidate:
-unknown is not a match for any size.
+the oldest files of that size. The selector reads `<address> <bytes>` from each
+line and ignores the trailing `sha256` the native uploader publishes after them.
+A bare line with no size is never a candidate: unknown is not a match for any
+size.
 
 The result is written once, to
 `s3://saorsa-testnet-addresses/saorsa-deploy/addresses/<deployment>/browser-hot-files.json`:
