@@ -448,7 +448,10 @@ message reference is recorded so a later `deployments record-results
 the `ANT_DEPLOY_SLACK_WEBHOOK_URL` incoming webhook (no threading). This step is
 **best-effort**: if the post fails (no token/webhook, Slack rejects it, network
 error), the run logs a warning and still exits 0 — the deployment itself is
-already complete by then. `down` is unaffected.
+already complete by then. `down` is unaffected. On a `kind: clients` manifest it
+instead appends `clients slack-post --event up` to `clients up --config` and
+`--event down` to `clients down --config`, threaded under the deployment's post
+when its reference is recorded.
 
 ## Usage
 
@@ -868,6 +871,7 @@ name: extra-downloaders          # the extension's name, ^[A-Za-z0-9-]+$
 deployment: DEV-01               # the testnet whose state it reads
 purpose: "V2-NNNN: one line"
 ssh_key_path: ~/.ssh/ant_deploy
+slack_post: true                 # optional: post the extension's up/down into the deployment's Slack thread
 clients:                         # same per-entry grammar as a testnet manifest
   uploaders: []
   downloaders:
@@ -891,6 +895,7 @@ A committed example is at `deploy/saorsa_deploy/resources/profiles/clients-exten
 | `clients up --config <f>` | `infra` → `provision` → `start`. Resumable, with `--resume` semantics identical to `deployments up` |
 | `clients down --config <f>` | stop services → drain any uploader wallets → destroy the extension's VMs → delete its state and journal. Also takes `--name <deployment> --extension <name>` when the manifest is not to hand — but **not both forms at once**: with `--config` the manifest already names the deployment and the extension, and `--name` there would override the *extension's* name (the shared manifest loader's `--name`), so it is refused. Without `--config`, `--name` is the deployment |
 | `clients ls --name <deployment>` | list the deployment's extensions with VM counts and state |
+| `clients slack-post --name <d> --extension <e> --event up\|down [--vms "…"] [--channel C] [--dry-run]` | post the extension's arrival (`up`: VM count, regions, the rendered tiers and the hot-file selection) or its removal (`down`: the `--vms` summary verbatim, since the state is already deleted) as a threaded reply under the deployment's own `slack-post` message, falling back to a top-level Web API post or the webhook. Appended to `clients up`/`down --config` by `slack_post: true`. **Exit 0 on every failure** (best-effort tail); `--dry-run` prints the payload. `--vms` is required with `--event down` and refused with `--event up` |
 
 The five primitives also take `--extension <name>` directly, which is what the
 steps above are: `clients infra|provision|start|stop|destroy --name DEV-01
@@ -920,10 +925,12 @@ and that path is byte-identical to before.
   `_apply_recorded_client_binaries` (both in `cmd/provision_clients.py`), or the
   extension silently provisions without it. `ant_wasm.features` (V2-1617) is the
   first such option.
-- `extends:` is not supported for this kind — there is nothing to inherit. Nor
-  is `slack_post:`: `deployments slack-post` reports on a *deployment* and an
-  extension has no registry row of its own, so the step would look up a name
-  that does not exist.
+- `extends:` is not supported for this kind — there is nothing to inherit.
+  `slack_post: true` appends a best-effort `clients slack-post … --event up`
+  step to `clients up --config` and a `… --event down` step to `clients down
+  --config`; both post as threaded replies under the deployment's own
+  `slack-post` message when its reference is recorded, else as top-level
+  messages (Web API) or via the webhook.
 - **There is no uploader/downloader pairing rule.** A deployment manifest refuses
   downloaders without uploaders, because a tier consuming addresses nobody
   publishes measures nothing. An extension reads the deployment's *existing*

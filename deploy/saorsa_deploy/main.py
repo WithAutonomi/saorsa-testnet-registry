@@ -1283,6 +1283,60 @@ def main(argv=None):
         help="SSH user on the client VMs (default: root).",
     )
 
+    # clients slack-post
+    clients_slack_post_parser = clients_subparsers.add_parser(
+        "slack-post",
+        help=(
+            "Post a client extension's arrival or removal into the "
+            "deployment's Slack thread. Appended to `clients up`/`down` by a "
+            "manifest carrying `slack_post: true`; exits 0 on every failure."
+        ),
+    )
+    clients_slack_post_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name — the registry row whose Slack post is replied to.",
+    )
+    clients_slack_post_parser.add_argument(
+        "--extension",
+        type=str,
+        required=True,
+        help="Client extension name.",
+    )
+    clients_slack_post_parser.add_argument(
+        "--event",
+        type=str,
+        required=True,
+        choices=["up", "down"],
+        help="Which post: the cohort is up, or the cohort is gone.",
+    )
+    clients_slack_post_parser.add_argument(
+        "--vms",
+        type=str,
+        default=None,
+        help=(
+            "VM summary to render, required with --event down and refused with "
+            "--event up: `clients down` deletes the extension's state before "
+            "this post runs, so what was there has to be passed in."
+        ),
+    )
+    clients_slack_post_parser.add_argument(
+        "--channel",
+        type=str,
+        default=None,
+        help=(
+            "Slack channel ID or name for the Web API path, used only when the "
+            "deployment has no recorded message to reply to (default: "
+            "ANT_DEPLOY_SLACK_CHANNEL)."
+        ),
+    )
+    clients_slack_post_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the payload instead of posting it.",
+    )
+
     # =========================================================================
     # === deployments group ===
     # === extend, generate-inventory, ls, print-downloads, print-uploads, ===
@@ -7962,6 +8016,12 @@ def main(argv=None):
             )
 
             cmd_fetch_browser_traces(args)
+        elif args.clients_subcommand == "slack-post":
+            from saorsa_deploy.cmd.clients_slack_post import (
+                cmd_clients_slack_post,
+            )
+
+            cmd_clients_slack_post(args)
     elif args.command == "deployments":
         if args.deployments_subcommand == "config":
             if args.config_subcommand == "show":

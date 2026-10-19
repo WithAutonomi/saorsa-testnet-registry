@@ -76,6 +76,26 @@ def build_clients_deploy_steps(manifest: Manifest) -> list[Step]:
             f"Start client services for extension '{extension}'",
         ),
     ]
+    if manifest.slack_post:
+        # The extension's own post, not `deployments slack-post`: that one takes
+        # a DEPLOYMENT name and reads its registry row, which an extension does
+        # not have. This posts into the deployment's thread instead.
+        steps.append(
+            Step(
+                [
+                    "clients",
+                    "slack-post",
+                    "--name",
+                    deployment,
+                    "--extension",
+                    extension,
+                    "--event",
+                    "up",
+                ],
+                f"Post extension '{extension}' up to Slack",
+                best_effort=True,
+            )
+        )
     return steps
 
 
@@ -93,7 +113,7 @@ def build_clients_destroy_steps(
     deployment = manifest.deployment
     extension = manifest.name
     ssh_key = manifest.ssh_key_path
-    return [
+    steps = [
         Step(
             [
                 "clients",
@@ -115,6 +135,29 @@ def build_clients_destroy_steps(
             f"Destroy client VMs for extension '{extension}'",
         ),
     ]
+    if manifest.slack_post:
+        # The VM summary travels as an argument because the destroy step above
+        # has already deleted the extension's state: by the time this runs
+        # there is nothing left to read what the cohort was off.
+        steps.append(
+            Step(
+                [
+                    "clients",
+                    "slack-post",
+                    "--name",
+                    deployment,
+                    "--extension",
+                    extension,
+                    "--event",
+                    "down",
+                    "--vms",
+                    vm_summary(manifest),
+                ],
+                f"Post extension '{extension}' teardown to Slack",
+                best_effort=True,
+            )
+        )
+    return steps
 
 
 #: Role key on each manifest list -> the client ROLE the CLI and Terraform use.
@@ -176,3 +219,28 @@ def planned_client_vms(
                     }
                 )
     return vms
+
+
+def vm_summary(manifest: Manifest) -> str:
+    """One line naming what the extension's VMs were: ``"<N> VMs — <role>: …"``.
+
+    Pure, and rendered at plan time on purpose: it goes into the teardown's
+    ``clients slack-post --vms`` argument, because the destroy step deletes the
+    extension's state before that post runs. Roles appear in
+    :data:`_ROLE_FOR_LIST` order and regions in first-seen order, so the same
+    manifest always produces the same string — the argv is what the step
+    journal compares.
+    """
+    vms = planned_client_vms(manifest)
+    clauses: list[str] = []
+    for role in _ROLE_FOR_LIST.values():
+        regions: dict[str, int] = {}
+        for vm in vms:
+            if vm["role"] != role:
+                continue
+            regions[vm["region"]] = regions.get(vm["region"], 0) + 1
+        if not regions:
+            continue
+        counted = ", ".join(f"{region} ×{count}" for region, count in regions.items())
+        clauses.append(f"{role}: {counted}")
+    return f"{len(vms)} VMs — {'; '.join(clauses)}"

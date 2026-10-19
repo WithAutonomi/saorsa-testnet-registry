@@ -244,6 +244,10 @@ def _destroy_steps_from_state(
     SSH key comes from the extension's own state, recorded at provision time,
     for the same reason ``clients destroy`` reads it from there: the key the VMs
     were provisioned with is a fact about them, not something to re-type.
+
+    No ``clients slack-post`` step either: ``slack_post`` is a manifest key, and
+    this path exists precisely for when the manifest is not to hand. Post from
+    the ``--config`` form, or by hand.
     """
     try:
         state = load_client_state(deployment, extension)

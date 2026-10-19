@@ -51,7 +51,13 @@ def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list
     # to every kind, so it lives here at the dispatch chokepoint rather than in
     # each per-kind builder. best_effort=True: the deploy is already complete by
     # the time this runs, so a Slack failure must not fail the run.
-    if manifest.slack_post:
+    #
+    # Except `clients`: `deployments slack-post` takes a DEPLOYMENT name and
+    # reads its registry row, and an extension has no row of its own, so this
+    # tail would exit 1 on "No deployment named <extension>". That kind carries
+    # its own `clients slack-post` steps (on both deploy AND destroy), appended
+    # by `orchestrator.clients`.
+    if manifest.slack_post and kind != "clients":
         steps.append(
             Step(
                 ["deployments", "slack-post", "--name", manifest.name],
