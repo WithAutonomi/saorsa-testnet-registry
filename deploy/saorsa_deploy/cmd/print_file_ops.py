@@ -25,6 +25,7 @@ from statistics import median
 from rich.console import Console
 from rich.table import Table
 
+from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_deploy.client_extension import client_extension_tiers, terraform_name
 from saorsa_deploy.client_transport import (
     deployment_scoped_transport,
@@ -52,7 +53,9 @@ def cmd_print_downloads(args):
 
 
 def _dispatch(args, op_type: str) -> None:
-    console = Console()
+    # `console_for` is quiet when the JSON is going to stdout, so a table or a
+    # preamble cannot land in the caller's `jq` input.
+    console = console_for(getattr(args, "json_out", None))
     kind = _resolve_kind(args.name, console)
 
     if kind == "prod-local-uploads":
@@ -113,6 +116,63 @@ def _dispatch(args, op_type: str) -> None:
     # Testnet (explicit "testnet" or unrecognised/empty kind — fall through
     # to the historical behaviour).
     _run_file_ops(args, op_type, console)
+
+
+def _json_point(point: dict) -> dict:
+    """One operation point as JSON-safe values.
+
+    Only `_time` needs converting -- the rest of the pivoted record is ints,
+    strings and Nones already. Unknown keys are passed through rather than
+    allowlisted, so a field a client starts emitting reaches the consumer
+    without a change here.
+    """
+    out = {}
+    for key, value in point.items():
+        out[key] = value.isoformat() if isinstance(value, datetime) else value
+    return out
+
+
+def _emit_ops_json(
+    args,
+    console,
+    *,
+    deployment: str,
+    kind: str,
+    op_type: str,
+    source: str,
+    points: list[dict],
+    window=None,
+) -> None:
+    """Write the per-operation records as JSON when `--json-out` was given.
+
+    The consumer is a reporting tool that would otherwise re-derive cycles and
+    run times by parsing rich tables -- box-drawing characters, truncated
+    hostnames and dates wrapped onto a second line. The records go out
+    unaggregated: a cycle boundary, a run window and a success rate are all
+    derivable from them, and which of those a caller wants is not this
+    command's business.
+
+    An empty list is still emitted. "The query ran and returned nothing" and
+    "the file is missing because the command never got that far" are different
+    states, and a consumer can only tell them apart if the empty case writes.
+    """
+    json_out = getattr(args, "json_out", None)
+    if not json_out:
+        return
+    emit_json(
+        {
+            "deployment": deployment,
+            "kind": kind,
+            "op_type": op_type,
+            "source": source,
+            "window": window,
+            "queried_at": datetime.now(timezone.utc).isoformat(),
+            "count": len(points),
+            "ops": [_json_point(p) for p in points],
+        },
+        json_out,
+        console,
+    )
 
 
 def _resolve_kind(name: str, console: Console) -> str:
@@ -219,6 +279,16 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         sys.exit(1)
 
     filtered = [p for p in points if p.get("_measurement") == op_type]
+    _emit_ops_json(
+        args,
+        console,
+        deployment=args.name,
+        kind=_resolve_kind(args.name, console),
+        op_type=op_type,
+        source="influx",
+        points=filtered,
+        window=args.window,
+    )
     if not filtered:
         console.print(
             f"[yellow]No {op_type} operations recorded yet for '{args.name}' "
@@ -675,6 +745,16 @@ def _run_browser_rounds(args, console: Console) -> None:
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
         sys.exit(1)
 
+    _emit_ops_json(
+        args,
+        console,
+        deployment=args.name,
+        kind="browser",
+        op_type="download",
+        source="influx:browser_download",
+        points=points,
+        window=args.window,
+    )
     if not points:
         console.print(
             f"[yellow]No browser-download rounds recorded yet for "
@@ -794,6 +874,15 @@ def _run_prod_uploads(args, console: Console) -> None:
         org=influx_org,
         bucket=influx_bucket,
         wasm_bucket=INFLUXDB_WASM_BUCKET,
+    )
+    _emit_ops_json(
+        args,
+        console,
+        deployment=args.name,
+        kind=_resolve_kind(args.name, console),
+        op_type="upload",
+        source="influx:prod_upload",
+        points=points,
     )
     if not points:
         console.print(f"[yellow]No prod_upload records yet for '{args.name}'.[/yellow]")

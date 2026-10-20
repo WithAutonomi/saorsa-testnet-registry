@@ -26,7 +26,7 @@ itself useful information.
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from rich.console import Console
@@ -47,6 +47,7 @@ from saorsa_db.models import (
     ProdUploadStatus,
 )
 
+from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_deploy.derived_metrics import format_metric_value
 from saorsa_deploy.registry import get_repository
 
@@ -100,7 +101,7 @@ _PROD_DOWNLOAD_STATUS_TEXT = {
 
 
 def cmd_print_recorded_results(args) -> None:
-    console = Console()
+    console = console_for(getattr(args, "json_out", None))
 
     repo = get_repository()
     if repo is None:
@@ -170,6 +171,68 @@ def cmd_print_recorded_results(args) -> None:
             deployment.name,
             console,
         )
+
+    _emit_recorded_json(args, console, repo, deployment, kind)
+
+
+def _rows_as_dicts(rows) -> list[dict]:
+    """ORM rows as JSON-safe dicts, via each model's own `to_dict`."""
+    out = []
+    for row in rows or []:
+        if hasattr(row, "to_dict"):
+            out.append(row.to_dict())
+    return out
+
+
+def _emit_recorded_json(args, console, repo, deployment, kind: str) -> None:
+    """Write the deployment's persisted per-operation rows as JSON.
+
+    The Postgres view, not Influx: for the browser-path uploader these rows
+    *are* the record, because a WASM client's results are written straight here
+    and never reach the `prod_upload` measurement.
+
+    Which lists are populated follows the deployment's kind, exactly as the
+    printed sections above do. A kind with no per-op rows emits empty lists
+    rather than nothing, so a consumer can tell "ran, no rows" from "never
+    ran".
+    """
+    json_out = getattr(args, "json_out", None)
+    if not json_out:
+        return
+
+    payload = {
+        "deployment": deployment.name,
+        "deployment_id": deployment.id,
+        "kind": kind,
+        "source": "postgres",
+        "queried_at": datetime.now(timezone.utc).isoformat(),
+        "uploads": [],
+        "downloads": [],
+        "verifications": [],
+    }
+    if kind == "prod-continuous-uploader":
+        payload["uploads"] = _rows_as_dicts(
+            repo.list_prod_upload_results_for_deployment(deployment.id)
+        )
+        payload["verifications"] = _rows_as_dicts(
+            repo.list_prod_upload_verifications_for_deployment(deployment.id)
+        )
+    elif kind in _PROD_UPLOAD_KINDS:
+        payload["uploads"] = _rows_as_dicts(
+            repo.list_prod_upload_results_for_deployment(deployment.id)
+        )
+    elif kind in _PROD_DOWNLOAD_KINDS:
+        payload["downloads"] = _rows_as_dicts(
+            repo.list_prod_download_results_for_deployment(deployment.id)
+        )
+    else:
+        payload["uploads"] = _rows_as_dicts(repo.list_upload_records_for_deployment(deployment.id))
+        payload["downloads"] = _rows_as_dicts(
+            repo.list_download_records_for_deployment(deployment.id)
+        )
+
+    payload["counts"] = {k: len(payload[k]) for k in ("uploads", "downloads", "verifications")}
+    emit_json(payload, json_out, console)
 
 
 def _resolve_kind(deploy_args) -> str:

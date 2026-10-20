@@ -171,6 +171,18 @@ def main(argv=None):
             help="InfluxDB organization (default: from monitoring state, else 'ant')",
         )
         p.add_argument(
+            "--json-out",
+            default=None,
+            help=(
+                "Write the per-operation records as JSON here, beside the "
+                "human tables. `-` or `/dev/stdout` writes it to stdout "
+                "instead, as the command's only output, so it can be piped "
+                "into `jq`. The records go out unaggregated: cycle "
+                "boundaries, run windows and success rates are all derivable "
+                "from them."
+            ),
+        )
+        p.add_argument(
             "--influx-bucket",
             type=str,
             default=None,
@@ -1821,6 +1833,15 @@ def main(argv=None):
             "Deployment id from the registry. Names are not unique across "
             "destroyed/recreated deployments — use the id from "
             "`deployments ls` to point at a specific historical row."
+        ),
+    )
+    deployments_print_recorded_parser.add_argument(
+        "--json-out",
+        default=None,
+        help=(
+            "Write the result as JSON here, beside the human output. `-` or "
+            "`/dev/stdout` writes it to stdout instead, as the command's only "
+            "output, so it can be piped into `jq`."
         ),
     )
     deployments_print_recorded_parser.add_argument(
@@ -6866,6 +6887,15 @@ def main(argv=None):
         help="Path to the production inventory JSON (schema_version 3, 4 or 5).",
     )
     prod_rt_parser.add_argument(
+        "--json-out",
+        default=None,
+        help=(
+            "Write the result as JSON here, beside the human output. `-` or "
+            "`/dev/stdout` writes it to stdout instead, as the command's only "
+            "output, so it can be piped into `jq`."
+        ),
+    )
+    prod_rt_parser.add_argument(
         "--provider",
         type=str,
         default=None,
@@ -7094,6 +7124,15 @@ def main(argv=None):
         type=str,
         required=True,
         help="Path to the production inventory JSON (its testnet_id keys the surveys).",
+    )
+    prod_services_survey_report_parser.add_argument(
+        "--json-out",
+        default=None,
+        help=(
+            "Write the result as JSON here, beside the human output. `-` or "
+            "`/dev/stdout` writes it to stdout instead, as the command's only "
+            "output, so it can be piped into `jq`."
+        ),
     )
 
     # --- prod files ---

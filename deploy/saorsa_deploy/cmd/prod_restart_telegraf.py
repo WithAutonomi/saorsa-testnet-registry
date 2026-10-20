@@ -23,11 +23,13 @@ import json
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
+from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_deploy.inventory import NodeVm, load_node_inventory
 from saorsa_deploy.provisioning.telegraf_restart import (
     LOG_FORWARDER_SERVICE,
@@ -228,10 +230,57 @@ def _print_probe_table(
     console.print(table)
 
 
+def _emit_probe_json(args, console, inventory_name, results, min_held, total_held) -> None:
+    """Write the per-host probe as JSON when `--json-out` was given.
+
+    The fleet-wide held total is the figure the disk survey's free-space column
+    cannot be read without -- the forwarder holds pruned logs open at roughly
+    261 MiB/host/day, which is most of the fleet's routine free-space erosion,
+    and attributing it to chunk growth turns healthy hosts into drain
+    candidates. A consumer wanting that number should not have to parse a Rich
+    table to get it.
+
+    Unreachable hosts are emitted with their error rather than dropped: a host
+    missing from the probe makes the total short, and a consumer that cannot
+    see the gap will read the short total as a real one.
+    """
+    json_out = getattr(args, "json_out", None)
+    if not json_out:
+        return
+    hosts = []
+    for r in results:
+        held = r.get("held") or {}
+        hosts.append(
+            {
+                "host": r["vm"].name,
+                "provider": getattr(r["vm"], "provider", None),
+                "error": r.get("error"),
+                "held_bytes": held.get("held_bytes"),
+                "fds": held.get("fds"),
+                "free_bytes": held.get("free_bytes"),
+                "state": held.get("state"),
+            }
+        )
+    emit_json(
+        {
+            "inventory": inventory_name,
+            "probed_at": datetime.now(timezone.utc).isoformat(),
+            "dry_run": bool(getattr(args, "dry_run", False)),
+            "min_held_bytes": min_held,
+            "host_count": len(results),
+            "reachable_count": sum(1 for r in results if "error" not in r),
+            "total_held_bytes": total_held,
+            "hosts": hosts,
+        },
+        json_out,
+        console,
+    )
+
+
 def cmd_prod_restart_telegraf(args) -> None:
     """Restart the ES log forwarder across a production fleet to reclaim the
     disk it is holding in deleted log files."""
-    console = Console()
+    console = console_for(getattr(args, "json_out", None))
 
     vms, inventory_name, inv_path = _select_vms(args, console)
     min_held = int(round(float(getattr(args, "min_held_gb", 0) or 0) * _GIB))
@@ -269,6 +318,7 @@ def cmd_prod_restart_telegraf(args) -> None:
     )
 
     candidates = [r for r in reachable if (r["held"] or {}).get("held_bytes", 0) >= min_held]
+    _emit_probe_json(args, console, inventory_name, results, min_held, total_held)
     if min_held > 0:
         console.print(
             f"{len(candidates)} host(s) at or above the "
