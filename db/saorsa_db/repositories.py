@@ -112,6 +112,13 @@ from saorsa_db.size_class import ordered as size_class_ordered
 #: the chunk size is the trade between round trips and statement size.
 UPSERT_CHUNK_SIZE = 1000
 
+#: Bind parameters per statement, which is what actually bounds a chunk: the
+#: rows are rendered INTO the statement (see :func:`_upsert_chunks`), so a wide
+#: table reaches Postgres's 65,535-parameter ceiling at fewer rows than a narrow
+#: one. Well under both that and SQLite's 32,766, so a column added to one of
+#: these tables narrows the chunk instead of failing the flush.
+UPSERT_MAX_BIND_PARAMS = 20_000
+
 
 def _dialect_insert(session):
     """The dialect's ``insert()`` construct, which is where
@@ -153,6 +160,29 @@ def _dedupe_last(rows: list[dict], key_columns: tuple[str, ...]) -> list[dict]:
 def _chunks(rows: list, size: int):
     for start in range(0, len(rows), size):
         yield rows[start : start + size]
+
+
+def _upsert_chunks(rows: list[dict]):
+    """Yield the row batches one ``INSERT ... ON CONFLICT`` each should carry.
+
+    Narrower than :data:`UPSERT_CHUNK_SIZE` when the table is wide enough for
+    :data:`UPSERT_MAX_BIND_PARAMS` to bite first.
+
+    A batch is rendered INTO the statement with ``.values(batch)``, never handed
+    to ``Session.execute`` as a parameter set, and that is not a style choice:
+    SQLAlchemy disables its own multi-VALUES batching for any INSERT carrying a
+    post-values clause -- which ``ON CONFLICT`` is (``sql/crud.py``, upstream
+    #13130) -- so the parameter-set form falls through to the driver's
+    ``executemany``, one round trip PER ROW. Measured against the registry that
+    is 19 ms a row and 6 minutes for 18,000 rows, against 17 s for the same rows
+    rendered in.
+    """
+    if not rows:
+        return
+    columns = max(1, len(rows[0]))
+    yield from _chunks(
+        rows, max(1, min(UPSERT_CHUNK_SIZE, UPSERT_MAX_BIND_PARAMS // columns))
+    )
 
 
 class DeploymentRepository(ABC):
@@ -293,6 +323,30 @@ class DeploymentRepository(ABC):
         expected_sha256: str | None = None,
         actual_sha256: str | None = None,
     ) -> DeploymentDownloadRecord: ...
+
+    @abstractmethod
+    def upsert_upload_records(self, rows: list[dict]) -> int:
+        """Upsert many upload records, one statement and one commit per chunk.
+
+        Each dict holds the same keys the single-row method takes. Returns the
+        number of rows written.
+
+        The reason this exists: ``record-results`` writes one row per client
+        operation, and a staging-sized run has tens of thousands. At a SELECT,
+        an INSERT or UPDATE and a ``commit()`` each -- three round trips to a
+        managed Postgres -- DEV-01's second pass spent 38 minutes writing
+        18,691 rows. The work is the round trips, not the rows.
+        """
+        ...
+
+    @abstractmethod
+    def upsert_download_records(self, rows: list[dict]) -> int: ...
+
+    @abstractmethod
+    def upsert_pointer_records(self, rows: list[dict]) -> int: ...
+
+    @abstractmethod
+    def upsert_browser_download_records(self, rows: list[dict]) -> int: ...
 
     @abstractmethod
     def list_upload_records_for_deployment(
@@ -994,37 +1048,109 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .all()
         )
 
-    def _upsert_op_record(
-        self,
-        model_cls,
-        deployment_id: int,
-        client_hostname: str,
-        region: str | None,
-        file_size_bytes: int,
-        status: OpRecordStatus,
-        start_ns: int,
-        influx_time: datetime,
-        started_at: datetime,
-        finished_at: datetime | None,
-        duration_ms: int | None,
-        network_profile: str | None = None,
-        client_kind: str | None = None,
-        address: str | None = None,
-        client_build: str | None = None,
-        sha256: str | None = None,
-        verify_status: str | None = None,
-        expected_sha256: str | None = None,
-        actual_sha256: str | None = None,
+    #: Identity of an op record: a client writes one point per operation and
+    #: `record-results` is expected to be re-run over the same Influx range, so
+    #: this is the conflict key a second pass revises rather than duplicates.
+    _OP_RECORD_KEY_COLUMNS = ("deployment_id", "client_hostname", "start_ns")
+
+    #: Overwritten by every pass. Each comes straight off the Influx point, so
+    #: a later pass reading the same point writes the same value.
+    _OP_RECORD_OVERWRITE_COLUMNS = (
+        "region",
+        "file_size_bytes",
+        "status",
+        "influx_time",
+        "started_at",
+        "finished_at",
+        "duration_ms",
+        "network_profile",
+    )
+
+    #: COALESCEd, not overwritten. `client_kind` is resolved from the
+    #: deployment's S3 client state and `clients destroy` deletes it, so a
+    #: re-run after teardown resolves None for every host -- and writing that
+    #: would relabel every WASM operation as native, pushing WASM failures into
+    #: the native hard floors. The same reasoning covers each optional column:
+    #: it comes from the Influx point, and a point written before the field
+    #: existed carries none. The address makes an op investigable; the build
+    #: stamp is the one thing that separates transfers across an in-place
+    #: `upgrade-wasm-client`; the verification fields come from a client that
+    #: may predate content verification altogether. A NULL never overwrites a
+    #: known value; a known one still updates.
+    _UPLOAD_RECORD_COALESCE_COLUMNS = ("client_kind", "sha256")
+    _DOWNLOAD_RECORD_COALESCE_COLUMNS = (
+        "client_kind",
+        "address",
+        "client_build",
+        "verify_status",
+        "expected_sha256",
+        "actual_sha256",
+    )
+
+    def _bulk_upsert_op_records(
+        self, model_cls, coalesce_columns: tuple[str, ...], rows: list[dict]
+    ) -> int:
+        if not rows:
+            return 0
+        columns = (
+            self._OP_RECORD_KEY_COLUMNS
+            + self._OP_RECORD_OVERWRITE_COLUMNS
+            + coalesce_columns
+        )
+        dialect_insert = _dialect_insert(self.session)
+        now = datetime.now(timezone.utc)
+        prepared = _dedupe_last(
+            [
+                {column: row.get(column) for column in columns} | {"recorded_at": now}
+                for row in rows
+            ],
+            self._OP_RECORD_KEY_COLUMNS,
+        )
+        written = 0
+        for chunk in _upsert_chunks(prepared):
+            stmt = dialect_insert(model_cls.__table__).values(chunk)
+            set_ = {
+                column: stmt.excluded[column]
+                for column in self._OP_RECORD_OVERWRITE_COLUMNS
+            }
+            set_.update(
+                {
+                    column: func.coalesce(
+                        stmt.excluded[column], getattr(model_cls, column)
+                    )
+                    for column in coalesce_columns
+                }
+            )
+            set_["recorded_at"] = now
+            stmt = stmt.on_conflict_do_update(
+                index_elements=list(self._OP_RECORD_KEY_COLUMNS),
+                set_=set_,
+            )
+            self.session.execute(stmt)
+            self.session.commit()
+            written += len(chunk)
+        # A Core ``INSERT ... ON CONFLICT`` goes round the ORM, so the identity
+        # map still holds whatever these rows looked like before the flush --
+        # and the registry's sessions are built with ``expire_on_commit=False``,
+        # so a commit does not clear it either. Expiring makes the next ORM read
+        # of a row this statement touched see what was actually written.
+        self.session.expire_all()
+        return written
+
+    def upsert_upload_records(self, rows: list[dict]) -> int:
+        return self._bulk_upsert_op_records(
+            DeploymentUploadRecord, self._UPLOAD_RECORD_COALESCE_COLUMNS, rows
+        )
+
+    def upsert_download_records(self, rows: list[dict]) -> int:
+        return self._bulk_upsert_op_records(
+            DeploymentDownloadRecord, self._DOWNLOAD_RECORD_COALESCE_COLUMNS, rows
+        )
+
+    def _get_op_record(
+        self, model_cls, deployment_id: int, client_hostname: str, start_ns: int
     ):
-        optional = {
-            "address": address,
-            "client_build": client_build,
-            "sha256": sha256,
-            "verify_status": verify_status,
-            "expected_sha256": expected_sha256,
-            "actual_sha256": actual_sha256,
-        }
-        existing = (
+        return (
             self.session.query(model_cls)
             .filter(
                 model_cls.deployment_id == deployment_id,
@@ -1033,62 +1159,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .one_or_none()
         )
-        if existing is None:
-            existing = model_cls(
-                deployment_id=deployment_id,
-                client_hostname=client_hostname,
-                region=region,
-                file_size_bytes=file_size_bytes,
-                status=status,
-                start_ns=start_ns,
-                influx_time=influx_time,
-                started_at=started_at,
-                finished_at=finished_at,
-                duration_ms=duration_ms,
-                network_profile=network_profile,
-                client_kind=client_kind,
-                # Only the keys this model actually has, and only the ones with
-                # a value: `sha256` is an upload column and the verification
-                # trio are download columns, so the two models are handed
-                # different subsets of the same call.
-                **{
-                    key: value
-                    for key, value in optional.items()
-                    if value is not None and hasattr(model_cls, key)
-                },
-            )
-            self.session.add(existing)
-        else:
-            existing.region = region
-            existing.file_size_bytes = file_size_bytes
-            existing.status = status
-            existing.influx_time = influx_time
-            existing.started_at = started_at
-            existing.finished_at = finished_at
-            existing.duration_ms = duration_ms
-            existing.network_profile = network_profile
-            # COALESCE, not an unconditional assignment: `client_kind` is
-            # resolved from the deployment's S3 client state, and `clients
-            # destroy` deletes that state. A `record-results` re-run after
-            # teardown therefore resolves None for every host -- and writing
-            # that would relabel every WASM operation as native, pushing WASM
-            # failures into the native hard floors. A NULL never overwrites a
-            # known transport; a known one still updates.
-            if client_kind is not None:
-                existing.client_kind = client_kind
-            # Same COALESCE reasoning for every optional column: each comes
-            # from the Influx point, and a point written before its field
-            # existed has none. The address makes an op investigable; the build
-            # stamp is the one thing that separates transfers across an
-            # in-place `upgrade-wasm-client`; the verification fields come from
-            # a client that may predate content verification altogether.
-            # Writing None over any of them would lose it on the next re-run.
-            for key, value in optional.items():
-                if value is not None and hasattr(model_cls, key):
-                    setattr(existing, key, value)
-            existing.recorded_at = datetime.now(timezone.utc)
-        self.session.commit()
-        return existing
 
     def upsert_upload_record(
         self,
@@ -1106,21 +1176,27 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         client_kind: str | None = None,
         sha256: str | None = None,
     ) -> DeploymentUploadRecord:
-        return self._upsert_op_record(
-            DeploymentUploadRecord,
-            deployment_id=deployment_id,
-            client_hostname=client_hostname,
-            region=region,
-            file_size_bytes=file_size_bytes,
-            status=status,
-            start_ns=start_ns,
-            influx_time=influx_time,
-            started_at=started_at,
-            finished_at=finished_at,
-            duration_ms=duration_ms,
-            network_profile=network_profile,
-            client_kind=client_kind,
-            sha256=sha256,
+        self.upsert_upload_records(
+            [
+                {
+                    "deployment_id": deployment_id,
+                    "client_hostname": client_hostname,
+                    "region": region,
+                    "file_size_bytes": file_size_bytes,
+                    "status": status,
+                    "start_ns": start_ns,
+                    "influx_time": influx_time,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "duration_ms": duration_ms,
+                    "network_profile": network_profile,
+                    "client_kind": client_kind,
+                    "sha256": sha256,
+                }
+            ]
+        )
+        return self._get_op_record(
+            DeploymentUploadRecord, deployment_id, client_hostname, start_ns
         )
 
     def upsert_download_record(
@@ -1143,25 +1219,31 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         expected_sha256: str | None = None,
         actual_sha256: str | None = None,
     ) -> DeploymentDownloadRecord:
-        return self._upsert_op_record(
-            DeploymentDownloadRecord,
-            deployment_id=deployment_id,
-            client_hostname=client_hostname,
-            region=region,
-            file_size_bytes=file_size_bytes,
-            status=status,
-            start_ns=start_ns,
-            influx_time=influx_time,
-            started_at=started_at,
-            finished_at=finished_at,
-            duration_ms=duration_ms,
-            network_profile=network_profile,
-            client_kind=client_kind,
-            address=address,
-            client_build=client_build,
-            verify_status=verify_status,
-            expected_sha256=expected_sha256,
-            actual_sha256=actual_sha256,
+        self.upsert_download_records(
+            [
+                {
+                    "deployment_id": deployment_id,
+                    "client_hostname": client_hostname,
+                    "region": region,
+                    "file_size_bytes": file_size_bytes,
+                    "status": status,
+                    "start_ns": start_ns,
+                    "influx_time": influx_time,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "duration_ms": duration_ms,
+                    "network_profile": network_profile,
+                    "client_kind": client_kind,
+                    "address": address,
+                    "client_build": client_build,
+                    "verify_status": verify_status,
+                    "expected_sha256": expected_sha256,
+                    "actual_sha256": actual_sha256,
+                }
+            ]
+        )
+        return self._get_op_record(
+            DeploymentDownloadRecord, deployment_id, client_hostname, start_ns
         )
 
     def list_upload_records_for_deployment(
@@ -1189,6 +1271,91 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .all()
         )
+
+    #: Identity of a pointer record, and the columns a later pass overwrites.
+    #: Every one comes off the Influx point, so nothing here is COALESCEd: a
+    #: re-run reading the same point writes the same value, and an operation
+    #: this build cannot parse never becomes a row at all.
+    _POINTER_RECORD_KEY_COLUMNS = ("deployment_id", "client_hostname", "start_ns")
+    _POINTER_RECORD_OVERWRITE_COLUMNS = (
+        "region",
+        "op",
+        "outcome",
+        "influx_time",
+        "started_at",
+        "finished_at",
+        "duration_ms",
+        "pointer_address",
+        "owned",
+        "counter_expected",
+        "counter_observed",
+        "target_kind",
+        "age_secs",
+        "read_back",
+        "attempts",
+        "paid_attempts",
+        "ant_spend_atto",
+        "gas_spend_wei",
+        "error",
+        "network_profile",
+        "recipient",
+        "finality_status",
+        "answered",
+        "group_size",
+        "holders",
+        "attempt",
+    )
+
+    def upsert_pointer_records(self, rows: list[dict]) -> int:
+        """Upsert many pointer operations, one statement and one commit per chunk.
+
+        Idempotent like the file-op upserts, so `record-results` can be re-run
+        against the same Influx range and revise rather than duplicate.
+        """
+        if not rows:
+            return 0
+        columns = (
+            self._POINTER_RECORD_KEY_COLUMNS + self._POINTER_RECORD_OVERWRITE_COLUMNS
+        )
+        dialect_insert = _dialect_insert(self.session)
+        now = datetime.now(timezone.utc)
+        prepared = _dedupe_last(
+            [
+                {
+                    column: (
+                        # NOT NULL with a model-side default of True, so an
+                        # absent key must become True and not None.
+                        row.get(column, True) if column == "owned" else row.get(column)
+                    )
+                    for column in columns
+                }
+                | {"recorded_at": now}
+                for row in rows
+            ],
+            self._POINTER_RECORD_KEY_COLUMNS,
+        )
+        written = 0
+        for chunk in _upsert_chunks(prepared):
+            stmt = dialect_insert(DeploymentPointerRecord.__table__).values(chunk)
+            set_ = {
+                column: stmt.excluded[column]
+                for column in self._POINTER_RECORD_OVERWRITE_COLUMNS
+            }
+            set_["recorded_at"] = now
+            stmt = stmt.on_conflict_do_update(
+                index_elements=list(self._POINTER_RECORD_KEY_COLUMNS),
+                set_=set_,
+            )
+            self.session.execute(stmt)
+            self.session.commit()
+            written += len(chunk)
+        # A Core ``INSERT ... ON CONFLICT`` goes round the ORM, so the identity
+        # map still holds whatever these rows looked like before the flush --
+        # and the registry's sessions are built with ``expire_on_commit=False``,
+        # so a commit does not clear it either. Expiring makes the next ORM read
+        # of a row this statement touched see what was actually written.
+        self.session.expire_all()
+        return written
 
     def upsert_pointer_record(
         self,
@@ -1222,62 +1389,45 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         holders: int | None = None,
         attempt: str | None = None,
     ) -> DeploymentPointerRecord:
-        """Record one pointer operation, keyed on (deployment, host, start_ns).
-
-        Idempotent like the file-op upserts, so `record-results` can be re-run
-        against the same Influx range and revise rather than duplicate.
-        """
-        values = dict(
-            region=region,
-            op=op,
-            outcome=outcome,
-            influx_time=influx_time,
-            started_at=started_at,
-            finished_at=finished_at,
-            duration_ms=duration_ms,
-            pointer_address=pointer_address,
-            owned=owned,
-            counter_expected=counter_expected,
-            counter_observed=counter_observed,
-            target_kind=target_kind,
-            age_secs=age_secs,
-            read_back=read_back,
-            attempts=attempts,
-            paid_attempts=paid_attempts,
-            ant_spend_atto=ant_spend_atto,
-            gas_spend_wei=gas_spend_wei,
-            error=error,
-            network_profile=network_profile,
-            recipient=recipient,
-            finality_status=finality_status,
-            answered=answered,
-            group_size=group_size,
-            holders=holders,
-            attempt=attempt,
+        """Record one pointer operation, keyed on (deployment, host, start_ns)."""
+        self.upsert_pointer_records(
+            [
+                {
+                    "deployment_id": deployment_id,
+                    "client_hostname": client_hostname,
+                    "start_ns": start_ns,
+                    "region": region,
+                    "op": op,
+                    "outcome": outcome,
+                    "influx_time": influx_time,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "duration_ms": duration_ms,
+                    "pointer_address": pointer_address,
+                    "owned": owned,
+                    "counter_expected": counter_expected,
+                    "counter_observed": counter_observed,
+                    "target_kind": target_kind,
+                    "age_secs": age_secs,
+                    "read_back": read_back,
+                    "attempts": attempts,
+                    "paid_attempts": paid_attempts,
+                    "ant_spend_atto": ant_spend_atto,
+                    "gas_spend_wei": gas_spend_wei,
+                    "error": error,
+                    "network_profile": network_profile,
+                    "recipient": recipient,
+                    "finality_status": finality_status,
+                    "answered": answered,
+                    "group_size": group_size,
+                    "holders": holders,
+                    "attempt": attempt,
+                }
+            ]
         )
-        existing = (
-            self.session.query(DeploymentPointerRecord)
-            .filter(
-                DeploymentPointerRecord.deployment_id == deployment_id,
-                DeploymentPointerRecord.client_hostname == client_hostname,
-                DeploymentPointerRecord.start_ns == start_ns,
-            )
-            .one_or_none()
+        return self._get_op_record(
+            DeploymentPointerRecord, deployment_id, client_hostname, start_ns
         )
-        if existing is None:
-            existing = DeploymentPointerRecord(
-                deployment_id=deployment_id,
-                client_hostname=client_hostname,
-                start_ns=start_ns,
-                **values,
-            )
-            self.session.add(existing)
-        else:
-            for key, value in values.items():
-                setattr(existing, key, value)
-            existing.recorded_at = datetime.now(timezone.utc)
-        self.session.commit()
-        return existing
 
     def list_pointer_records_for_deployment(
         self, deployment_id: int
@@ -1291,6 +1441,106 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .all()
         )
+
+    _BROWSER_RECORD_KEY_COLUMNS = (
+        "deployment_id",
+        "client_hostname",
+        "round_id",
+        "instance",
+    )
+    _BROWSER_RECORD_OVERWRITE_COLUMNS = (
+        "region",
+        "hot_file_index",
+        "address",
+        "file_size_bytes",
+        "status",
+        "error_kind",
+        "error_text",
+        "total_ms",
+        "connect_ms",
+        "started_at",
+        "started_late_ms",
+        "seeds",
+        "stalls",
+        "refused_dials",
+        "first_reads",
+    )
+    #: The two columns the Influx point does not carry, so neither may be
+    #: overwritten with None by a re-run that could not resolve it.
+    _BROWSER_RECORD_COALESCE_COLUMNS = ("extension", "trace_s3_key")
+
+    def upsert_browser_download_records(self, rows: list[dict]) -> int:
+        """Upsert many browser rounds, one statement and one commit per chunk.
+
+        Idempotent like the file-op upserts, so `record-results` can be re-run
+        against the same Influx range and revise rather than duplicate.
+
+        **Two columns COALESCE, and both for the same reason**: neither is
+        carried on the Influx point, so a re-run that cannot resolve one would
+        otherwise erase what an earlier pass recorded.
+
+        * ``trace_s3_key`` is written by `clients fetch-browser-traces`, and the
+          traces die with the VM -- so erasing the pointer leaves no second
+          chance to find them.
+        * ``extension`` is resolved from state that teardown deletes (the
+          extension's own S3 client state, and the deployment's address prefix).
+          A `record-results` re-run after `clients down` resolves None for every
+          host, and writing that would relabel a whole cohort as the
+          deployment's own tier -- which is exactly the distinction the column
+          exists to make.
+
+        A known value still updates; only None is refused.
+        """
+        if not rows:
+            return 0
+        columns = (
+            self._BROWSER_RECORD_KEY_COLUMNS
+            + self._BROWSER_RECORD_OVERWRITE_COLUMNS
+            + self._BROWSER_RECORD_COALESCE_COLUMNS
+        )
+        dialect_insert = _dialect_insert(self.session)
+        # Insert-only: `created_at` is when the row first appeared, so it is
+        # deliberately absent from the SET clause below.
+        now = datetime.now(timezone.utc)
+        prepared = _dedupe_last(
+            [
+                {column: row.get(column) for column in columns} | {"created_at": now}
+                for row in rows
+            ],
+            self._BROWSER_RECORD_KEY_COLUMNS,
+        )
+        written = 0
+        for chunk in _upsert_chunks(prepared):
+            stmt = dialect_insert(DeploymentBrowserDownloadRecord.__table__).values(
+                chunk
+            )
+            set_ = {
+                column: stmt.excluded[column]
+                for column in self._BROWSER_RECORD_OVERWRITE_COLUMNS
+            }
+            set_.update(
+                {
+                    column: func.coalesce(
+                        stmt.excluded[column],
+                        getattr(DeploymentBrowserDownloadRecord, column),
+                    )
+                    for column in self._BROWSER_RECORD_COALESCE_COLUMNS
+                }
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=list(self._BROWSER_RECORD_KEY_COLUMNS),
+                set_=set_,
+            )
+            self.session.execute(stmt)
+            self.session.commit()
+            written += len(chunk)
+        # A Core ``INSERT ... ON CONFLICT`` goes round the ORM, so the identity
+        # map still holds whatever these rows looked like before the flush --
+        # and the registry's sessions are built with ``expire_on_commit=False``,
+        # so a commit does not clear it either. Expiring makes the next ORM read
+        # of a row this statement touched see what was actually written.
+        self.session.expire_all()
+        return written
 
     def upsert_browser_download_record(
         self,
@@ -1316,45 +1566,35 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         first_reads: list | None = None,
         trace_s3_key: str | None = None,
     ) -> DeploymentBrowserDownloadRecord:
-        """Record one browser instance's round, keyed on (deployment, host, round, instance).
-
-        Idempotent like the file-op upserts, so `record-results` can be re-run
-        against the same Influx range and revise rather than duplicate.
-
-        **Two columns COALESCE, and both for the same reason**: neither is
-        carried on the Influx point, so a re-run that cannot resolve one would
-        otherwise erase what an earlier pass recorded.
-
-        * ``trace_s3_key`` is written by `clients fetch-browser-traces`, and the
-          traces die with the VM -- so erasing the pointer leaves no second
-          chance to find them.
-        * ``extension`` is resolved from state that teardown deletes (the
-          extension's own S3 client state, and the deployment's address prefix).
-          A `record-results` re-run after `clients down` resolves None for every
-          host, and writing that would relabel a whole cohort as the
-          deployment's own tier -- which is exactly the distinction the column
-          exists to make.
-
-        A known value still updates; only None is refused.
-        """
-        values = dict(
-            region=region,
-            hot_file_index=hot_file_index,
-            address=address,
-            file_size_bytes=file_size_bytes,
-            status=status,
-            error_kind=error_kind,
-            error_text=error_text,
-            total_ms=total_ms,
-            connect_ms=connect_ms,
-            started_at=started_at,
-            started_late_ms=started_late_ms,
-            seeds=seeds,
-            stalls=stalls,
-            refused_dials=refused_dials,
-            first_reads=first_reads,
+        """Record one browser instance's round, keyed on (deployment, host, round, instance)."""
+        self.upsert_browser_download_records(
+            [
+                {
+                    "deployment_id": deployment_id,
+                    "client_hostname": client_hostname,
+                    "round_id": round_id,
+                    "instance": instance,
+                    "status": status,
+                    "started_at": started_at,
+                    "extension": extension,
+                    "region": region,
+                    "hot_file_index": hot_file_index,
+                    "address": address,
+                    "file_size_bytes": file_size_bytes,
+                    "error_kind": error_kind,
+                    "error_text": error_text,
+                    "total_ms": total_ms,
+                    "connect_ms": connect_ms,
+                    "started_late_ms": started_late_ms,
+                    "seeds": seeds,
+                    "stalls": stalls,
+                    "refused_dials": refused_dials,
+                    "first_reads": first_reads,
+                    "trace_s3_key": trace_s3_key,
+                }
+            ]
         )
-        existing = (
+        return (
             self.session.query(DeploymentBrowserDownloadRecord)
             .filter(
                 DeploymentBrowserDownloadRecord.deployment_id == deployment_id,
@@ -1364,27 +1604,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .one_or_none()
         )
-        #: The two columns the Influx point does not carry, so neither may be
-        #: overwritten with None by a re-run that could not resolve it.
-        coalesced = {"extension": extension, "trace_s3_key": trace_s3_key}
-        if existing is None:
-            existing = DeploymentBrowserDownloadRecord(
-                deployment_id=deployment_id,
-                client_hostname=client_hostname,
-                round_id=round_id,
-                instance=instance,
-                **coalesced,
-                **values,
-            )
-            self.session.add(existing)
-        else:
-            for key, value in values.items():
-                setattr(existing, key, value)
-            for key, value in coalesced.items():
-                if value is not None:
-                    setattr(existing, key, value)
-        self.session.commit()
-        return existing
 
     def list_browser_download_records_for_deployment(
         self, deployment_id: int

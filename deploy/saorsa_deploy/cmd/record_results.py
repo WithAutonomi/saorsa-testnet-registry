@@ -455,6 +455,10 @@ def _record_pointer_ops(
     recorded = 0
     unusable = 0
     records: list[dict] = []
+    #: Every usable point's row, written with one statement per batch after the
+    #: loop. A pointer tier emits thousands of operations a run, and a round
+    #: trip each is what made a pass linear in the row count.
+    pointer_rows: list[dict] = []
     for point in points:
         start_ns = point.get("start_ns")
         if start_ns is None:
@@ -467,36 +471,38 @@ def _record_pointer_ops(
             unusable += 1
             continue
         started_at = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
-        repo.upsert_pointer_record(
-            deployment_id=deployment.id,
-            client_hostname=point["host"],
-            region=point.get("region"),
-            op=op,
-            outcome=outcome,
-            start_ns=start_ns,
-            influx_time=point["_time"],
-            started_at=started_at,
-            finished_at=point["_time"],
-            duration_ms=point.get("duration_ms"),
-            pointer_address=point.get("address"),
-            owned=point.get("owned", True),
-            counter_expected=point.get("counter_expected"),
-            counter_observed=point.get("counter_observed"),
-            target_kind=point.get("target_kind"),
-            age_secs=point.get("age_secs"),
-            read_back=point.get("read_back"),
-            attempts=point.get("attempts"),
-            paid_attempts=point.get("paid_attempts"),
-            ant_spend_atto=point.get("ant_spend_atto"),
-            gas_spend_wei=point.get("gas_spend_wei"),
-            error=point.get("error"),
-            network_profile=network_profile_for_host(point["host"]),
-            recipient=point.get("recipient"),
-            finality_status=point.get("finality_status"),
-            answered=point.get("answered"),
-            group_size=point.get("group_size"),
-            holders=point.get("holders"),
-            attempt=point.get("attempt"),
+        pointer_rows.append(
+            {
+                "deployment_id": deployment.id,
+                "client_hostname": point["host"],
+                "region": point.get("region"),
+                "op": op,
+                "outcome": outcome,
+                "start_ns": start_ns,
+                "influx_time": point["_time"],
+                "started_at": started_at,
+                "finished_at": point["_time"],
+                "duration_ms": point.get("duration_ms"),
+                "pointer_address": point.get("address"),
+                "owned": point.get("owned", True),
+                "counter_expected": point.get("counter_expected"),
+                "counter_observed": point.get("counter_observed"),
+                "target_kind": point.get("target_kind"),
+                "age_secs": point.get("age_secs"),
+                "read_back": point.get("read_back"),
+                "attempts": point.get("attempts"),
+                "paid_attempts": point.get("paid_attempts"),
+                "ant_spend_atto": point.get("ant_spend_atto"),
+                "gas_spend_wei": point.get("gas_spend_wei"),
+                "error": point.get("error"),
+                "network_profile": network_profile_for_host(point["host"]),
+                "recipient": point.get("recipient"),
+                "finality_status": point.get("finality_status"),
+                "answered": point.get("answered"),
+                "group_size": point.get("group_size"),
+                "holders": point.get("holders"),
+                "attempt": point.get("attempt"),
+            }
         )
         recorded += 1
         records.append(
@@ -514,6 +520,8 @@ def _record_pointer_ops(
                 "attempt": point.get("attempt"),
             }
         )
+
+    repo.upsert_pointer_records(pointer_rows)
 
     console.print(
         f"[bold green]Recorded {recorded} pointer operation(s) "
@@ -595,6 +603,10 @@ def _record_browser_downloads(
 
     recorded = 0
     unusable = 0
+    #: Every usable round's row, written with one statement per batch after the
+    #: loop: a hot-read cohort emits one point per instance per round and a
+    #: pass over a staging-sized run writes thousands of them.
+    browser_rows: list[dict] = []
     for point in points:
         status = _BROWSER_STATUS.get(point.get("status"))
         start_ns = point.get("start_ns")
@@ -604,29 +616,33 @@ def _record_browser_downloads(
         # `start_ns` is the round's BOUNDARY, which is what makes a window
         # selection over these rows select whole rounds.
         started_at = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
-        repo.upsert_browser_download_record(
-            deployment_id=deployment.id,
-            client_hostname=point["host"],
-            round_id=point["round_id"],
-            instance=point["instance"],
-            status=status,
-            started_at=started_at,
-            extension=extension_for_host.get(point["host"]),
-            region=point.get("region"),
-            hot_file_index=point.get("hot_file_index"),
-            address=point.get("address"),
-            file_size_bytes=point.get("file_size"),
-            error_kind=point.get("error_kind"),
-            error_text=point.get("error_text"),
-            total_ms=point.get("total_ms"),
-            connect_ms=point.get("connect_ms"),
-            started_late_ms=point.get("started_late_ms"),
-            seeds=point.get("seeds"),
-            stalls=point.get("stalls"),
-            refused_dials=point.get("refused_dials"),
-            first_reads=point.get("first_reads"),
+        browser_rows.append(
+            {
+                "deployment_id": deployment.id,
+                "client_hostname": point["host"],
+                "round_id": point["round_id"],
+                "instance": point["instance"],
+                "status": status,
+                "started_at": started_at,
+                "extension": extension_for_host.get(point["host"]),
+                "region": point.get("region"),
+                "hot_file_index": point.get("hot_file_index"),
+                "address": point.get("address"),
+                "file_size_bytes": point.get("file_size"),
+                "error_kind": point.get("error_kind"),
+                "error_text": point.get("error_text"),
+                "total_ms": point.get("total_ms"),
+                "connect_ms": point.get("connect_ms"),
+                "started_late_ms": point.get("started_late_ms"),
+                "seeds": point.get("seeds"),
+                "stalls": point.get("stalls"),
+                "refused_dials": point.get("refused_dials"),
+                "first_reads": point.get("first_reads"),
+            }
         )
         recorded += 1
+
+    repo.upsert_browser_download_records(browser_rows)
 
     rounds = len({p.get("round_id") for p in points})
     console.print(
@@ -836,6 +852,12 @@ def _record_file_op_records(
     # unrecognised status). Distinct from a `skipped` OPERATION, which IS a row.
     unusable = 0
     op_records: list[dict] = []
+    #: One row per usable point, each table written with one statement per
+    #: batch after the loop. A staging-sized run has tens of thousands of
+    #: operations, and a SELECT + INSERT/UPDATE + commit each is what made a
+    #: pass take tens of minutes.
+    upload_rows: list[dict] = []
+    download_rows: list[dict] = []
     for p in points:
         start_ns = p.get("start_ns")
         status_code = p.get("status")
@@ -878,7 +900,7 @@ def _record_file_op_records(
         if measurement == "upload":
             # The hash of the bytes this operation uploaded, which is what a
             # downloader checks its result against.
-            repo.upsert_upload_record(**kwargs, sha256=p.get("sha256"))
+            upload_rows.append({**kwargs, "sha256": p.get("sha256")})
             upload_recorded += 1
         else:
             # Downloads only: an upload's address is its RESULT and lives in the
@@ -891,17 +913,19 @@ def _record_file_op_records(
             # never read as a failure. The two hashes are written only
             # alongside a mismatch, which is the only verdict they describe.
             verify_status = VERIFY_STATUS_BY_CODE.get(p.get("verify_status"))
-            repo.upsert_download_record(
-                **kwargs,
-                address=p.get("address"),
-                client_build=p.get("client_build"),
-                verify_status=verify_status,
-                expected_sha256=(
-                    p.get("expected_sha256") if verify_status == VERIFY_MISMATCH else None
-                ),
-                actual_sha256=(
-                    p.get("actual_sha256") if verify_status == VERIFY_MISMATCH else None
-                ),
+            download_rows.append(
+                {
+                    **kwargs,
+                    "address": p.get("address"),
+                    "client_build": p.get("client_build"),
+                    "verify_status": verify_status,
+                    "expected_sha256": (
+                        p.get("expected_sha256") if verify_status == VERIFY_MISMATCH else None
+                    ),
+                    "actual_sha256": (
+                        p.get("actual_sha256") if verify_status == VERIFY_MISMATCH else None
+                    ),
+                }
             )
             download_recorded += 1
 
@@ -920,6 +944,9 @@ def _record_file_op_records(
                 "error_kind": p.get("error_kind"),
             }
         )
+
+    repo.upsert_upload_records(upload_rows)
+    repo.upsert_download_records(download_rows)
 
     console.print(
         f"[bold green]Recorded {upload_recorded} upload record(s) and "
