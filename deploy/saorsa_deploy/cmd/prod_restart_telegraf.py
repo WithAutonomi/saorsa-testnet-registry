@@ -230,7 +230,6 @@ def _print_probe_table(
     console.print(table)
 
 
-
 def _emit_probe_json(args, console, inventory_name, results, min_held, total_held) -> None:
     """Write the per-host probe as JSON when `--json-out` was given.
 
@@ -251,15 +250,17 @@ def _emit_probe_json(args, console, inventory_name, results, min_held, total_hel
     hosts = []
     for r in results:
         held = r.get("held") or {}
-        hosts.append({
-            "host": r["vm"].name,
-            "provider": getattr(r["vm"], "provider", None),
-            "error": r.get("error"),
-            "held_bytes": held.get("held_bytes"),
-            "fds": held.get("fds"),
-            "free_bytes": held.get("free_bytes"),
-            "state": held.get("state"),
-        })
+        hosts.append(
+            {
+                "host": r["vm"].name,
+                "provider": getattr(r["vm"], "provider", None),
+                "error": r.get("error"),
+                "held_bytes": held.get("held_bytes"),
+                "fds": held.get("fds"),
+                "free_bytes": held.get("free_bytes"),
+                "state": held.get("state"),
+            }
+        )
     emit_json(
         {
             "inventory": inventory_name,

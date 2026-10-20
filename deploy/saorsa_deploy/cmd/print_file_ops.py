@@ -118,7 +118,6 @@ def _dispatch(args, op_type: str) -> None:
     _run_file_ops(args, op_type, console)
 
 
-
 def _json_point(point: dict) -> dict:
     """One operation point as JSON-safe values.
 
@@ -133,8 +132,17 @@ def _json_point(point: dict) -> dict:
     return out
 
 
-def _emit_ops_json(args, console, *, deployment: str, kind: str, op_type: str,
-                   source: str, points: list[dict], window=None) -> None:
+def _emit_ops_json(
+    args,
+    console,
+    *,
+    deployment: str,
+    kind: str,
+    op_type: str,
+    source: str,
+    points: list[dict],
+    window=None,
+) -> None:
     """Write the per-operation records as JSON when `--json-out` was given.
 
     The consumer is a reporting tool that would otherwise re-derive cycles and
@@ -272,7 +280,8 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
 
     filtered = [p for p in points if p.get("_measurement") == op_type]
     _emit_ops_json(
-        args, console,
+        args,
+        console,
         deployment=args.name,
         kind=_resolve_kind(args.name, console),
         op_type=op_type,
@@ -737,7 +746,8 @@ def _run_browser_rounds(args, console: Console) -> None:
         sys.exit(1)
 
     _emit_ops_json(
-        args, console,
+        args,
+        console,
         deployment=args.name,
         kind="browser",
         op_type="download",
@@ -866,7 +876,8 @@ def _run_prod_uploads(args, console: Console) -> None:
         wasm_bucket=INFLUXDB_WASM_BUCKET,
     )
     _emit_ops_json(
-        args, console,
+        args,
+        console,
         deployment=args.name,
         kind=_resolve_kind(args.name, console),
         op_type="upload",

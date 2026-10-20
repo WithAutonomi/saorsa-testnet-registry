@@ -175,7 +175,6 @@ def cmd_print_recorded_results(args) -> None:
     _emit_recorded_json(args, console, repo, deployment, kind)
 
 
-
 def _rows_as_dicts(rows) -> list[dict]:
     """ORM rows as JSON-safe dicts, via each model's own `to_dict`."""
     out = []
@@ -213,23 +212,26 @@ def _emit_recorded_json(args, console, repo, deployment, kind: str) -> None:
     }
     if kind == "prod-continuous-uploader":
         payload["uploads"] = _rows_as_dicts(
-            repo.list_prod_upload_results_for_deployment(deployment.id))
+            repo.list_prod_upload_results_for_deployment(deployment.id)
+        )
         payload["verifications"] = _rows_as_dicts(
-            repo.list_prod_upload_verifications_for_deployment(deployment.id))
+            repo.list_prod_upload_verifications_for_deployment(deployment.id)
+        )
     elif kind in _PROD_UPLOAD_KINDS:
         payload["uploads"] = _rows_as_dicts(
-            repo.list_prod_upload_results_for_deployment(deployment.id))
+            repo.list_prod_upload_results_for_deployment(deployment.id)
+        )
     elif kind in _PROD_DOWNLOAD_KINDS:
         payload["downloads"] = _rows_as_dicts(
-            repo.list_prod_download_results_for_deployment(deployment.id))
+            repo.list_prod_download_results_for_deployment(deployment.id)
+        )
     else:
-        payload["uploads"] = _rows_as_dicts(
-            repo.list_upload_records_for_deployment(deployment.id))
+        payload["uploads"] = _rows_as_dicts(repo.list_upload_records_for_deployment(deployment.id))
         payload["downloads"] = _rows_as_dicts(
-            repo.list_download_records_for_deployment(deployment.id))
+            repo.list_download_records_for_deployment(deployment.id)
+        )
 
-    payload["counts"] = {k: len(payload[k])
-                         for k in ("uploads", "downloads", "verifications")}
+    payload["counts"] = {k: len(payload[k]) for k in ("uploads", "downloads", "verifications")}
     emit_json(payload, json_out, console)
 
 

@@ -66,7 +66,8 @@ def test_ops_json_carries_untruncated_host_and_the_record_count(tmp_path):
     args = Namespace(json_out=str(target))
 
     _emit_ops_json(
-        args, QUIET,
+        args,
+        QUIET,
         deployment="PROD-DL-01",
         kind="prod-continuous-downloader",
         op_type="download",
@@ -89,9 +90,13 @@ def test_ops_json_writes_an_empty_result_rather_than_nothing(tmp_path):
     target = tmp_path / "empty.json"
 
     _emit_ops_json(
-        Namespace(json_out=str(target)), QUIET,
-        deployment="PROD-WDL-01", kind="prod-continuous-downloader",
-        op_type="download", source="influx", points=[],
+        Namespace(json_out=str(target)),
+        QUIET,
+        deployment="PROD-WDL-01",
+        kind="prod-continuous-downloader",
+        op_type="download",
+        source="influx",
+        points=[],
     )
 
     payload = _read(target)
@@ -103,9 +108,13 @@ def test_ops_json_writes_nothing_without_the_flag(tmp_path):
     target = tmp_path / "unwanted.json"
 
     _emit_ops_json(
-        Namespace(json_out=None), QUIET,
-        deployment="PROD-DL-01", kind="x", op_type="download",
-        source="influx", points=[POINT],
+        Namespace(json_out=None),
+        QUIET,
+        deployment="PROD-DL-01",
+        kind="x",
+        op_type="download",
+        source="influx",
+        points=[POINT],
     )
 
     assert not target.exists()
@@ -116,15 +125,29 @@ def test_probe_json_keeps_unreachable_hosts_with_their_error(tmp_path):
     # would leave the consumer reading a short total as a real one.
     target = tmp_path / "probe.json"
     results = [
-        {"vm": SimpleNamespace(name="hz-fsn1-2", provider="hetzner"),
-         "held": {"held_bytes": 1_717_986_918, "fds": 37, "free_bytes": 187_000_000_000,
-                  "state": "active"}},
-        {"vm": SimpleNamespace(name="ovh-BHS5-9", provider="ovh"),
-         "error": "ssh: connect timed out"},
+        {
+            "vm": SimpleNamespace(name="hz-fsn1-2", provider="hetzner"),
+            "held": {
+                "held_bytes": 1_717_986_918,
+                "fds": 37,
+                "free_bytes": 187_000_000_000,
+                "state": "active",
+            },
+        },
+        {
+            "vm": SimpleNamespace(name="ovh-BHS5-9", provider="ovh"),
+            "error": "ssh: connect timed out",
+        },
     ]
 
-    _emit_probe_json(Namespace(json_out=str(target), dry_run=True), QUIET,
-                     "ant-prod-01", results, min_held=0, total_held=1_717_986_918)
+    _emit_probe_json(
+        Namespace(json_out=str(target), dry_run=True),
+        QUIET,
+        "ant-prod-01",
+        results,
+        min_held=0,
+        total_held=1_717_986_918,
+    )
 
     payload = _read(target)
     assert payload["host_count"] == 2

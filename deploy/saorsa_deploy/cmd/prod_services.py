@@ -665,7 +665,6 @@ def cmd_prod_services_disk_survey(args) -> None:
         console.print("[dim]Survey not stored (DATABASE_URL unset or unreachable).[/dim]")
 
 
-
 def _survey_as_dict(survey) -> dict:
     """A stored survey's scalar fields, without its per-service child rows."""
     if survey is None:
@@ -773,8 +772,7 @@ def cmd_prod_services_survey_report(args) -> None:
             _format_bytes(nf),
             _signed_bytes(delta) if delta is not None else "?",
         )
-        base["free_delta"].append(
-            {"host": host, "free_then": pf, "free_now": nf, "delta": delta})
+        base["free_delta"].append({"host": host, "free_then": pf, "free_now": nf, "delta": delta})
     console.print(dtable)
 
     # The node-data delta, like-for-like over the hosts both surveys reached.
