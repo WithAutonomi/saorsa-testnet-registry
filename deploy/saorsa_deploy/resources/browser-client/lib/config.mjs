@@ -54,7 +54,10 @@ export function loadConfig(env = process.env) {
       org: env.INFLUX_ORG || "ant",
       bucket: env.INFLUX_BUCKET || "wasm-client-metrics",
     },
-    traceDir: env.TRACE_DIR || "/var/lib/ant-browser-downloader/trace",
+    // ONE append-only file under the directory telegraf tails, not a file per
+    // download under /var/lib: the records go to the run's Elasticsearch as
+    // they are produced, so nothing has to be fetched off the VM afterwards.
+    traceLog: env.TRACE_LOG || "/var/log/ant-client-forward/browser-trace.jsonl",
     forwardLogs: env.FORWARD_LOGS === "true",
     bundleDir: env.BUNDLE_DIR || "/opt/ant-browser-downloader/bundle",
     bundlePort: int(env, "BUNDLE_PORT", 8723),

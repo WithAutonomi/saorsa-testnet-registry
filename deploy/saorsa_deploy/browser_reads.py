@@ -6,6 +6,11 @@ committed fixture with no database, no S3 and no InfluxDB. The command around it
 (:mod:`saorsa_deploy.analysis.browser_reads`) does the loading, the rendering and
 the exit code.
 
+The per-chunk section is the exception to "pure functions over rows": its input
+is the raw Elasticsearch trace records (:mod:`saorsa_deploy.browser_traces`),
+because the holder that SERVED each read is not on the Influx point and cannot
+be recovered from the row. Everything else here still reads rows alone.
+
 Two rules run through all of it:
 
 * **A ``skipped`` row is excluded from every denominator and listed separately.**
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from saorsa_deploy.browser_traces import summarise_chunks
 from saorsa_deploy.gate_comparison import percentile
 
 #: Below this many first reads a chunk's busiest-holder share is noise — one
@@ -259,57 +265,6 @@ def summarise_regions(rows) -> list[dict]:
     return out
 
 
-def summarise_chunks(rows) -> list[dict]:
-    """Per-chunk first-read spreading: the verdict on ADR-0023.
-
-    For every chunk any download in the window read, how many first reads it
-    received, how many distinct holders served them, and the **busiest holder's
-    share** of them. Sorted by share descending, so the worst-spread chunk is
-    the first line of the table.
-
-    ``known_holders`` is counted as the harness reports it — the discovery count
-    for that chunk over the WHOLE download, not the count known at the instant
-    of the read (see V2-1617's amended definition). ``null`` is its own bucket
-    and means no discovery for that chunk reported a count at all; it is
-    deliberately not folded into 0, which would read as "the client knew of no
-    holders".
-    """
-    per_chunk: dict[str, dict] = {}
-    for row in rows:
-        for read in _field(row, "first_reads") or []:
-            if not isinstance(read, dict):
-                continue
-            chunk = read.get("chunk")
-            if not chunk:
-                continue
-            entry = per_chunk.setdefault(chunk, {"holders": {}, "known_holders": {}, "reads": 0})
-            entry["reads"] += 1
-            holder = read.get("holder") or "unknown"
-            entry["holders"][holder] = entry["holders"].get(holder, 0) + 1
-            known = read.get("known_holders")
-            key = "null" if known is None else str(known)
-            entry["known_holders"][key] = entry["known_holders"].get(key, 0) + 1
-
-    out: list[dict] = []
-    for chunk, entry in per_chunk.items():
-        reads = entry["reads"]
-        busiest_holder, busiest_reads = max(entry["holders"].items(), key=lambda kv: (kv[1], kv[0]))
-        out.append(
-            {
-                "chunk": chunk,
-                "reads": reads,
-                "distinct_holders": len(entry["holders"]),
-                "busiest_holder": busiest_holder,
-                "busiest_holder_reads": busiest_reads,
-                "busiest_holder_share": busiest_reads / reads,
-                "known_holders": entry["known_holders"],
-                "gated": reads >= MIN_FIRST_READS_FOR_GATE,
-            }
-        )
-    out.sort(key=lambda c: (-c["busiest_holder_share"], -c["reads"], c["chunk"]))
-    return out
-
-
 def summarise_stalls(rows, round_summaries: list[dict]) -> dict:
     """The per-round sums plus the per-download distribution of ``stalls``."""
     counted = [_field(r, "stalls") for r in rows if _field(r, "stalls") is not None]
@@ -530,6 +485,7 @@ def build_report(
     deployment: str,
     deployment_id: int | None,
     rows,
+    trace_docs,
     hot_files: dict | None,
     period_secs: int,
     period_source: str,
@@ -544,7 +500,10 @@ def build_report(
     """The whole report as one JSON-ready document.
 
     ``rows`` must already be narrowed to the window: the caller does that so the
-    "no rows in the window" error can name the window it looked in.
+    "no rows in the window" error can name the window it looked in. So must
+    ``trace_docs``, which are the normalised Elasticsearch trace records for
+    those rounds (see :mod:`saorsa_deploy.browser_traces`) and are the sole
+    input to the per-chunk section and G3.
     """
     round_summaries = summarise_rounds(rows, period_secs)
     for entry in round_summaries:
@@ -554,7 +513,8 @@ def build_report(
             if expected_instances is not None
             else None
         )
-    chunk_summaries = summarise_chunks(rows)
+    chunk_report = summarise_chunks(trace_docs, rows, min_first_reads=MIN_FIRST_READS_FOR_GATE)
+    chunk_summaries = chunk_report["chunks"]
     refusals = summarise_refusals(rows)
     gates = evaluate_gates(
         rows,
@@ -587,7 +547,7 @@ def build_report(
             "p50_ms": p50,
             "p95_ms": p95,
             "error_kinds": _error_kinds(rows),
-            "traces_archived": sum(1 for r in rows if _field(r, "trace_s3_key")),
+            "trace_records": len(trace_docs),
         },
         "hot_files": {
             # Where the selection was read from, for the same reason
@@ -603,6 +563,10 @@ def build_report(
         "rounds": round_summaries,
         "regions": summarise_regions(rows),
         "chunks": chunk_summaries,
+        # Chunks every GET of which went to a peer that never answered `found`.
+        # Nothing to gate -- no first read -- but a chunk no peer in the fleet
+        # admitted holding is a finding, and omitting it would hide it.
+        "chunks_without_a_holder": chunk_report["chunks_without_a_holder"],
         "stalls": summarise_stalls(rows, round_summaries),
         "refusals": refusals,
         "bootstrap_load": summarise_bootstrap_load(round_summaries, rows),
@@ -640,6 +604,10 @@ def _pct(value: float | None, digits: int = 2) -> str:
 
 def _ms(value: float | None) -> str:
     return "n/a" if value is None else f"{value:,.0f} ms"
+
+
+def _num(value: float | None, digits: int = 2) -> str:
+    return "n/a" if value is None else f"{value:,.{digits}f}"
 
 
 def _kinds(kinds: dict[str, int]) -> str:
@@ -683,7 +651,8 @@ def render_markdown(report: dict) -> str:
         f"{totals['downloads']} download(s): {totals['success']} ok, "
         f"{totals['failure']} failed, {totals['skipped']} skipped; completion "
         f"{_pct(totals['completion'])}, p50 {_ms(totals['p50_ms'])}, p95 "
-        f"{_ms(totals['p95_ms'])}; {totals['traces_archived']} trace(s) archived."
+        f"{_ms(totals['p95_ms'])}; {totals['trace_records']:,} trace record(s) "
+        f"read from Elasticsearch."
     )
 
     lines.append("")
@@ -757,21 +726,29 @@ def render_markdown(report: dict) -> str:
     lines.append("")
     lines.append(
         "The busiest holder's share is the verdict on hot-record read spreading "
-        "(ADR-0023), and it reads `first_reads` alone — the holder each chunk's "
-        "FIRST read went to. `known_holders` is the discovery-reported count for "
-        "the whole download, not the count known at the read; `null` means no "
-        "count was reported."
+        "(ADR-0023), counted against **the holder that served the read** — a "
+        "peer that answered `found` for that chunk anywhere in the window — and "
+        "a download's first read is its first GET that reached one. "
+        "`gets`/`not_found` are per download for this chunk; `1st→holder` is the "
+        "share of downloads whose very first GET went to a holder, and "
+        "`pre-disc` the share whose first holder read was sent before discovery "
+        "finished (or where discovery never finished). `known_holders` is the "
+        "discovery-reported count for the whole download, not the count known at "
+        "the read; `null` means no count was reported."
     )
     lines.append("")
     if not report["chunks"]:
         lines.append(
-            "No `first_reads` were recorded in this window. A bundle built "
-            "without `test-utils` reports none, so check that before reading "
-            "this as a quiet network."
+            "No chunk read in this window reached a holder. A bundle built "
+            "without `test-utils` forwards no trace records at all, so check "
+            "that before reading this as a quiet network."
         )
     else:
-        lines.append("| chunk | reads | holders | busiest share | busiest holder | known_holders |")
-        lines.append("| --- | --: | --: | --: | --- | --- |")
+        lines.append(
+            "| chunk | reads | holders | busiest share | busiest holder | gets | "
+            "not_found | 1st→holder | pre-disc | known_holders |"
+        )
+        lines.append("| --- | --: | --: | --: | --- | --: | --: | --: | --: | --- |")
         for entry in report["chunks"]:
             share = f"{entry['busiest_holder_share'] * 100:.1f}%"
             if not entry["gated"]:
@@ -780,7 +757,29 @@ def render_markdown(report: dict) -> str:
                 f"| `{entry['chunk']}` | {entry['reads']} | "
                 f"{entry['distinct_holders']} | {share} | "
                 f"`{entry['busiest_holder']}` | "
+                f"{_num(entry['gets_per_download'])} | "
+                f"{_num(entry['not_found_per_download'])} | "
+                f"{_pct(entry['first_get_to_holder'], 1)} | "
+                f"{_pct(entry['decided_before_discovery'], 1)} | "
                 f"{_known_holders(entry['known_holders'])} |"
+            )
+    if report["chunks_without_a_holder"]:
+        lines.append("")
+        lines.append(f"### Read but never served ({len(report['chunks_without_a_holder'])})")
+        lines.append("")
+        lines.append(
+            "Every GET for these chunks went to a peer that never answered "
+            "`found` in the window, so they have no first read and are in no "
+            "gate — which is itself worth seeing."
+        )
+        lines.append("")
+        lines.append("| chunk | downloads | gets | not_found |")
+        lines.append("| --- | --: | --: | --: |")
+        for entry in report["chunks_without_a_holder"]:
+            lines.append(
+                f"| `{entry['chunk']}` | {entry['downloads']} | "
+                f"{_num(entry['gets_per_download'])} | "
+                f"{_num(entry['not_found_per_download'])} |"
             )
 
     stalls = report["stalls"]

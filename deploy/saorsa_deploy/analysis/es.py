@@ -377,12 +377,18 @@ def per_host_udp_means(rows: list[dict]) -> dict[str, float]:
 
 
 # -- commands --------------------------------------------------------------
-def _quiet_tls() -> None:
+def quiet_tls() -> None:
+    """Silence the self-signed-certificate warning every query here provokes.
+
+    The run's Elasticsearch is reachable only by its own VMs for the hours it
+    exists, so it has no certificate anybody trusts; a warning per request would
+    be most of a report's output.
+    """
     requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 
 
 def cmd_smoke(args) -> int:
-    _quiet_tls()
+    quiet_tls()
     console = Console()
     run = EsRun(args.name)
     pattern = run.elastic()["elasticsearch_index_pattern"]
@@ -404,7 +410,7 @@ from(bucket: "{st["influxdb_bucket"]}")
 
 
 def cmd_log_count(args) -> int:
-    _quiet_tls()
+    quiet_tls()
     run = EsRun(args.name)
     index = run.client_index() if args.index == "client" else None
     result = run.count_phrase(args.phrase, args.start, args.end, index=index, hosts=args.hosts)
@@ -413,14 +419,14 @@ def cmd_log_count(args) -> int:
 
 
 def cmd_counter_delta(args) -> int:
-    _quiet_tls()
+    quiet_tls()
     result = EsRun(args.name).counter_delta(args.field, args.start, args.end)
     emit_json(result, args.json_out, console_for(args.json_out), echo=True)
     return 0
 
 
 def cmd_udp_rate(args) -> int:
-    _quiet_tls()
+    quiet_tls()
     console = console_for(args.json_out)
     rows = EsRun(args.name).udp_datagrams(args.start, args.end, every=args.every, field=args.field)
     means = per_host_udp_means(rows)

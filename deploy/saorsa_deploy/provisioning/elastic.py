@@ -562,6 +562,45 @@ class ElasticProvisioner:
                 "                'client_index': {'type': 'keyword'},\n"
                 "                'testnet_name': {'type': 'keyword'},\n"
                 "                'host_role': {'type': 'keyword'},\n"
+                # The browser harness's trace records (V2-1650). Declared under
+                # `browser_trace` because that is where they actually land:
+                # telegraf nests a metric's fields under its measurement name,
+                # which is why the node message is `tail.message` and why the
+                # top-level `message` property above matches no real document.
+                # `operation` and `phase` are telegraf TAGS and so live under
+                # `tag.*`, which is deliberately left to dynamic mapping -- an
+                # explicit keyword there would remove the `.keyword` subfield
+                # that every `tag.*.keyword` query in `es_log_counts` and
+                # `analysis/es.py` reads.
+                "                'browser_trace': {'properties': {\n"
+                # Keywords, so the per-chunk report can aggregate and sort on
+                # them. Dynamic mapping would give text + a `.keyword` subfield
+                # capped at 256 characters.
+                "                    'target': {'type': 'keyword'},\n"
+                "                    'peer': {'type': 'keyword'},\n"
+                "                    'address': {'type': 'keyword'},\n"
+                "                    'round_id': {'type': 'long'},\n"
+                "                    'instance': {'type': 'long'},\n"
+                "                    'hot_file_index': {'type': 'long'},\n"
+                # `seq` is the sort key the report pages on, so it must be a
+                # number: inferred as a string it would sort lexically and
+                # `search_after` would skip documents.
+                "                    'seq': {'type': 'long'},\n"
+                "                    'id': {'type': 'long'},\n"
+                "                    'boundary': {'type': 'long'},\n"
+                "                    'started_at': {'type': 'long'},\n"
+                # `double`, and this one is load-bearing: telegraf serialises a
+                # whole float as `0`, so the first document would infer `long`
+                # and `ignore_malformed` would then DROP every fractional
+                # elapsed_ms thereafter -- silently, which is how a timing
+                # field reads as absent rather than as wrong.
+                "                    'elapsed_ms': {'type': 'double'},\n"
+                # Text: a `NotFound { address: [..] }` detail is over the 256
+                # character `ignore_above` a dynamic keyword would impose, and
+                # the report matches its prefix in Python rather than in ES.
+                "                    'detail': {'type': 'text'},\n"
+                "                    'seeds': {'type': 'text'},\n"
+                "                }},\n"
                 "            }\n"
                 "        }\n"
                 "    }\n"

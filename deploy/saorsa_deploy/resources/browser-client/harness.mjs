@@ -9,8 +9,9 @@
  *      replace it);
  *   2. for each of INSTANCES instances concurrently, launch a FRESH Chromium,
  *      a fresh context and a fresh page, and do one download;
- *   3. write that download's trace to its own JSONL file and one
- *      `browser_download` point to InfluxDB.
+ *   3. append that download's trace to the forwarded trace log (telegraf ships
+ *      it to the testnet's Elasticsearch) and write one `browser_download`
+ *      point to InfluxDB.
  *
  * Nothing persists between rounds — not a browser, not a profile, not a peer
  * cache — because the measurement is what a *new* browser client experiences,
@@ -20,9 +21,6 @@
  * derived fields live in `lib/`, where `node --test` can reach them without a
  * browser.
  */
-
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 
 import { chromium } from "playwright";
 
@@ -35,6 +33,7 @@ import { makeLogger, summaryLine } from "./lib/logger.mjs";
 import { downloadInPage } from "./lib/page.mjs";
 import { hotFileIndexFor, nextBoundaryAfter, roundIdAt } from "./lib/rounds.mjs";
 import { startBundleServer } from "./lib/server.mjs";
+import { appendTrace, traceLines } from "./lib/trace.mjs";
 
 const config = loadConfig();
 const log = makeLogger({ forwardLogs: config.forwardLogs });
@@ -50,31 +49,6 @@ const running = new Set();
  * next one (`download_timeout_secs < round_period_secs` leaves the slack).
  */
 const PAGE_GRACE_MS = 15_000;
-
-function traceHeader(round, instance, file) {
-  return {
-    header: true,
-    round_id: round.roundId,
-    instance,
-    hot_file_index: round.hotFileIndex,
-    address: file ? file.address : "",
-    seeds: config.seeds.join(","),
-    boundary: round.boundary,
-    started_at: Math.floor(Date.now() / 1000),
-  };
-}
-
-async function writeTrace(round, instance, file, records) {
-  // Never deleted by the harness: the traces ARE the dataset this role exists
-  // to produce, and a rotation policy here would silently discard the evidence
-  // for the round somebody is asking about. `--log-retention-days` is not this
-  // role's job; `scp` them off before destroy.
-  const path = join(config.traceDir, `${round.roundId}-${instance}.jsonl`);
-  const lines = [traceHeader(round, instance, file), ...records].map((r) => JSON.stringify(r));
-  await mkdir(config.traceDir, { recursive: true });
-  await writeFile(path, `${lines.join("\n")}\n`);
-  return path;
-}
 
 async function emit(result) {
   log.log(summaryLine(result));
@@ -153,7 +127,34 @@ async function runInstance(round, instance, bundleUrl) {
     ]);
 
     const derived = deriveFields(outcome.trace || []);
-    await writeTrace(round, instance, round.file, outcome.trace || []);
+    // Appended, not written per download: the records are forwarded to the
+    // run's Elasticsearch as they are produced, and `analysis browser-reads`
+    // reads them from there while the testnet is still up.
+    //
+    // A failure here must not fail the ROUND: the download happened and its
+    // point carries the real result, where letting this throw would hand the
+    // classifier a full disk and record it as a network failure. Warned rather
+    // than swallowed, because the records simply being absent is what the
+    // report would otherwise see.
+    try {
+      await appendTrace(
+        config.traceLog,
+        traceLines({
+          round,
+          instance,
+          file: round.file,
+          seeds: config.seeds.join(","),
+          records: outcome.trace || [],
+        }),
+      );
+    } catch (e) {
+      log.warn(
+        `round=${round.roundId} instance=${instance} ` +
+          `WARN: the trace could not be appended to ${config.traceLog}: ` +
+          `${String((e && e.message) || e)}. The round's point is unaffected, ` +
+          "but its records will be missing from the per-chunk report.",
+      );
+    }
     if (outcome.traceHook === false) {
       log.warn(
         `round=${round.roundId} instance=${instance} ` +

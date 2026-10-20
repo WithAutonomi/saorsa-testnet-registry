@@ -310,27 +310,20 @@ def test_two_instances_of_one_round_are_two_rows(repo):
     assert [r.instance for r in rows] == [1, 2]
 
 
-def test_the_trace_key_survives_a_re_run(repo):
-    """`clients fetch-browser-traces` writes it and the Influx point never
-    carries it, so an unconditional assignment on upsert would erase the only
-    pointer to a trace -- and the traces die with the VM."""
+def test_the_table_carries_no_trace_pointer(repo):
+    """V2-1650 dropped `trace_s3_key` with the archive it pointed at: the raw
+    records are forwarded to the run's Elasticsearch as they are produced, so
+    there is no S3 object per download and nothing to link. Asserted on the
+    mapped table rather than on a row, because a stale attribute would make
+    every other assertion here pass against a column the migration dropped."""
+    from saorsa_db.models.browser_download_record import DeploymentBrowserDownloadRecord
+
+    assert "trace_s3_key" not in DeploymentBrowserDownloadRecord.__table__.columns
+    assert not hasattr(repo, "set_browser_download_trace_key")
     deployment = _deployment(repo)
     _record(repo, deployment, [_point()])
-    assert repo.set_browser_download_trace_key(
-        deployment.id, HOST, ROUND, 2, "results/DEV-03/browser-traces/h/1-2.jsonl"
-    )
-    _record(repo, deployment, [_point(total_ms=9999)])
     (row,) = repo.list_browser_download_records_for_deployment(deployment.id)
-    assert row.trace_s3_key == "results/DEV-03/browser-traces/h/1-2.jsonl"
-    assert row.total_ms == 9999
-
-
-def test_setting_a_trace_key_for_an_unrecorded_round_reports_false(repo):
-    """Not an error: the trace is archived while the VMs are up, before the
-    round's point has necessarily been recorded. The caller says so and the
-    next `record-results` creates the row."""
-    deployment = _deployment(repo)
-    assert repo.set_browser_download_trace_key(deployment.id, HOST, ROUND, 2, "k") is False
+    assert "trace_s3_key" not in row.to_dict()
 
 
 def test_the_extension_is_resolved_from_the_client_tier(repo):
@@ -574,7 +567,6 @@ def test_the_recorded_section_renders_rounds_statuses_and_kinds(repo):
             extension=raw["extension"],
             region=raw["region"],
             error_kind=raw["error_kind"],
-            trace_s3_key=raw["trace_s3_key"],
         )
     console = Console(record=True, width=220)
     _print_browser_downloads_section(
@@ -596,3 +588,41 @@ def test_the_recorded_section_prints_nothing_without_browser_rows():
     console = Console(record=True, width=120)
     _print_browser_downloads_section([], "DEV-01", console)
     assert console.export_text().strip() == ""
+
+
+# --------------------------------------------------------------------------- #
+# the migration that drops the column
+# --------------------------------------------------------------------------- #
+def test_the_migration_drops_the_column_and_leaves_one_head():
+    """Structural, not executed: this repo has no database in its test run, and
+    the mistake a chain check actually catches is a FORKED head — two migrations
+    naming the same `down_revision`, which `alembic upgrade head` then refuses.
+    """
+    import ast
+    from pathlib import Path
+
+    versions = Path(__file__).parents[2] / "db" / "alembic" / "versions"
+    revisions, downs = {}, {}
+    for path in versions.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        found = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                found[node.targets[0].id] = node
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                found[node.target.id] = node
+        rev = ast.literal_eval(found["revision"].value)
+        revisions[rev] = path
+        down = ast.literal_eval(found["down_revision"].value)
+        if down is not None:
+            downs.setdefault(down, []).append(rev)
+
+    assert "d1a6f03b7c58" in revisions
+    body = revisions["d1a6f03b7c58"].read_text()
+    assert 'op.drop_column(_TABLE, "trace_s3_key")' in body
+    assert 'down_revision = "c83d16f40b9d"' in body
+
+    forks = {parent: kids for parent, kids in downs.items() if len(kids) > 1}
+    assert not forks, f"forked migration head(s): {forks}"
+    heads = sorted(set(revisions) - set(downs))
+    assert heads == ["d1a6f03b7c58"]

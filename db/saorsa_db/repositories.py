@@ -420,31 +420,12 @@ class DeploymentRepository(ABC):
         stalls: int | None = None,
         refused_dials: int | None = None,
         first_reads: list | None = None,
-        trace_s3_key: str | None = None,
     ) -> DeploymentBrowserDownloadRecord: ...
 
     @abstractmethod
     def list_browser_download_records_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentBrowserDownloadRecord]: ...
-
-    @abstractmethod
-    def set_browser_download_trace_key(
-        self,
-        deployment_id: int,
-        client_hostname: str,
-        round_id: int,
-        instance: int,
-        trace_s3_key: str,
-    ) -> bool:
-        """Point one recorded round at its archived trace.
-
-        Returns False when no row matches -- the round's Influx point has not
-        been recorded yet, which is not an error: the trace is archived while
-        the VMs are up and the next `record-results` picks the row up (and
-        preserves whatever key is already set).
-        """
-        ...
 
     @abstractmethod
     def list_wasm_client_hostnames(self, deployment_id: int) -> list[str]: ...
@@ -1465,9 +1446,9 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         "refused_dials",
         "first_reads",
     )
-    #: The two columns the Influx point does not carry, so neither may be
+    #: The one column the Influx point does not carry, so it may not be
     #: overwritten with None by a re-run that could not resolve it.
-    _BROWSER_RECORD_COALESCE_COLUMNS = ("extension", "trace_s3_key")
+    _BROWSER_RECORD_COALESCE_COLUMNS = ("extension",)
 
     def upsert_browser_download_records(self, rows: list[dict]) -> int:
         """Upsert many browser rounds, one statement and one commit per chunk.
@@ -1475,19 +1456,14 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         Idempotent like the file-op upserts, so `record-results` can be re-run
         against the same Influx range and revise rather than duplicate.
 
-        **Two columns COALESCE, and both for the same reason**: neither is
-        carried on the Influx point, so a re-run that cannot resolve one would
-        otherwise erase what an earlier pass recorded.
-
-        * ``trace_s3_key`` is written by `clients fetch-browser-traces`, and the
-          traces die with the VM -- so erasing the pointer leaves no second
-          chance to find them.
-        * ``extension`` is resolved from state that teardown deletes (the
-          extension's own S3 client state, and the deployment's address prefix).
-          A `record-results` re-run after `clients down` resolves None for every
-          host, and writing that would relabel a whole cohort as the
-          deployment's own tier -- which is exactly the distinction the column
-          exists to make.
+        **``extension`` COALESCEs**, because the Influx point does not carry it
+        and a re-run that cannot resolve it would otherwise erase what an
+        earlier pass recorded. It comes from state that teardown deletes (the
+        extension's own S3 client state, and the deployment's address prefix),
+        so a `record-results` re-run after `clients down` resolves None for
+        every host -- and writing that would relabel a whole cohort as the
+        deployment's own tier, which is exactly the distinction the column
+        exists to make.
 
         A known value still updates; only None is refused.
         """
@@ -1564,7 +1540,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         stalls: int | None = None,
         refused_dials: int | None = None,
         first_reads: list | None = None,
-        trace_s3_key: str | None = None,
     ) -> DeploymentBrowserDownloadRecord:
         """Record one browser instance's round, keyed on (deployment, host, round, instance)."""
         self.upsert_browser_download_records(
@@ -1590,7 +1565,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                     "stalls": stalls,
                     "refused_dials": refused_dials,
                     "first_reads": first_reads,
-                    "trace_s3_key": trace_s3_key,
                 }
             ]
         )
@@ -1618,30 +1592,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .all()
         )
-
-    def set_browser_download_trace_key(
-        self,
-        deployment_id: int,
-        client_hostname: str,
-        round_id: int,
-        instance: int,
-        trace_s3_key: str,
-    ) -> bool:
-        existing = (
-            self.session.query(DeploymentBrowserDownloadRecord)
-            .filter(
-                DeploymentBrowserDownloadRecord.deployment_id == deployment_id,
-                DeploymentBrowserDownloadRecord.client_hostname == client_hostname,
-                DeploymentBrowserDownloadRecord.round_id == round_id,
-                DeploymentBrowserDownloadRecord.instance == instance,
-            )
-            .one_or_none()
-        )
-        if existing is None:
-            return False
-        existing.trace_s3_key = trace_s3_key
-        self.session.commit()
-        return True
 
     def list_wasm_client_hostnames(self, deployment_id: int) -> list[str]:
         """Hosts this deployment already has WASM-labelled operations for.

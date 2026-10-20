@@ -7,6 +7,15 @@ as a ``message`` field, and tags it with the client ``role`` (static per pass)
 and the ``stream`` (stdout/stderr, derived from the filename). Lines land in a
 SEPARATE index (``telegraf-ant-clients-{name}``) so client and node logs never
 mingle even on a shared ES instance.
+
+One role also forwards STRUCTURED lines: the browser harness's per-dial trace
+records (V2-1650), one JSON object per line, which `analysis browser-reads`
+queries on ``target``, ``peer``, ``phase`` and ``detail``. Those need their own
+tail input with the JSON parser and their own measurement name
+(``browser_trace``), because shipping them through the text path would make
+each record one opaque ``message`` string that no query could reach inside.
+``json_tail_globs`` is how a caller asks for that; it is empty for every other
+role, and the rendered config is then byte-identical to what it was.
 """
 
 from pyinfra.api import Config, Inventory, State
@@ -47,6 +56,7 @@ class ClientTelegrafProvisioner:
         elasticsearch_password: str,
         role: str,
         tail_globs: list[str],
+        json_tail_globs: list[str] | None = None,
         host_role: str = "CLIENT",
         ssh_user: str = "root",
         from_beginning: bool = True,
@@ -66,6 +76,7 @@ class ClientTelegrafProvisioner:
         self.elasticsearch_password = elasticsearch_password
         self.role = role
         self.tail_globs = list(tail_globs)
+        self.json_tail_globs = list(json_tail_globs or [])
         self.host_role = host_role
         self.ssh_user = ssh_user
         self.from_beginning = from_beginning
@@ -197,6 +208,55 @@ class ClientTelegrafProvisioner:
             f"ANT_CLIENT_ROLE={self.role}\n"
         )
 
+    #: The string fields of a browser trace record. Telegraf's JSON parser keeps
+    #: numbers as fields automatically and DROPS every other string, so a key
+    #: missing from this list arrives nowhere -- which for `target` or `peer`
+    #: would leave the per-chunk report with no chunk and no holder while every
+    #: document still looked present.
+    TRACE_STRING_FIELDS = ("operation", "target", "peer", "phase", "detail", "address", "seeds")
+    #: Promoted to tags, so the report can filter on them without scanning
+    #: fields. `operation` and `phase` only: `target` and `peer` are
+    #: high-cardinality (one value per chunk, one per node) and a tag per chunk
+    #: would multiply the series count by the fleet.
+    TRACE_TAG_KEYS = ("operation", "phase")
+    #: The measurement, and therefore the object the fields nest under in
+    #: Elasticsearch (`browser_trace.target`, not `tail.target`). Its own
+    #: measurement because these are not log lines: pooling them with `tail`
+    #: would put a typed record and a raw string in one mapping.
+    TRACE_MEASUREMENT = "browser_trace"
+
+    def _build_trace_input(self) -> str:
+        """The second tail input: the harness's JSON trace records.
+
+        Empty for every role but the browser downloader, which keeps every
+        other role's rendered config byte-identical.
+        """
+        if not self.json_tail_globs:
+            return ""
+        files_list = ", ".join(f'"{g}"' for g in self.json_tail_globs)
+        string_fields = ", ".join(f'"{f}"' for f in self.TRACE_STRING_FIELDS)
+        tag_keys = ", ".join(f'"{k}"' for k in self.TRACE_TAG_KEYS)
+        return f"""
+# The browser harness's per-dial trace: one JSON object per line, each line
+# self-describing (round, instance, hot file, boundary, and the record's own
+# seq). Parsed as JSON so `analysis browser-reads` can query `target`, `peer`,
+# `phase` and `detail` -- through the text input above each record would be one
+# opaque string. `from_beginning` follows the text input: a restarted forwarder
+# re-reads the file, and the output's `force_document_id` makes a re-read a
+# no-op rather than a duplicate.
+[[inputs.tail]]
+  files = [{files_list}]
+
+  from_beginning = __FROM_BEGINNING__
+  watch_method = "inotify"
+  max_undelivered_lines = __MAX_UNDELIVERED_LINES__
+
+  data_format = "json"
+  json_string_fields = [{string_fields}]
+  tag_keys = [{tag_keys}]
+  name_override = "{self.TRACE_MEASUREMENT}"
+"""
+
     def _build_telegraf_config(self) -> str:
         from_beginning = "true" if self.from_beginning else "false"
         files_list = ", ".join(f'"{g}"' for g in self.tail_globs)
@@ -243,7 +303,7 @@ class ClientTelegrafProvisioner:
 
   data_format = "value"
   data_type = "string"
-
+__TRACE_INPUT__
 ###############################################################################
 #                            PROCESSORS                                       #
 ###############################################################################
@@ -255,13 +315,18 @@ class ClientTelegrafProvisioner:
     field = "value"
     dest = "message"
 
-# --- Order 2: derive `stream` (stdout/stderr) from the file name, drop path ---
+# --- Order 2: derive `stream` (stdout/stderr/trace) from the file name, drop
+# path. `.jsonl` is checked FIRST: the trace file is neither stdout nor stderr,
+# and the else branch would label it `stdout`, which is what every query for
+# the raw client log filters on.
 [[processors.starlark]]
   order = 2
   source = '''
 def apply(metric):
     p = metric.tags.get("path", "")
-    if p.endswith(".stderr") or p.endswith(".err"):
+    if p.endswith(".jsonl"):
+        metric.tags["stream"] = "trace"
+    elif p.endswith(".stderr") or p.endswith(".err"):
         metric.tags["stream"] = "stderr"
     else:
         metric.tags["stream"] = "stdout"
@@ -295,7 +360,8 @@ def apply(metric):
 
   manage_template = false
   overwrite_template = false
-""".replace("__FROM_BEGINNING__", from_beginning)
+""".replace("__TRACE_INPUT__", self._build_trace_input())
+            .replace("__FROM_BEGINNING__", from_beginning)
             .replace("__FILES__", files_list)
             .replace("__METRIC_BUFFER_LIMIT__", str(self.metric_buffer_limit))
             .replace("__MAX_UNDELIVERED_LINES__", str(self.max_undelivered_lines))

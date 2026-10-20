@@ -949,13 +949,14 @@ and that path is byte-identical to before.
   together, because all three are built from it.
 - **`clients provision` sets each VM's OS hostname to that same name, on every
   provider**, so the Influx `host` tag every client service and the browser
-  harness emit, the `browser-traces/<hostname>/` segment of the trace archive and
+  harness emit, the `tag.host` on its forwarded trace documents and
   `client_hostname` in `deployment_browser_download_records` are one string, and a
-  browser row joins to its trace and carries its `extension`. Before **1.4.4** the
-  provisioner set the deployment's own `<deployment>-ant-client-<role>-<region>-<n>`
-  form on an extension's VMs while every reader built the `<deployment>-<name>-…`
-  form, which is why an extension's rows recorded by any release before 1.4.4
-  (1.0.0–1.4.3) carry no `extension` and no `trace_s3_key`.
+  browser row joins to its trace records and carries its `extension`. Before
+  **1.4.4** the provisioner set the deployment's own
+  `<deployment>-ant-client-<role>-<region>-<n>` form on an extension's VMs while
+  every reader built the `<deployment>-<name>-…` form, which is why an
+  extension's rows recorded by any release before 1.4.4 (1.0.0–1.4.3) carry no
+  `extension` (and, before 1.6.0 dropped it, no `trace_s3_key`).
 - S3 state: `saorsa-deploy/client-extensions/<deployment>/<name>.json`; step
   journal `saorsa-deploy/journals/<deployment>--<name>.json` (a double hyphen, so
   it cannot be mistaken for a deployment called `<deployment>-<name>`). The
@@ -1589,13 +1590,16 @@ summaries.
 | `total_ms`, `connect_ms`, `started_late_ms` | |
 | `started_at` | the round's **boundary**, not the instant the browser launched (`started_late_ms` carries that) — which is what makes a window selection over these rows select whole rounds |
 | `seeds` | the bootstrap multiaddrs this instance was given, as an array. Every download dials every seed, so this is what makes the per-round session load on each bootstrap computable |
-| `stalls`, `refused_dials`, `first_reads` | the derived fields, exactly as the point carried them |
-| `trace_s3_key` | written by `clients fetch-browser-traces`, and **preserved by the upsert** — the point never carries it, so an unconditional assignment would erase the only pointer to a round's trace, and the traces die with the VM |
+| `stalls`, `refused_dials`, `first_reads` | the derived fields, exactly as the point carried them. `first_reads` records the peer each chunk's first GET was **sent to**, which is why §4 of the report does not use it — see §"The report" |
 
-**Two columns COALESCE on upsert — `extension` and `trace_s3_key` — and both for
-the same reason**: neither is carried on the Influx point, so a re-run that
-cannot resolve one would erase what an earlier pass recorded. A known value
-still updates; only NULL is refused. `extension` is resolved from
+There is deliberately **no pointer to the raw trace**: the records are forwarded
+to the run's Elasticsearch as they are produced (see §"The trace" below), so
+there is no per-download S3 object to name. `trace_s3_key` existed until 1.6.0
+and is dropped.
+
+**`extension` COALESCEs on upsert**: it is not carried on the Influx point, so a
+re-run that cannot resolve it would erase what an earlier pass recorded. A known
+value still updates; only NULL is refused. `extension` is resolved from
 `deploy_args.browser_downloaders` **first** and the live client tiers second,
 because the recorded config survives `clients down` while the tiers do not — and
 the two cannot disagree, since the extension name is part of the hostname. A
@@ -1603,9 +1607,9 @@ the two cannot disagree, since the extension name is part of the hostname. A
 an edge one: that is where a run's procedure puts the second pass.
 
 `print-recorded-results --id <id>` gains a **Browser downloads** section: rounds,
-VMs, instances, totals by status and by `error_kind`, and how many traces were
-archived. Deliberately a summary — the per-round, per-region and per-chunk
-reading is `analysis browser-reads`, which also carries the gates.
+VMs, instances, totals by status and by `error_kind`. Deliberately a summary —
+the per-round, per-region and per-chunk reading is `analysis browser-reads`,
+which also carries the gates.
 
 **Two things the report needs are held in S3 state that teardown deletes, so
 both are snapshotted into the registry beside the rows.** The report reads
@@ -1627,36 +1631,6 @@ Postgres alone by design, and is meant to be run after the cohort is gone.
   the cohort was running is the answer and there is no later chance to take one.
   So **run `record-results` before tearing a cohort down.**
 
-#### Archiving the traces (`clients fetch-browser-traces`)
-
-```bash
-uv run saorsa-deploy clients fetch-browser-traces --name DEV-03
-```
-
-Copies `/var/lib/ant-browser-downloader/trace/*.jsonl` off **every** browser VM
-(the deployment's own tier and each `kind: clients` extension's) to
-`~/.autonomi/testnets/<deployment>/browser-traces/<hostname>/`, uploads each to
-`s3://saorsa-testnet-addresses/saorsa-deploy/results/<deployment>/browser-traces/<hostname>/<round_id>-<instance>.jsonl`,
-and sets `trace_s3_key` on the matching row. Prints per host: files fetched,
-bytes, how many linked and how many matched no row.
-
-Three things worth knowing:
-
-- **Run it while the VMs are UP, before `clients down`.** It **exits 2 if any VM
-  is unreachable**, because a partial archive that exited 0 would be
-  indistinguishable from a complete one — and after teardown there is no way to
-  tell and no way to go back.
-- **It never creates a row.** A trace whose round has not been recorded yet is
-  reported as unmatched and left; run `record-results` and then this command
-  again (the upsert preserves a `trace_s3_key` that is already set). Inventing a
-  row would mean one with no status, no duration and no first reads.
-- **The VMs come from the S3 client state, not the local inventory.** A browser
-  cohort is normally an extension added hours after `up` wrote the inventory, so
-  the inventory would not name its VMs at all.
-
-Idempotent: a completed round's trace never changes, so re-uploading it is a
-no-op in content.
-
 #### The report (`analysis browser-reads`)
 
 ```bash
@@ -1665,8 +1639,15 @@ uv run saorsa-deploy analysis browser-reads --name DEV-03 --id 701 \
   --markdown-out browser-reads.md --json-out browser-reads.json
 ```
 
-**Reads Postgres only**, so it runs after the VMs and their InfluxDB are gone —
-which is the whole reason the rows exist. `record-results` must have run first.
+**Two sources, and this command must run BEFORE teardown.** Everything that
+came off the Influx point is read from Postgres, so it survives the VMs and
+their InfluxDB — which is the whole reason the rows exist, and
+`record-results` must have run first. The **per-chunk section and G3** are read
+from the run's own **Elasticsearch**, where the harness forwards every trace
+record as it is produced; `elastic destroy` takes those with it, so run the
+report while the stack is up (a failed gate keeps it standing, which is exactly
+when it is wanted).
+
 A round is in the window when its boundary (`round_id x period`) lies in
 `[start, end)`; half-open, so two adjacent windows partition a run's rounds
 exactly once between them. The period comes from
@@ -1687,14 +1668,47 @@ flag on a round whose instances started more than 10 s apart), **3 per region**,
 gates**. `skipped` rows are excluded from every denominator and listed
 separately.
 
-**§4 is the verdict on the hot-read spreading change, and it reads `first_reads`
-alone.** For every chunk any download read: the reads, the distinct holders, the
-**busiest holder's share** and the distribution of `known_holders`, sorted by
-share descending. The first read is the one that matters — a fallback to a second
-holder has already paid the first one's `NotFound` or silence, so counting it
-would credit the read path for a retry. `known_holders` is the
-discovery-reported count for the whole download rather than the count known at
-the read, and `null` (no count reported) is its own bucket, never 0.
+**§4 is the verdict on the hot-read spreading change, and it counts the holder
+that SERVED each read.** Two definitions carry the whole section:
+
+- a **holder** of a chunk is a peer that answered `found` for it anywhere in the
+  window — resolved over the window and not per download, because a peer that
+  served the chunk to one browser holds it for all of them;
+- a download's **first read** of a chunk is its first GET (`rpc start`, in `seq`
+  order) that reached a holder. The first read is the one that matters: a
+  fallback to a second holder has already paid the first one's `NotFound` or
+  silence, so counting it would credit the read path for a retry.
+
+**This is a change of definition in 1.6.0, and it changes the verdict.** Until
+then §4 read the row's `first_reads`, which records the peer each first GET was
+*sent to*. On DEV-01 (registry id 685) every one of 1,260 downloads sent its
+first GET for the file-address chunk to a **bootstrap seed**, which answered
+`NotFound`, and 96 % of the content-chunk first GETs were answered `NotFound`
+too — so the gate was measuring where speculative misses landed. The same run,
+counted by holder: one holder served over 25 % of first reads on **41 of 51**
+chunks (median 34 %, worst 90 %), against **3 of 51** the old way. That is the
+quantity ADR-0023 section 1 is about.
+
+Per chunk, sorted by busiest share descending: the reads, the distinct holders
+that served them, the busiest holder's share, and
+
+| column | what it is |
+| --- | --- |
+| `gets` | mean `rpc start` count for this chunk per download. **10.04 on id 685 R1–R9**, against 3.45 in the ADR's own validation |
+| `not_found` | mean `rpc finish` answered `NotFound` per download. **7.94 on id 685**, against 1.39 in the ADR's validation |
+| `1st→holder` | share of downloads whose **very first** GET went to a holder. **0 % on id 685's three file-address chunks** (all 1,260 went to a seed) and 3.8 % mean on the content chunks |
+| `pre-disc` | share of downloads whose first holder read was sent **before** `discovery finish` for that chunk, or where discovery never finished. **100 % / 99.5 %** on id 685 — the early-read path decides before discovery returns |
+| `known_holders` | the discovery-reported count for the whole download rather than the count known at the read; still taken from the row's `first_reads`, where the harness already resolves it. `null` (no count reported) is its own bucket, never 0 |
+
+A chunk every GET of which went to a peer that never answered `found` has **no
+first read**, so it is in no gate — and is listed under "Read but never served"
+rather than silently absent.
+
+The reference figures above and the fixtures are both from the real id 685
+traces: `deploy/tests/fixtures/browser-reads/id685-trace-docs.jsonl.gz` is 1,738
+Elasticsearch documents from round 2987404's first twenty downloads, narrowed to
+one file-address chunk (busiest share **70 %**, 9.25 GETs, 7.75 `NotFound`,
+0 % first-GET-to-holder) and one content chunk (**45 %**, 11.65, 9.40, 0 %).
 
 **§7** is sessions per bootstrap per round: every download dials every seed, so a
 round's download count is what one bootstrap sees at its start. The per-round
@@ -1709,22 +1723,75 @@ that started small would hide the peak that matters.
 | G4 refused dials | `--max-refused`, default 0 | total reconstructed refusals. A refusal usually means the VM exceeded the per-IP WebRTC session quota, not that the fleet refused us — check the instance count before reading it as the fleet |
 
 **Exit 0** when all four pass, **1** when any fails, **2** when the report cannot
-be produced at all (no rows, no round in the window, no hot-file selection, no
-period). The two are distinct because an unattended runner has to tell "the
+be produced at all (no rows, no round in the window, **no `rpc` trace document
+for the window**, no hot-file selection, no period). An empty Elasticsearch
+result is exit 2 and not an empty table, because an empty §4 would read as a
+cohort whose reads reached no holder when the cause is `forward_logs` off, a
+bundle without `test-utils`, or a stack already destroyed. The two are distinct because an unattended runner has to tell "the
 release made the read path worse" from "I measured nothing". `--json-out` carries
 every table and the gate verdicts; `--json-out -` writes the object as the whole
 of stdout (see §"`--json-out -`"), and `--print-markdown` is suppressed there.
 
-#### The trace, and the three derived fields
+#### The trace: forwarded to Elasticsearch as it is produced
 
-Each download's trace is written to
-`/var/lib/ant-browser-downloader/trace/<round_id>-<instance>.jsonl`: a header
-line `{"header": true, "round_id", "instance", "hot_file_index", "address",
-"seeds", "boundary", "started_at"}`, then one `setBrowserTrace` record per line
-(`{id, operation, target, peer, phase, elapsed_ms, detail}`, with `operation` one
-of `association` | `connect` | `rpc` | `discovery` | `lookup-progress`).
-**The harness never deletes them** — the traces are the dataset this role
-produces, so `scp` them off before destroy.
+After each download the harness **appends** that download's records to
+`/var/log/ant-client-forward/browser-trace.jsonl`, and telegraf ships them to
+the run's Elasticsearch as `browser_trace` documents in
+`telegraf-ant-clients-<name>-*`, beside the node and client logs. One document
+per client event; `analysis browser-reads` queries them for §4 and G3.
+
+**Why not a file per download fetched afterwards.** Until 1.6.0 each download
+wrote `/var/lib/ant-browser-downloader/trace/<round>-<instance>.jsonl` and
+`clients fetch-browser-traces` `scp`-ed them off every VM after the run, then
+uploaded and database-linked them one at a time. On DEV-01 (registry id 685)
+that step ran **2 h 47 min** for 2,676 files (2.5 GB) across 35 VMs, starting
+after the last measured round: it pushed the run past its 6-hour ceiling and
+left the node fleet running until its disks filled. The records are JSON lines
+produced on a VM that already forwards its logs, so they belong there, with the
+same lifecycle — queried while the testnet is up, retained with the stack when a
+gate fails, gone with it otherwise. The report writes its figures to the
+registry, which is the durable record. The command, the S3 archive and the
+`trace_s3_key` column are gone.
+
+Each line is **self-describing**, because a document in Elasticsearch has no
+neighbours it can be read in the context of:
+
+| field | notes |
+| --- | --- |
+| `round_id`, `instance`, `hot_file_index`, `address`, `boundary`, `started_at` | the download's identity, repeated on every line — the file name used to carry the first two |
+| `seq` | the record's position in the download, **unique within it**: the header takes 0 and the events 1..N. The report pages with `search_after` on `[round_id, host, instance, seq]`, and a tie in that tuple would silently drop a document |
+| `id`, `operation`, `target`, `peer`, `phase`, `elapsed_ms`, `detail` | the `setBrowserTrace` record itself, unchanged. `operation` is one of `header` \| `association` \| `connect` \| `rpc` \| `discovery` \| `lookup-progress` |
+| `seeds` | written **once** per download, on the `operation: "header"` record. ~600 bytes, and a download is ~3,000 lines |
+
+Two shapes of it are load-bearing:
+
+- **One `appendFile` call per download**, so four instances appending at once
+  cannot interleave: the file is opened `O_APPEND` and a single write is atomic,
+  so no line is ever cut in half.
+- **Rotated the coarse way the native roles are** — truncated wholesale once
+  past 1 GiB, checked *before* an append so the block that crosses the cap is
+  kept whole. A real rotation would need the forwarder restarted to re-open the
+  new inode.
+
+In telegraf, the trace is its **own tail input** with `data_format = "json"`,
+`name_override = "browser_trace"` and `tag_keys = ["operation", "phase"]`; the
+stdout/stderr input is untouched and every other role's rendered config is
+byte-identical. Three things about the documents, each of which produces a
+confident zero if got wrong:
+
+- **Fields nest under the measurement name**, so they are `browser_trace.target`
+  and so on — never bare `target`, the same trap as `tail.message` on the node
+  index. The `ant-client-logs` index template types them there.
+- **`operation` and `phase` are tags**, so they are `tag.operation` /
+  `tag.phase` and are analysed: a `term` query needs `.keyword`. They are left
+  to dynamic mapping on purpose, because an explicit keyword mapping would
+  remove the `.keyword` subfield every `tag.*.keyword` query reads.
+- **`json_string_fields` must name every string**, because telegraf's JSON
+  parser keeps numbers automatically and DROPS any other string it was not told
+  about. A missing `target` or `peer` would leave every document present and §4
+  empty.
+
+#### The three derived fields
 
 Three summaries are computed from each trace before its point is written. Each
 is shaped by what `setBrowserTrace` actually emits — `{id, operation, target,
@@ -1753,8 +1820,12 @@ them reads the way the field names suggest:
   3 s. Counted separately from a stall precisely so a per-IP quota mistake (a
   fifth instance on the VM) cannot be read as a NAT'd fleet.
 - **`first_reads`** — a JSON array of `{chunk, holder, known_holders}`: for each
-  chunk read, the **first** peer targeted for it (a fallback to a second holder
-  has already paid the first one's `NotFound` or silence). A chunk read is
+  chunk read, the **first peer targeted** for it. **Note what that is and is
+  not**: it is the peer the first GET was *sent to*, which on id 685 was a
+  bootstrap seed answering `NotFound` on every download — so the report's §4
+  deliberately does not use it (see §"The report"), and this field is kept only
+  for `known_holders` and for comparability with runs recorded before 1.6.0. A
+  chunk read is
   identified by a **non-empty `target`**, which is what `Trace::new("rpc",
   <chunk hex if GetRequest else "">, <peer hex>)` puts there — the detail is
   empty on `start` and `found N bytes` / `NotFound { .. }` on `finish`, and the
@@ -1787,7 +1858,8 @@ The harness tees its own streams to
 `/var/log/ant-client-forward/browser-downloader.{stdout,stderr}.log`, capped at
 1 GiB exactly as the native roles' aggregates are, and the role is named in
 `_FORWARD_ROLE_FILES` so `forward_logs: true` forwards them to
-`telegraf-ant-clients-<name>`. One grep-able line per download:
+`telegraf-ant-clients-<name>` (and `browser-trace.jsonl` with them, through its
+own JSON input — see §"The trace"). One grep-able line per download:
 
 ```
 round=<id> instance=<n> status=<s> kind=<k> total_ms=<n> address=<hex>
@@ -1807,6 +1879,22 @@ uv run saorsa-deploy clients up --config deploy/manifests/runs/DEV-01-browsers.y
 The extension inherits the deployment's recorded WASM bundle, **including its
 features**, so a deployment built without `test-utils` is refused at
 `clients provision` rather than producing a cohort that reports nothing.
+
+Recording a cohort is **two commands and no fetch step** (as of 1.6.0), and the
+order matters:
+
+```bash
+uv run saorsa-deploy deployments record-results --name DEV-01
+uv run saorsa-deploy analysis browser-reads --name DEV-01 --id 685 \
+  --window-start … --window-end … --markdown-out browser-reads.md \
+  --json-out browser-reads.json
+```
+
+`record-results` first, because the report needs its rows and its hot-file
+snapshot; both **before** teardown, because the report also reads the forwarded
+trace records out of the run's Elasticsearch. The 1.5.0 procedure had a
+`clients fetch-browser-traces` step between them, which on DEV-01 (id 685) ran
+2 h 47 min and put the run past its ceiling; it no longer exists.
 
 ### Pointer client VMs
 

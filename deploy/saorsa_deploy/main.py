@@ -1266,35 +1266,6 @@ def main(argv=None):
         help="Deployment name.",
     )
 
-    # clients fetch-browser-traces
-    clients_fetch_traces_parser = clients_subparsers.add_parser(
-        "fetch-browser-traces",
-        help=(
-            "Copy every browser-downloader VM's per-dial traces off the VM, "
-            "archive them to S3 and link each to its recorded round. Run it "
-            "while the VMs are UP, before `clients down` — the traces are "
-            "deleted with the VM. Exits 2 if any VM is unreachable."
-        ),
-    )
-    clients_fetch_traces_parser.add_argument(
-        "--name",
-        type=str,
-        required=True,
-        help="Deployment name. Covers its own browser tier and every `kind: clients` extension's.",
-    )
-    clients_fetch_traces_parser.add_argument(
-        "--ssh-key-path",
-        type=str,
-        default="~/.ssh/ant_deploy",
-        help="SSH private key for the client VMs (default: ~/.ssh/ant_deploy).",
-    )
-    clients_fetch_traces_parser.add_argument(
-        "--ssh-user",
-        type=str,
-        default="root",
-        help="SSH user on the client VMs (default: root).",
-    )
-
     # clients slack-post
     clients_slack_post_parser = clients_subparsers.add_parser(
         "slack-post",
@@ -8049,12 +8020,6 @@ def main(argv=None):
             from saorsa_deploy.cmd.hot_files import cmd_print_hot_files
 
             cmd_print_hot_files(args)
-        elif args.clients_subcommand == "fetch-browser-traces":
-            from saorsa_deploy.cmd.fetch_browser_traces import (
-                cmd_fetch_browser_traces,
-            )
-
-            cmd_fetch_browser_traces(args)
         elif args.clients_subcommand == "slack-post":
             from saorsa_deploy.cmd.clients_slack_post import (
                 cmd_clients_slack_post,
