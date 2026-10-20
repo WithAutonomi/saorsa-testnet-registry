@@ -32,6 +32,8 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 from rich.table import Table
+
+from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_db.models.prod_service_audit import ProdServiceAuditAction
 
 from saorsa_deploy import registry
@@ -664,12 +666,45 @@ def cmd_prod_services_disk_survey(args) -> None:
         console.print("[dim]Survey not stored (DATABASE_URL unset or unreachable).[/dim]")
 
 
+
+def _survey_as_dict(survey) -> dict:
+    """A stored survey's scalar fields, without its per-service child rows."""
+    if survey is None:
+        return None
+    return {
+        "id": survey.id,
+        "surveyed_at": survey.surveyed_at.isoformat(),
+        "host_count": survey.host_count,
+        "service_count": survey.service_count,
+        "total_data_bytes": survey.total_data_bytes,
+        "attempted_host_count": survey.attempted_host_count,
+        "failed_hosts": survey.failed_hosts,
+    }
+
+
+def _emit_survey_report_json(args, console, payload: dict) -> None:
+    """Write the survey comparison as JSON when `--json-out` was given.
+
+    Exists so a reporting tool can read today-vs-yesterday without parsing the
+    Rich tables above, whose host column is truncated to the terminal width --
+    `cntb-US-cent…` is not a host a consumer can key on.
+
+    Emitted at every exit, including the ones where there is nothing to
+    compare. "One survey on record" and "the command failed before it got
+    here" are different states and a missing file cannot distinguish them.
+    """
+    json_out = getattr(args, "json_out", None)
+    if not json_out:
+        return
+    emit_json(payload, json_out, console)
+
+
 def cmd_prod_services_survey_report(args) -> None:
     """Compare the two most recent disk surveys for an inventory and summarise
     the change: per-host free-disk delta, total node-data delta, and the
     services added/removed/reset between them (from the audit trail). This is
     the 'today vs yesterday' read-back over the stored survey history."""
-    console = Console()
+    console = console_for(getattr(args, "json_out", None))
     repo = registry.get_prod_fleet_repository()
     if repo is None:
         console.print(
@@ -680,11 +715,29 @@ def cmd_prod_services_survey_report(args) -> None:
 
     inventory_name = _inventory_name(args.inventory_path)
     surveys = repo.latest_disk_surveys(inventory_name, limit=2)
+    base = {
+        "inventory": inventory_name,
+        "queried_at": datetime.now(timezone.utc).isoformat(),
+        "latest": None,
+        "previous": None,
+    }
     if not surveys:
         console.print(f"[yellow]No surveys recorded for {inventory_name}.[/yellow]")
+        _emit_survey_report_json(args, console, base)
         return
 
     latest = surveys[0]
+    base["latest"] = _survey_as_dict(latest)
+    base["host_disk"] = {"latest": latest.host_disk or {}}
+    base["services"] = [
+        {
+            "host": svc.host,
+            "service": svc.service_name,
+            "size_bytes": svc.size_bytes,
+            "active": getattr(svc, "active", None),
+        }
+        for svc in sorted(latest.services or [], key=lambda x: x.size_bytes or 0)
+    ]
     console.print(
         f"[bold]{inventory_name}[/bold] latest survey "
         f"[cyan]{latest.surveyed_at.isoformat()}[/cyan]: "
@@ -694,9 +747,13 @@ def cmd_prod_services_survey_report(args) -> None:
     _print_stored_failures(console, latest, "latest")
     if len(surveys) < 2:
         console.print("[dim]Only one survey on record — nothing to compare yet.[/dim]")
+        _emit_survey_report_json(args, console, base)
         return
 
     prev = surveys[1]
+    base["previous"] = _survey_as_dict(prev)
+    base["host_disk"]["previous"] = prev.host_disk or {}
+    base["free_delta"] = []
     console.print(f"[dim]Comparing against previous survey {prev.surveyed_at.isoformat()}.[/dim]")
     _print_stored_failures(console, prev, "previous")
 
@@ -717,6 +774,8 @@ def cmd_prod_services_survey_report(args) -> None:
             _format_bytes(nf),
             _signed_bytes(delta) if delta is not None else "?",
         )
+        base["free_delta"].append(
+            {"host": host, "free_then": pf, "free_now": nf, "delta": delta})
     console.print(dtable)
 
     # The node-data delta, like-for-like over the hosts both surveys reached.
@@ -731,6 +790,20 @@ def cmd_prod_services_survey_report(args) -> None:
         prev_host_data = latest_host_data = {}
     if prev_host_data or latest_host_data:
         comparison = compare_host_data(prev_host_data, latest_host_data)
+        base["node_data"] = {
+            "previous_total": comparison.previous_total,
+            "latest_total": comparison.latest_total,
+            "raw_delta": comparison.raw_delta,
+            "common_delta": comparison.common_delta,
+            "common_delta_per_host": comparison.common_delta_per_host,
+            "common_host_count": len(comparison.common_hosts),
+            "dropped_hosts": list(comparison.dropped_hosts),
+            "added_hosts": list(comparison.added_hosts),
+            "coverage_changed": comparison.coverage_changed,
+            "misleading": comparison.misleading,
+            "per_host_previous": prev_host_data,
+            "per_host_latest": latest_host_data,
+        }
         if comparison.dropped_hosts:
             console.print(
                 f"[bold yellow]Coverage dropped:[/bold yellow] "
@@ -757,8 +830,20 @@ def cmd_prod_services_survey_report(args) -> None:
     events = repo.list_service_audit(
         inventory_name, since=prev.surveyed_at, until=latest.surveyed_at
     )
+    base["audit"] = [
+        {
+            "occurred_at": e.occurred_at.isoformat(),
+            "host": e.host,
+            "service": e.service_name,
+            "action": e.action.value,
+            "size_bytes": e.size_bytes,
+        }
+        for e in events
+    ]
     if not events:
         console.print("[dim]No add/remove/reset events between the two surveys.[/dim]")
+        base["reclaimed_bytes"] = 0
+        _emit_survey_report_json(args, console, base)
         return
     etable = Table(title="Service changes between the surveys (audit trail)")
     etable.add_column("When")
@@ -781,6 +866,8 @@ def cmd_prod_services_survey_report(args) -> None:
     console.print(
         f"[green]Reclaimed via removals in this window: {_format_bytes(reclaimed)}.[/green]"
     )
+    base["reclaimed_bytes"] = reclaimed
+    _emit_survey_report_json(args, console, base)
 
 
 def _update_inventory(
