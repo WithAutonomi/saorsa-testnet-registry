@@ -2889,6 +2889,27 @@ Never compare one against the other. `derive-metrics` refuses `--label full-run`
 
 `deployments print-recorded-results` renders both the per-mountpoint occupancy table and every stored window's derived metrics.
 
+### `deployments print-recorded-results`
+
+Prints everything a deployment has persisted to Postgres — the freeform analysis summary, the per-host metrics from `deployment_host_results`, the stored derived metrics, and the kind-appropriate result tables. It reads Postgres only, so it works long after the run's monitoring stack and VMs are gone.
+
+```bash
+# The live row of a reused name, whichever id it carries today.
+uv run saorsa-deploy deployments print-recorded-results --name PROD-WUL-01 --details
+
+# A specific historical row.
+uv run saorsa-deploy deployments print-recorded-results --id 611
+```
+
+Exactly one of `--id` / `--name`. **`--name` resolves the live deployment** (the most recent non-terminal row of that name, falling back to the most recent row once it is destroyed), so a permanent deployment that is torn down and stood up again is followed automatically. A pinned `--id` keeps printing a well-formed report for the destroyed row and exits 0 while doing it, which is how `PROD-WUL-01` was reported as not running for three days after a redeploy moved it from id 611 to 673. The resolved row is named in the header and in the JSON sidecar's `deployment_id`, so which one was read is always visible.
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--id` | *(one of these)* | Deployment id from the registry. Points at one specific historical row — names are not unique across destroyed/recreated deployments. |
+| `--name` | *(one of these)* | Deployment name, resolving to the **live** deployment with that name. Use `--id` to point at a specific historical row. |
+| `--json-out` | — | Write the result as JSON here beside the human output. `-` or `/dev/stdout` writes it to stdout as the command's only output. |
+| `--details` | off | One full row per upload/download with no truncation, plus the per-op rows for the testnet / continuous-downloader kinds. |
+
 ### Connection-error counts (`deployments record-log-counts`)
 
 Counts a versioned set of named log strings in a run's Elasticsearch and stores the **counts** — never the lines — in `deployment_log_event_counts`, so `deployments compare` can gate on them.

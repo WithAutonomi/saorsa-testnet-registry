@@ -1795,15 +1795,28 @@ def main(argv=None):
             "so it works after monitoring infra has been torn down."
         ),
     )
-    deployments_print_recorded_parser.add_argument(
+    deployments_print_recorded_source = (
+        deployments_print_recorded_parser.add_mutually_exclusive_group(required=True)
+    )
+    deployments_print_recorded_source.add_argument(
         "--id",
         dest="deployment_id",
         type=int,
-        required=True,
         help=(
             "Deployment id from the registry. Names are not unique across "
             "destroyed/recreated deployments — use the id from "
             "`deployments ls` to point at a specific historical row."
+        ),
+    )
+    deployments_print_recorded_source.add_argument(
+        "--name",
+        type=str,
+        help=(
+            "Deployment name. Resolves the LIVE deployment with that name, so "
+            "a recreated deployment is followed automatically and a pinned id "
+            "cannot go stale. Falls back to the most recent row of that name "
+            "once it has been destroyed. Use --id to point at a specific "
+            "historical row."
         ),
     )
     deployments_print_recorded_parser.add_argument(
