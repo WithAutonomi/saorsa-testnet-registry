@@ -241,7 +241,7 @@ def _load_trace_docs(name: str, rows, window_start, window_end, console) -> list
         quiet_tls()
         run = EsRun(name)
         index = run.client_index()
-        docs, dropped = fetch_trace_docs(run, rounds)
+        docs, counts = fetch_trace_docs(run, rounds)
     except BrowserReadsError:
         raise
     except Exception as e:  # noqa: BLE001 -- reported as exit 2, never a traceback
@@ -253,15 +253,27 @@ def _load_trace_docs(name: str, rows, window_start, window_end, console) -> list
             f"be produced. Run this BEFORE teardown — `elastic destroy` takes "
             f"the records with it."
         )
-    if dropped:
+    if counts["unusable"]:
         # Reported, not swallowed: `ignore_malformed` is on for this index, so a
         # field that did not fit its mapping is dropped and the document still
         # arrives. A record with no round, instance or seq cannot be placed in a
         # download.
         console.print(
-            f"[yellow]{dropped:,} trace document(s) were missing a round, "
-            f"instance, seq or host and could not be attributed to a "
+            f"[yellow]{counts['unusable']:,} trace document(s) were missing a "
+            f"round, instance, seq or host and could not be attributed to a "
             f"download.[/yellow]"
+        )
+    if counts["duplicates"]:
+        # Expected, and already handled — but a large count means the client
+        # forwarder restarted mid-run and re-read its on-disk trace, which is
+        # worth knowing whether or not it changed a figure here.
+        console.print(
+            f"[yellow]{counts['duplicates']:,} duplicate trace document(s) "
+            f"ignored (same round, host, instance and seq). Telegraf derives "
+            f"`force_document_id` from the timestamp and tags, not the fields, "
+            f"and stamps each line when it is read — so a forwarder restart "
+            f"with `from_beginning = true` re-indexes what is already on "
+            f"disk.[/yellow]"
         )
     if not any(d["operation"] == OP_RPC for d in docs):
         raise BrowserReadsError(

@@ -537,7 +537,7 @@ class TestOsHostnamesByIp:
     set the deployment's own `<deployment>-ant-client-...` form on an
     extension's VMs, so the browser harness tagged every Influx point with a
     name no reader builds — and all 72 recorded rows came out with no
-    `trace_s3_key` and no `extension`.
+    `extension`.
     """
 
     BROWSERS = [

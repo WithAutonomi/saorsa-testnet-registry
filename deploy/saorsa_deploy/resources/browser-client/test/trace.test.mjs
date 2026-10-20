@@ -93,25 +93,77 @@ test("a round with no hot file still produces a header with an empty address", (
   assert.equal(first.address, "");
 });
 
-test("four instances appending at once leave every line whole and parseable", async () => {
+/**
+ * A DEV-01-sized block, which is the only size at which concurrent appends can
+ * split a line.
+ *
+ * `fs/promises` writes a buffer in 512 KiB chunks and awaits each one, so a
+ * block under that is one `write(2)` and interleaves with nothing — which is
+ * why a 200-record test passed against an implementation that loses records on
+ * every real round. Every one of id 685's 2,676 per-download traces was 599 KB
+ * to 1.30 MB; 3,000 records of the fixture shape is ~1.3 MB, so each block is
+ * three chunks.
+ */
+const DEV01_RECORDS = 3000;
+
+test("four instances appending DEV-01-sized blocks at once split no line", async () => {
   const dir = await mkdtemp(join(tmpdir(), "browser-trace-"));
   const path = join(dir, "browser-trace.jsonl");
-  await Promise.all([1, 2, 3, 4].map((i) => appendTrace(path, lines(i, 200))));
-  const body = await readFile(path, "utf8");
-  const parsed = body
-    .split("\n")
-    .filter((l) => l.length)
-    .map((l) => JSON.parse(l));
-  assert.equal(parsed.length, 4 * 201, "every line of every download is present");
+  const blocks = [1, 2, 3, 4].map((i) => lines(i, DEV01_RECORDS));
+  assert.ok(
+    blocks[0].join("\n").length > 600_000,
+    "the block has to exceed the 512 KiB chunk size or this proves nothing",
+  );
+  await Promise.all(blocks.map((b) => appendTrace(path, b)));
+
+  const raw = (await readFile(path, "utf8")).split("\n").filter((l) => l.length);
+  const parsed = [];
+  let unparseable = 0;
+  for (const line of raw) {
+    try {
+      parsed.push(JSON.parse(line));
+    } catch {
+      unparseable += 1;
+    }
+  }
+  assert.equal(unparseable, 0, "a split line leaves two halves telegraf drops silently");
+  assert.equal(parsed.length, 4 * (DEV01_RECORDS + 1), "every line of every download is present");
   for (const instance of [1, 2, 3, 4]) {
     const mine = parsed.filter((r) => r.instance === instance);
-    // In append order within the download: one `appendFile` per block, so the
-    // block cannot be cut in half by another instance's write.
     assert.deepEqual(
       mine.map((r) => r.seq),
-      Array.from({ length: 201 }, (_, i) => i),
+      Array.from({ length: DEV01_RECORDS + 1 }, (_, i) => i),
+      `instance ${instance} lost or reordered a record`,
     );
   }
+});
+
+test("a download's block lands contiguously, so appends are serialised", async () => {
+  // The stronger reading of the same property: not merely that no line was
+  // cut, but that no OTHER instance's record appears inside a block. One
+  // `write(2)` per block plus the module's append queue is what gives that;
+  // either alone would do for a single-process harness, and both is cheap.
+  const dir = await mkdtemp(join(tmpdir(), "browser-trace-"));
+  const path = join(dir, "browser-trace.jsonl");
+  await Promise.all([1, 2, 3, 4].map((i) => appendTrace(path, lines(i, DEV01_RECORDS))));
+  const order = (await readFile(path, "utf8"))
+    .split("\n")
+    .filter((l) => l.length)
+    .map((l) => JSON.parse(l).instance);
+  const runs = order.filter((v, i) => i === 0 || v !== order[i - 1]);
+  assert.equal(runs.length, 4, `expected one unbroken run per instance, got ${runs.length}`);
+  assert.deepEqual([...runs].sort(), [1, 2, 3, 4]);
+});
+
+test("a failed append does not stop the next one being queued", async () => {
+  // The queue must carry no rejection forward: one bad append (a full disk)
+  // would otherwise silence the trace for the life of the deployment.
+  const dir = await mkdtemp(join(tmpdir(), "browser-trace-"));
+  await assert.rejects(() => appendTrace(join(dir, "missing", "x", "\0bad"), lines(1, 1)));
+  const path = join(dir, "browser-trace.jsonl");
+  await appendTrace(path, lines(2, 1));
+  const body = await readFile(path, "utf8");
+  assert.equal(body.split("\n").filter((l) => l.length).length, 2);
 });
 
 test("a file over the cap is truncated before the append, not after", async () => {

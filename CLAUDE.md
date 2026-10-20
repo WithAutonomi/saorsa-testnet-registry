@@ -1536,7 +1536,7 @@ no fetch step and no S3 archive.
   would relabel a whole cohort as the deployment's own tier. It resolves from
   `deploy_args.browser_downloaders` FIRST and the live client tiers second (the
   config survives teardown; the two cannot disagree, since the extension name is
-  part of the hostname). **There is no `trace_s3_key`** — dropped in 1.6.0 with
+  part of the hostname). **There is no `trace_s3_key`** — dropped in 1.7.0 with
   the archive it pointed at.
 - **The report reads Postgres AND the run's Elasticsearch, so it must run
   BEFORE teardown.** Everything off the Influx point comes from the rows (which
@@ -1555,10 +1555,20 @@ no fetch step and no S3 archive.
   nothing was recorded.
 - **Every trace line is self-describing and `seq` is unique within a download**
   (header 0, events 1..N): the report pages with `search_after` on
-  `[round_id, host, instance, seq]`, and a tie there would silently drop a
-  document. One `appendFile` per download, so four instances cannot interleave;
-  rotated wholesale at 1 GiB, checked BEFORE the append. The records are their
-  own tail input (`data_format = "json"`, `name_override = "browser_trace"`), so
+  `[round_id, host, instance, seq]`, a tie there would silently drop a document,
+  and the same tuple is what the reader DEDUPLICATES on —
+  `force_document_id` does not make a forwarder restart idempotent (telegraf
+  hashes the timestamp and tags, never the fields, and the tail input stamps
+  each line when it is read), so `from_beginning = true` re-indexes the whole
+  on-disk file and would double `gets_per_download`/`not_found_per_download`.
+- **Appends are serialised and each block is ONE `filehandle.write`**, not
+  `appendFile`: a per-download block is 599 KB–1.30 MB (measured over all 2,676
+  of id 685's traces) while `fs/promises` writes in 512 KiB chunks, so
+  concurrent instances interleaved at a chunk boundary and cut a line of each in
+  half — telegraf drops both halves and nothing reports it. A test at 200
+  records passed against that; it takes 3,000 to catch. Rotated wholesale at
+  1 GiB, checked BEFORE the append; an append that fails warns rather than
+  failing the round. The records are their own tail input (`data_format = "json"`, `name_override = "browser_trace"`), so
   fields nest under `browser_trace.*` and `operation`/`phase` are `tag.*` —
   analysed, hence `.keyword`. **`json_string_fields` must name every string**:
   telegraf keeps numbers automatically and DROPS any other string it was not

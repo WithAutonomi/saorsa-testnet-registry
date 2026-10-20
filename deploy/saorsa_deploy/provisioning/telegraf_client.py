@@ -241,9 +241,12 @@ class ClientTelegrafProvisioner:
 # self-describing (round, instance, hot file, boundary, and the record's own
 # seq). Parsed as JSON so `analysis browser-reads` can query `target`, `peer`,
 # `phase` and `detail` -- through the text input above each record would be one
-# opaque string. `from_beginning` follows the text input: a restarted forwarder
-# re-reads the file, and the output's `force_document_id` makes a re-read a
-# no-op rather than a duplicate.
+# opaque string. `from_beginning` follows the text input, so a restarted
+# forwarder re-reads the file and re-indexes what is already there:
+# `force_document_id` does NOT prevent that, because telegraf derives the id
+# from the timestamp and the tag set and the tail input stamps each line when
+# it is READ. The reader deduplicates on (round_id, host, instance, seq)
+# instead -- see `browser_traces.fetch_trace_docs`.
 [[inputs.tail]]
   files = [{files_list}]
 

@@ -624,9 +624,15 @@ class TestHarnessSources:
         assert "writeTrace" not in harness
         assert "traceDir" not in harness
         trace = (HARNESS_DIR / "lib" / "trace.mjs").read_text()
-        # One `appendFile` for the whole block is what makes four instances
-        # appending at once safe -- O_APPEND cannot interleave a single write.
-        assert "appendFile(path, `${lines.join" in trace
+        # NOT `appendFile`: `fs/promises` splits a buffer into 512 KiB chunks
+        # and awaits each, and a per-download block is 599 KB-1.30 MB, so two
+        # instances interleaved at a chunk boundary and cut a line of each in
+        # half. One `write` on a handle opened "a" plus a process-wide queue.
+        assert "appendFile(" not in trace, "the prose may mention it; nothing may call it"
+        assert 'from "node:fs/promises"' in trace and "appendFile," not in trace
+        assert 'await open(path, "a")' in trace
+        assert "handle.write(buffer, written, buffer.length - written)" in trace
+        assert "appendQueue = run.then(" in trace
         # Rotated the way the native roles are, and checked BEFORE the append
         # so the block that crosses the cap is kept whole.
         assert "FORWARD_LOG_MAX_BYTES" in trace

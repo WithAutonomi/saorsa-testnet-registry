@@ -175,18 +175,37 @@ def fetch_trace_docs(
     *,
     page_size: int = TRACE_PAGE_SIZE,
     index: str | None = None,
-) -> tuple[list[dict], int]:
-    """Every ``rpc``/``discovery`` record for the window, and the unusable count.
+) -> tuple[list[dict], dict]:
+    """Every distinct ``rpc``/``discovery`` record for the window, plus counts.
 
     ``run`` is an :class:`~saorsa_deploy.analysis.es.EsRun`; only ``search`` and
     ``client_index`` are used, so the arithmetic above stays testable with a
     stub.
+
+    **Deduplicated on ``(round_id, host, instance, seq)``, which Elasticsearch
+    does NOT do for us.** The forwarder sets ``force_document_id``, but
+    telegraf derives that id from the timestamp, the measurement and the tag
+    set — never the fields — and the tail input stamps each line with the
+    moment it was READ, since the records carry no time field for
+    ``json_time_key`` to use. So a forwarder restart with
+    ``from_beginning = true`` re-indexes every line already on disk under a new
+    timestamp and a new id. The tuple above is the harness's own identity for a
+    record (which is why it is also the paging key), so dropping repeats of it
+    is exact rather than a heuristic. Without it a re-read round would double
+    ``gets_per_download`` and ``not_found_per_download``; the first read itself
+    survives either way, being a minimum over ``seq`` against a holder SET.
+
+    The second return value is ``{"unusable": n, "duplicates": n}`` — reported
+    by the caller rather than swallowed, because a large duplicate count means
+    the forwarder restarted mid-run, which is worth knowing on its own.
     """
     if not round_ids:
-        return [], 0
+        return [], {"unusable": 0, "duplicates": 0}
     target_index = index or run.client_index()
     out: list[dict] = []
-    dropped = 0
+    seen: set[tuple[int, str, int, int]] = set()
+    unusable = 0
+    duplicates = 0
     search_after: list | None = None
     while True:
         body = trace_query_body(round_ids, page_size=page_size, search_after=search_after)
@@ -196,13 +215,18 @@ def fetch_trace_docs(
         for hit in page:
             record = normalise_trace_doc(hit.get("_source") or {})
             if record is None:
-                dropped += 1
+                unusable += 1
                 continue
+            key = (record["round_id"], record["host"], record["instance"], record["seq"])
+            if key in seen:
+                duplicates += 1
+                continue
+            seen.add(key)
             out.append(record)
         search_after = page[-1].get("sort")
         if len(page) < page_size or not search_after:
             break
-    return out, dropped
+    return out, {"unusable": unusable, "duplicates": duplicates}
 
 
 def _is_chunk_read(doc: dict) -> bool:

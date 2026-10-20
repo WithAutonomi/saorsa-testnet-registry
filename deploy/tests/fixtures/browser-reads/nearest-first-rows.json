@@ -28,8 +28,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -60,8 +59,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -92,8 +90,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -124,8 +121,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -156,8 +152,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -188,8 +183,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -220,8 +214,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -252,8 +245,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -284,8 +276,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -316,8 +307,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -348,8 +338,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -380,8 +369,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -412,8 +400,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -444,8 +431,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -476,8 +462,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -508,8 +493,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -540,8 +524,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -572,8 +555,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -604,8 +586,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -636,8 +617,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -668,8 +648,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -700,8 +679,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -732,8 +710,7 @@
         "holder": "12D3KooWHot",
         "known_holders": 7
       }
-    ],
-    "trace_s3_key": null
+    ]
   },
   {
     "deployment_id": 701,
@@ -758,7 +735,6 @@
     ],
     "stalls": 0,
     "refused_dials": 2,
-    "first_reads": [],
-    "trace_s3_key": null
+    "first_reads": []
   }
 ]

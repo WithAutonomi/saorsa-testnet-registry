@@ -956,7 +956,7 @@ and that path is byte-identical to before.
   `<deployment>-ant-client-<role>-<region>-<n>` form on an extension's VMs while
   every reader built the `<deployment>-<name>-…` form, which is why an
   extension's rows recorded by any release before 1.4.4 (1.0.0–1.4.3) carry no
-  `extension` (and, before 1.6.0 dropped it, no `trace_s3_key`).
+  `extension` (and, before 1.7.0 dropped it, no `trace_s3_key`).
 - S3 state: `saorsa-deploy/client-extensions/<deployment>/<name>.json`; step
   journal `saorsa-deploy/journals/<deployment>--<name>.json` (a double hyphen, so
   it cannot be mistaken for a deployment called `<deployment>-<name>`). The
@@ -1594,7 +1594,7 @@ summaries.
 
 There is deliberately **no pointer to the raw trace**: the records are forwarded
 to the run's Elasticsearch as they are produced (see §"The trace" below), so
-there is no per-download S3 object to name. `trace_s3_key` existed until 1.6.0
+there is no per-download S3 object to name. `trace_s3_key` existed until 1.7.0
 and is dropped.
 
 **`extension` COALESCEs on upsert**: it is not carried on the Influx point, so a
@@ -1679,7 +1679,7 @@ that SERVED each read.** Two definitions carry the whole section:
   fallback to a second holder has already paid the first one's `NotFound` or
   silence, so counting it would credit the read path for a retry.
 
-**This is a change of definition in 1.6.0, and it changes the verdict.** Until
+**This is a change of definition in 1.7.0, and it changes the verdict.** Until
 then §4 read the row's `first_reads`, which records the peer each first GET was
 *sent to*. On DEV-01 (registry id 685) every one of 1,260 downloads sent its
 first GET for the file-address chunk to a **bootstrap seed**, which answered
@@ -1740,7 +1740,7 @@ the run's Elasticsearch as `browser_trace` documents in
 `telegraf-ant-clients-<name>-*`, beside the node and client logs. One document
 per client event; `analysis browser-reads` queries them for §4 and G3.
 
-**Why not a file per download fetched afterwards.** Until 1.6.0 each download
+**Why not a file per download fetched afterwards.** Until 1.7.0 each download
 wrote `/var/lib/ant-browser-downloader/trace/<round>-<instance>.jsonl` and
 `clients fetch-browser-traces` `scp`-ed them off every VM after the run, then
 uploaded and database-linked them one at a time. On DEV-01 (registry id 685)
@@ -1763,15 +1763,30 @@ neighbours it can be read in the context of:
 | `id`, `operation`, `target`, `peer`, `phase`, `elapsed_ms`, `detail` | the `setBrowserTrace` record itself, unchanged. `operation` is one of `header` \| `association` \| `connect` \| `rpc` \| `discovery` \| `lookup-progress` |
 | `seeds` | written **once** per download, on the `operation: "header"` record. ~600 bytes, and a download is ~3,000 lines |
 
-Two shapes of it are load-bearing:
+Three shapes of it are load-bearing:
 
-- **One `appendFile` call per download**, so four instances appending at once
-  cannot interleave: the file is opened `O_APPEND` and a single write is atomic,
-  so no line is ever cut in half.
+- **Appends are serialised across the process, and a block is written through
+  one `filehandle.write`.** `runInstance` runs the VM's instances concurrently
+  under one `Promise.all`, and a block is far too big to be a single write by
+  default: every one of id 685's 2,676 per-download traces was **599 KB to
+  1.30 MB** (median 942 KB), while `fs/promises` splits a buffer into 512 KiB
+  (`kWriteFileMaxChunkSize`) chunks and awaits each one. So two instances
+  finishing close together interleaved at a chunk boundary and cut one line of
+  each in half — measured at 8 unparseable lines and 1–3 lost records per
+  instance, out of four concurrent 1.36 MB blocks. Telegraf's JSON parser then
+  drops both halves and nothing reports it, which over ~30k downloads is a
+  steady trickle of lost records, some of them the `rpc finish` carrying `found`
+  that the holder definition keys on. A module-level promise queue plus one
+  `write(2)` on a handle opened `"a"` (`O_APPEND` makes it atomic against other
+  writers) fixes it; either half alone would do for a single-process harness.
 - **Rotated the coarse way the native roles are** — truncated wholesale once
   past 1 GiB, checked *before* an append so the block that crosses the cap is
   kept whole. A real rotation would need the forwarder restarted to re-open the
   new inode.
+- **An append that fails warns and does not fail the round.** The download
+  happened and its Influx point carries the real result; letting the write throw
+  would hand a full disk to the error classifier and record it as a network
+  failure.
 
 In telegraf, the trace is its **own tail input** with `data_format = "json"`,
 `name_override = "browser_trace"` and `tag_keys = ["operation", "phase"]`; the
@@ -1790,6 +1805,18 @@ confident zero if got wrong:
   parser keeps numbers automatically and DROPS any other string it was not told
   about. A missing `target` or `peer` would leave every document present and §4
   empty.
+- **`force_document_id` does NOT make a forwarder restart idempotent**, so the
+  reader deduplicates on `(round_id, host, instance, seq)` — the harness's own
+  identity for a record, and the paging key. Telegraf derives that id from the
+  timestamp, the measurement and the tag set, never the fields, and the tail
+  input stamps each line with the moment it was READ (the records carry no time
+  field for `json_time_key`). A restart with `from_beginning = true` therefore
+  re-indexes every line already on disk under a new id. Left alone that would
+  double `gets_per_download` and `not_found_per_download` for the re-read
+  rounds; the first read survives either way, being a minimum over `seq`
+  against a holder *set*, which is exactly why the dedupe cannot be left to G3
+  looking right. The command reports the count. (The text input on the same
+  forwarder has the same property, and always did.)
 
 #### The three derived fields
 
@@ -1824,7 +1851,7 @@ them reads the way the field names suggest:
   not**: it is the peer the first GET was *sent to*, which on id 685 was a
   bootstrap seed answering `NotFound` on every download — so the report's §4
   deliberately does not use it (see §"The report"), and this field is kept only
-  for `known_holders` and for comparability with runs recorded before 1.6.0. A
+  for `known_holders` and for comparability with runs recorded before 1.7.0. A
   chunk read is
   identified by a **non-empty `target`**, which is what `Trace::new("rpc",
   <chunk hex if GetRequest else "">, <peer hex>)` puts there — the detail is
@@ -1880,7 +1907,7 @@ The extension inherits the deployment's recorded WASM bundle, **including its
 features**, so a deployment built without `test-utils` is refused at
 `clients provision` rather than producing a cohort that reports nothing.
 
-Recording a cohort is **two commands and no fetch step** (as of 1.6.0), and the
+Recording a cohort is **two commands and no fetch step** (as of 1.7.0), and the
 order matters:
 
 ```bash

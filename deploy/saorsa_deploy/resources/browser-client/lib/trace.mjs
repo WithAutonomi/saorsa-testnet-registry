@@ -26,7 +26,7 @@
  * the traffic.
  */
 
-import { appendFile, mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { FORWARD_LOG_MAX_BYTES } from "./logger.mjs";
@@ -74,18 +74,49 @@ export function traceLines({
 }
 
 /**
+ * Appends are serialised across the whole process.
+ *
+ * `runInstance` runs INSTANCES downloads concurrently under one `Promise.all`,
+ * so without this their appends overlap — and a block is far too big to be one
+ * write. On DEV-01 (id 685) every one of 2,676 per-download traces was between
+ * 599 KB and 1.30 MB (median 942 KB), so each append is several
+ * `write(2)` calls whichever API issues them, and two of them overlapping cut
+ * a line of each in half at the boundary. Telegraf's JSON parser then drops
+ * both halves and nothing reports it: a steady trickle of lost records, some of
+ * them the `rpc finish` carrying `found` that the holder definition keys on.
+ *
+ * The chain carries no rejection forward, so an append that fails cannot stop
+ * the next round's from being queued; the caller still sees its own error.
+ */
+let appendQueue = Promise.resolve();
+
+/**
  * Append a download's lines to the forwarded trace file.
  *
- * **One `appendFile` call for the whole block**, which is what makes two
- * instances appending at once safe: the file is opened `O_APPEND`, so a single
- * write cannot interleave with another's and no line is ever split in half.
+ * **Serialised, and written through one `filehandle.write` of the whole block**
+ * rather than `appendFile`. `fs/promises` splits a buffer into 512 KiB
+ * (`kWriteFileMaxChunkSize`) chunks and awaits each one, which is what makes a
+ * ~1 MB block several interleavable writes. One `write` on a handle opened
+ * `"a"` is one `write(2)`, which `O_APPEND` makes atomic against other writers
+ * on the same file; the loop exists only for a short write, which cannot
+ * interleave here because the queue above means there is no concurrent writer
+ * in this process.
  *
  * Rotation is the coarse rule the native roles and `pointer_client.py` use —
  * truncated wholesale once past the cap, checked BEFORE the append so the block
  * that crosses it is kept whole. A real rotation would need the forwarder
  * restarted to re-open the new inode.
  */
-export async function appendTrace(path, lines, maxBytes = FORWARD_LOG_MAX_BYTES) {
+export function appendTrace(path, lines, maxBytes = FORWARD_LOG_MAX_BYTES) {
+  const run = appendQueue.then(() => appendNow(path, lines, maxBytes));
+  appendQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+async function appendNow(path, lines, maxBytes) {
   await mkdir(dirname(path), { recursive: true });
   try {
     const info = await stat(path);
@@ -93,5 +124,20 @@ export async function appendTrace(path, lines, maxBytes = FORWARD_LOG_MAX_BYTES)
   } catch {
     /* no file yet: nothing to rotate */
   }
-  await appendFile(path, `${lines.join("\n")}\n`);
+  const buffer = Buffer.from(`${lines.join("\n")}\n`);
+  const handle = await open(path, "a");
+  try {
+    let written = 0;
+    while (written < buffer.length) {
+      const { bytesWritten } = await handle.write(buffer, written, buffer.length - written);
+      if (bytesWritten <= 0) {
+        // Rather than spin: a write that moves nothing means the file cannot
+        // take the rest, and the caller warns and keeps the round's point.
+        throw new Error(`wrote ${written} of ${buffer.length} bytes to ${path}`);
+      }
+      written += bytesWritten;
+    }
+  } finally {
+    await handle.close();
+  }
 }

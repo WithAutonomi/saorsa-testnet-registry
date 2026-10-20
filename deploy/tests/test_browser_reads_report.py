@@ -993,9 +993,9 @@ def test_the_trace_query_pages_rather_than_taking_one_page():
 
     docs = json.loads((FIXTURES / "spread-trace-docs.json").read_text())
     es = _FakeEs(docs, page_size=7)
-    out, dropped = fetch_trace_docs(es, [R0 + 1, R0 + 2, R0 + 3], page_size=7)
+    out, counts = fetch_trace_docs(es, [R0 + 1, R0 + 2, R0 + 3], page_size=7)
     assert len(out) == len(docs)
-    assert dropped == 0
+    assert counts == {"unusable": 0, "duplicates": 0}
     assert es.pages > 1
     assert [d["seq"] for d in out] == [
         d["browser_trace"]["seq"]
@@ -1009,6 +1009,50 @@ def test_the_trace_query_pages_rather_than_taking_one_page():
             ),
         )
     ]
+
+
+def test_a_re_read_round_is_deduplicated_on_the_harness_key():
+    """`force_document_id` does NOT make a forwarder restart a no-op: telegraf
+    derives the id from the timestamp and the tag set, never the fields, and the
+    tail input stamps each line when it is READ — so `from_beginning = true`
+    re-indexes every line already on disk under a new id. Counting those twice
+    would double `gets_per_download` and `not_found_per_download`."""
+    from saorsa_deploy.browser_traces import fetch_trace_docs, summarise_chunks
+
+    docs = json.loads((FIXTURES / "spread-trace-docs.json").read_text())
+    es = _FakeEs(docs + docs, page_size=500)
+    out, counts = fetch_trace_docs(es, [R0 + 1, R0 + 2, R0 + 3], page_size=500)
+    assert counts["duplicates"] == len(docs)
+    assert len(out) == len(docs)
+    # And the figures are the ones the un-duplicated stream gives.
+    once, _ = fetch_trace_docs(_FakeEs(docs, page_size=500), [R0 + 1, R0 + 2, R0 + 3])
+    assert summarise_chunks(out, [], min_first_reads=20) == summarise_chunks(
+        once, [], min_first_reads=20
+    )
+
+
+def test_duplicates_would_otherwise_double_the_per_download_costs():
+    """Named explicitly, because it is the figure the duplication moves: the
+    first read survives either way (a minimum over `seq` against a holder SET),
+    so a report could look right while both cost columns were twice life."""
+    from saorsa_deploy.browser_traces import summarise_chunks
+
+    docs = [
+        _doc(1, "rpc", "start", "c", "seed", seq=1),
+        _doc(1, "rpc", "finish", "c", "seed", "NotFound { address: [1] }", seq=2),
+        _doc(1, "rpc", "start", "c", "holder", seq=3),
+        _doc(1, "rpc", "finish", "c", "holder", "found 10 bytes", seq=4),
+    ]
+    clean = summarise_chunks(docs, [], min_first_reads=1)["chunks"][0]
+    doubled = summarise_chunks(docs + docs, [], min_first_reads=1)["chunks"][0]
+    assert clean["gets_per_download"] == 2
+    assert doubled["gets_per_download"] == 4
+    assert clean["not_found_per_download"] == 1
+    assert doubled["not_found_per_download"] == 2
+    # Unmoved, which is why the dedupe has to be in the fetch and not left to
+    # G3 looking fine.
+    assert doubled["busiest_holder"] == clean["busiest_holder"]
+    assert doubled["reads"] == clean["reads"]
 
 
 def test_a_document_missing_its_place_in_the_download_is_counted_not_guessed():
