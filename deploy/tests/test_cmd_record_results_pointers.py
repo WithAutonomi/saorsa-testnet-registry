@@ -302,9 +302,10 @@ def test_the_recorded_counter_is_the_value_the_point_carried():
     captured = {}
 
     class _Repo:
-        def upsert_pointer_record(self, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(**kwargs)
+        def upsert_pointer_records(self, rows):
+            for row in rows:
+                captured.update(row)
+            return len(rows)
 
     point = {
         "_time": T0,

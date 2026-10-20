@@ -1075,6 +1075,35 @@ so a single total describes neither and moves with whatever VM mix the run used.
 A `client_kind` of NULL counts as native; with no WASM records the output is
 byte-identical to before.
 
+#### `record-results` writes its per-operation rows in bulk
+
+The four per-operation tables — `deployment_upload_records`,
+`deployment_download_records`, `deployment_pointer_records` and
+`deployment_browser_download_records` — are each written with one
+`INSERT ... ON CONFLICT DO UPDATE` per batch of up to 1,000 rows and one commit,
+rather than a SELECT, an INSERT or UPDATE and a commit per row. The pass stays
+**idempotent** on the same keys (`(deployment, host, start_ns)`, and
+`(deployment, host, round, instance)` for the browser rounds), so re-running it
+over the same Influx range revises rather than duplicates, and every
+preserve-on-None rule below is kept as a `COALESCE` in the statement's `SET`
+clause. Rows sharing a key within one batch are collapsed to the last, since a
+multi-row `ON CONFLICT` cannot touch one row twice.
+
+The cost it removes is round trips, not rows: on DEV-01 (registry id 685) the
+first pass wrote 8,658 rows in 18 minutes and the second 18,691 rows in 38
+minutes, about 100 ms a row against the managed Postgres and linear in the row
+count. Measured from the same machine afterwards, 18,000 rows take **17 s**. A
+pass is now bounded by the Influx queries.
+
+The rows are rendered **into** the statement rather than handed to the driver as
+a parameter set, and that detail is load-bearing: SQLAlchemy turns its own
+multi-VALUES batching off for any INSERT carrying a post-values clause, which
+`ON CONFLICT` is, so the parameter-set form falls through to the driver's
+`executemany` — a round trip **per row**, which measured 19 ms a row and 6
+minutes for the same 18,000. The ceiling on a batch is therefore the bind-
+parameter limit (Postgres 65,535, SQLite 32,766) as well as the row count, so a
+column added to one of these tables narrows the batch instead of failing it.
+
 #### `record-results` never erases `client_kind`
 
 The transport of each operation is resolved from the deployment's **S3 client
