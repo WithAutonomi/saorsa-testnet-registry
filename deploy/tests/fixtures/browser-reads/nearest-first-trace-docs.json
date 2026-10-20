@@ -1,0 +1,1727 @@
+[
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 1,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 1,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 1,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 1,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 1,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 2,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 2,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 2,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 2,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 2,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 3,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 3,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 3,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 3,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 3,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 4,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 4,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 4,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 4,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987190,
+   "instance": 4,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 1,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 1,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 1,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 1,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 1,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 2,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 2,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 2,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 2,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 2,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 3,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 3,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 3,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 3,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 3,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 4,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 4,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 4,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 4,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987191,
+   "instance": 4,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 1,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 1,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 1,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 1,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 1,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 2,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 2,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 2,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 2,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 2,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 3,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 3,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 3,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 3,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 3,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 4,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 4,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 4,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 4,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987192,
+   "instance": 4,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 1,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 1,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 1,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 1,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 1,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 2,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 2,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 2,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 2,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 2,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 3,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 3,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 3,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 3,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 3,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 4,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 4,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 4,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 4,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987193,
+   "instance": 4,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 1,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 1,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 1,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 1,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 1,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 2,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 2,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 2,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 2,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 2,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 3,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 3,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 3,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 3,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 3,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 4,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 4,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 4,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 4,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987194,
+   "instance": 4,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 1,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 1,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 1,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 1,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 1,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 2,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 2,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 2,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 2,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 2,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 3,
+   "seq": 1,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 3,
+   "seq": 2,
+   "target": "chunk-a",
+   "peer": "12D3KooWBoot1",
+   "detail": "NotFound { address: [1, 2] }"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 3,
+   "seq": 3,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": ""
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "start"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 3,
+   "seq": 4,
+   "target": "chunk-a",
+   "peer": "12D3KooWHot",
+   "detail": "found 1024 bytes"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "rpc",
+   "phase": "finish"
+  }
+ },
+ {
+  "browser_trace": {
+   "round_id": 2987195,
+   "instance": 3,
+   "seq": 5,
+   "target": "chunk-a",
+   "peer": "",
+   "detail": "7 peers"
+  },
+  "tag": {
+   "host": "DEV-03-BROWSERS-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+   "operation": "discovery",
+   "phase": "finish"
+  }
+ }
+]

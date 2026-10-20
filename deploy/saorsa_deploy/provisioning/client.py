@@ -621,8 +621,7 @@ class AntClientProvisioner:
             server.shell,
             name="Deploy browser downloader harness",
             commands=[
-                f"mkdir -p {browser.BROWSER_CLIENT_DIR}/lib "
-                f"{browser.BROWSER_CLIENT_TRACE_DIR} {browser.BROWSER_FORWARD_LOG_DIR}"
+                f"mkdir -p {browser.BROWSER_CLIENT_DIR}/lib {browser.BROWSER_FORWARD_LOG_DIR}"
             ],
             host=hosts,
         )
@@ -684,7 +683,7 @@ class AntClientProvisioner:
                 "ADDRESSES_BASE_URL": addresses_base_url(self.deployment_name),
                 "BUNDLE_DIR": browser.BROWSER_BUNDLE_DIR,
                 "BUNDLE_PORT": browser.BROWSER_BUNDLE_PORT,
-                "TRACE_DIR": browser.BROWSER_CLIENT_TRACE_DIR,
+                "TRACE_LOG": browser.BROWSER_TRACE_LOG,
                 "FORWARD_LOGS": env["forward_logs"],
             }
             if self.influx_url and self.influx_token:
@@ -756,10 +755,23 @@ class AntClientProvisioner:
         # The browser harness tees its own streams into these. A role missing
         # from this map forwards NOTHING while reporting nothing wrong, which is
         # how both WASM roles silently forwarded nothing for a release.
+        #
+        # The trace log is NOT in this list: it is JSON, not plain text, so it
+        # needs its own tail input with its own parser (see
+        # `_FORWARD_ROLE_JSON_FILES`). Tailing it as text would ship each
+        # record as one opaque `message` string, which `analysis browser-reads`
+        # could not query on `target`, `peer` or `phase`.
         ROLE_BROWSER_DOWNLOAD: (
             [browser.BROWSER_STDOUT_LOG, browser.BROWSER_STDERR_LOG],
             "browser_downloader",
         ),
+    }
+
+    #: Per role, the files to tail as JSON rather than as plain text. One role
+    #: has any: the browser harness's trace records, which are the input to
+    #: `analysis browser-reads` and have to arrive as typed fields.
+    _FORWARD_ROLE_JSON_FILES = {
+        ROLE_BROWSER_DOWNLOAD: [browser.BROWSER_TRACE_LOG],
     }
 
     def provision_log_forwarders(self) -> None:
@@ -807,6 +819,7 @@ class AntClientProvisioner:
                 elasticsearch_password=self.elasticsearch_password,
                 role=role_label,
                 tail_globs=globs,
+                json_tail_globs=self._FORWARD_ROLE_JSON_FILES.get(role_key, []),
                 console=self.console,
                 **buffer_kwargs,
             ).execute()
@@ -1055,7 +1068,7 @@ ENV_EOF"""
             # joins a browser trace to its row and labels a row with its
             # extension on this string alone. Setting the deployment's own
             # `<deployment>-ant-client-...` form on an extension's VM left every
-            # one of its rows with no `trace_s3_key` and no `extension`.
+            # one of its rows with no `extension`.
             ip_to_hostname = os_hostnames_by_ip(self.deployment_name, self.extension, self.clients)
             if ip_to_hostname:
                 for host in state.inventory.get_active_hosts():

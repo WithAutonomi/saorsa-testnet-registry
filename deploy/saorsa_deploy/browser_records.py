@@ -1,6 +1,6 @@
 """The browser-downloader tier's own facts: which VMs it is, and its round config.
 
-Three consumers need facts about the tier that none of them can reach a VM for:
+Two consumers need facts about the tier that neither of them can reach a VM for:
 
 * `record-results` needs the **extension** each browser VM belongs to, so a
   cohort added at hour 3 as a `kind: clients` extension is distinguishable from
@@ -8,9 +8,8 @@ Three consumers need facts about the tier that none of them can reach a VM for:
 * `analysis browser-reads` needs the **round period** (to turn a `round_id` into
   a wall-clock boundary), the **instances per VM** (to say how many points a
   round should have produced) and the **hot-file selection** (to say which file
-  each round read). It reads Postgres only, by design: it is meant to run after
-  the VMs and their InfluxDB are gone.
-* `clients fetch-browser-traces` needs the VMs' addresses while they are up.
+  each round read). It reads Postgres and the run's Elasticsearch, never a VM:
+  it is meant to run once the VMs and their InfluxDB are gone.
 
 The S3 client state answers all of it, but only while it exists — `clients
 destroy` deletes it, and the deployment's own teardown also deletes the whole
@@ -68,8 +67,9 @@ def browser_config_entry(deployment: str, extension: str | None, client: dict) -
 
     ``ip`` is deliberately absent: this document outlives the VM, and an address
     that has been released back to the provider and reassigned is worse than no
-    address at all. `clients fetch-browser-traces` reads the live client state
-    for that.
+    address at all. Nothing needs one — the per-dial traces are forwarded to
+    Elasticsearch as they are produced, so no command SSHes a browser VM after
+    the fact.
     """
     return {
         "hostname": client_hostname(deployment, extension, client),

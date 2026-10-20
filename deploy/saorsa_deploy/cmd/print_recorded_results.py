@@ -727,7 +727,6 @@ def _print_browser_downloads_section(rows: list, name: str, console: Console) ->
     rounds = sorted({r.round_id for r in rows})
     hosts = sorted({r.client_hostname for r in rows})
     extensions = sorted({r.extension for r in rows if r.extension})
-    archived = sum(1 for r in rows if r.trace_s3_key)
 
     summary = Table(show_header=False, box=None)
     summary.add_column("k")
@@ -742,7 +741,6 @@ def _print_browser_downloads_section(rows: list, name: str, console: Console) ->
     # times VMs, and a VM whose harness never came up contributes none.
     summary.add_row("instances", f"{len({(r.client_hostname, r.instance) for r in rows}):,}")
     summary.add_row("downloads", f"{len(rows):,}")
-    summary.add_row("traces archived", f"{archived:,}")
     if extensions:
         summary.add_row("extensions", ", ".join(extensions))
     console.print(summary)

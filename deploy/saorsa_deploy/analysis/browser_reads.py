@@ -1,21 +1,33 @@
 """`analysis browser-reads` — the report a hot-read run is judged by (V2-1618).
 
-Reads **Postgres only**, and that is the point: the browser VMs are destroyed at
-the end of a run and their InfluxDB retention is bounded, so a report that
-queried either could not be produced for the run it is about. The rows come from
-`deployments record-results`, which must therefore have been run first.
+Two sources, and each is the only one that could serve its half:
+
+* **Postgres**, for everything that comes off the Influx point — completion,
+  percentiles, error kinds, stalls, refusals, bootstrap load, the skipped rows,
+  the hot-file rounds. The browser VMs are destroyed at the end of a run and
+  InfluxDB retention is bounded, so a report that queried either could not be
+  produced for the run it is about. The rows come from
+  `deployments record-results`, which must therefore have been run first.
+* **the run's Elasticsearch**, for the per-chunk section and G3 (V2-1650). The
+  harness forwards every trace record as it is produced, and the holder that
+  SERVED each read is only in those records — the Influx point carries the peer
+  the first GET was SENT TO, which on DEV-01 (id 685) was a bootstrap seed
+  answering ``NotFound`` for 1,260 of 1,260 downloads. So **this command must
+  be run before teardown**: Elasticsearch dies with the testnet unless a gate
+  failed and the stack was kept.
 
 Four gates, and they are separate from the staging gates in `deployments
 compare` on purpose: this one answers whether hot-record read spreading
 (ADR-0023) is working, which is a question about ONE file read by many browsers
 at once — nothing the native or WASM tiers measure. Exit 0 when all four pass, 1
 when any fails, 2 when the report cannot be produced at all (no rows in the
-window, no hot-file selection, no round period).
+window, no trace records, no hot-file selection, no round period).
 
-The holder-share gate (G3) reads ``first_reads`` and nothing else. The holder a
-chunk's FIRST read went to is the one the spreading change moves; a fallback to a
-second holder has already paid the first one's `NotFound` or silence, so counting
-it would credit the read path for a retry.
+The holder-share gate (G3) counts **the holder that served the read** — a peer
+that answered ``found`` for that chunk — and a download's first read is its
+first GET that reached one. That holder is the one the spreading change moves; a
+fallback to a second holder has already paid the first one's ``NotFound`` or
+silence, so counting it would credit the read path for a retry.
 """
 
 from __future__ import annotations
@@ -24,6 +36,7 @@ from datetime import datetime, timezone
 
 from rich.table import Table
 
+from saorsa_deploy.analysis.es import EsRun, quiet_tls
 from saorsa_deploy.analysis.json_out import add_json_out_arg, console_for, emit_json
 from saorsa_deploy.browser_reads import (
     GATE_FAIL,
@@ -40,6 +53,7 @@ from saorsa_deploy.browser_records import (
     recorded_hot_files,
     round_period_from_config,
 )
+from saorsa_deploy.browser_traces import OP_RPC, fetch_trace_docs
 from saorsa_deploy.hot_files import hot_files_key, load_hot_files
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import S3_ADDRESSES_BUCKET
@@ -168,6 +182,7 @@ def _render_console(report: dict, console) -> None:
         "completion",
         "n/a" if totals["completion"] is None else f"{totals['completion'] * 100:.2f}%",
     )
+    header.add_row("trace records", f"{totals['trace_records']:,}")
     header.add_row("chunks with first reads", f"{len(report['chunks']):,}")
     header.add_row("stalls", f"{report['stalls']['total']:,}")
     header.add_row("refused dials", f"{report['refusals']['total']:,}")
@@ -209,6 +224,74 @@ def cmd_browser_reads(args) -> int:
         return EXIT_ERROR
 
 
+def _load_trace_docs(name: str, rows, window_start, window_end, console) -> list[dict]:
+    """The window's trace records, from the run's own Elasticsearch.
+
+    Every "cannot read them" condition is a :class:`BrowserReadsError`, so it
+    comes out as exit 2 rather than as a traceback or — worse — as an empty
+    per-chunk table, which would read as a cohort whose reads reached no holder.
+
+    ``requests`` is left to raise through this guard deliberately narrowed to a
+    message: a missing elastic state, an unreachable endpoint and an expired key
+    are all "the records could not be read", and the operator needs the index
+    and the window named either way.
+    """
+    rounds = sorted({_round_id(r) for r in rows if _round_id(r) is not None})
+    try:
+        quiet_tls()
+        run = EsRun(name)
+        index = run.client_index()
+        docs, counts = fetch_trace_docs(run, rounds)
+    except BrowserReadsError:
+        raise
+    except Exception as e:  # noqa: BLE001 -- reported as exit 2, never a traceback
+        raise BrowserReadsError(
+            f"the browser trace records could not be read from this "
+            f"deployment's Elasticsearch: {e}. The per-chunk section and G3 "
+            f"come from there (the Influx point carries the peer each first GET "
+            f"was SENT to, not the holder that served it), so the report cannot "
+            f"be produced. Run this BEFORE teardown — `elastic destroy` takes "
+            f"the records with it."
+        )
+    if counts["unusable"]:
+        # Reported, not swallowed: `ignore_malformed` is on for this index, so a
+        # field that did not fit its mapping is dropped and the document still
+        # arrives. A record with no round, instance or seq cannot be placed in a
+        # download.
+        console.print(
+            f"[yellow]{counts['unusable']:,} trace document(s) were missing a "
+            f"round, instance, seq or host and could not be attributed to a "
+            f"download.[/yellow]"
+        )
+    if counts["duplicates"]:
+        # Expected, and already handled — but a large count means the client
+        # forwarder restarted mid-run and re-read its on-disk trace, which is
+        # worth knowing whether or not it changed a figure here.
+        console.print(
+            f"[yellow]{counts['duplicates']:,} duplicate trace document(s) "
+            f"ignored (same round, host, instance and seq). Telegraf derives "
+            f"`force_document_id` from the timestamp and tags, not the fields, "
+            f"and stamps each line when it is read — so a forwarder restart "
+            f"with `from_beginning = true` re-indexes what is already on "
+            f"disk.[/yellow]"
+        )
+    if not any(d["operation"] == OP_RPC for d in docs):
+        raise BrowserReadsError(
+            f"no `{OP_RPC}` trace documents in index '{index}' for rounds "
+            f"{rounds[0] if rounds else '-'}..{rounds[-1] if rounds else '-'} "
+            f"([{window_start.isoformat()}, {window_end.isoformat()})), so "
+            f"there is no per-chunk section and no G3. Either the cohort's "
+            f"`forward_logs` was off, the bundle was built without "
+            f"`test-utils` (no trace at all), or the stack has already been "
+            f"destroyed."
+        )
+    return docs
+
+
+def _round_id(row):
+    return row.get("round_id") if isinstance(row, dict) else getattr(row, "round_id", None)
+
+
 def _run(args, console) -> int:
     window_start = _parse_window(args.window_start, "--window-start")
     window_end = _parse_window(args.window_end, "--window-end")
@@ -243,11 +326,13 @@ def _run(args, console) -> int:
         )
 
     hot_files, hot_files_source = _resolve_hot_files(deployment, args.name)
+    trace_docs = _load_trace_docs(args.name, rows, window_start, window_end, console)
 
     report = build_report(
         deployment=deployment.name,
         deployment_id=deployment.id,
         rows=rows,
+        trace_docs=trace_docs,
         hot_files=hot_files,
         hot_files_source=hot_files_source,
         period_secs=period,
@@ -283,15 +368,18 @@ def register(subparsers) -> None:
         help=(
             "The hot-read report: per round, per region and per chunk, with the "
             "busiest holder's share, stalls, refusals, bootstrap load and four "
-            "gates. Reads recorded Postgres rows, so it survives teardown."
+            "gates. Reads the recorded Postgres rows and the run's own "
+            "Elasticsearch, so RUN IT BEFORE TEARDOWN."
         ),
     )
     p.add_argument(
         "--name",
         required=True,
         help=(
-            "Deployment name. Also where the hot-file selection is read from "
-            "(s3://.../addresses/<name>/browser-hot-files.json)."
+            "Deployment name. Also what names the hot-file selection "
+            "(s3://.../addresses/<name>/browser-hot-files.json) and the "
+            "Elasticsearch index the trace records are read from "
+            "(telegraf-ant-clients-<name>*)."
         ),
     )
     p.add_argument(
@@ -334,7 +422,10 @@ def register(subparsers) -> None:
         help=(
             "G3: the ceiling on the busiest holder's share of a chunk's first "
             "reads (default 0.25), for every chunk with at least 20 of them. "
-            "This is the verdict on hot-record read spreading."
+            "Counted against THE HOLDER THAT SERVED THE READ -- a peer that "
+            "answered `found` for that chunk -- and a download's first read is "
+            "its first GET that reached one. This is the verdict on hot-record "
+            "read spreading."
         ),
     )
     p.add_argument(

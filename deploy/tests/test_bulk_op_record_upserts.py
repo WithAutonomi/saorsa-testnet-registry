@@ -227,14 +227,11 @@ def test_a_browser_records_preserved_column_survives_a_none(repo, column, first,
     assert getattr(repo.list_browser_download_records_for_deployment(d.id)[0], column) == second
 
 
-def test_a_browser_records_trace_key_survives_a_record_results_rerun(repo):
-    """`clients fetch-browser-traces` writes it and the traces die with the VM,
-    so a later `record-results` — which never carries one — must not erase it."""
-    d = _deployment(repo)
-    repo.upsert_browser_download_records([_browser_row(d.id, trace_s3_key="traces/1-0.jsonl")])
-    repo.upsert_browser_download_records([_browser_row(d.id)])
-    row = repo.list_browser_download_records_for_deployment(d.id)[0]
-    assert row.trace_s3_key == "traces/1-0.jsonl"
+def test_extension_is_the_only_browser_column_that_coalesces(repo):
+    """`trace_s3_key` COALESCEd here until V2-1650 dropped it with the archive it
+    pointed at. Asserted on the tuple, because a stale name in it would have the
+    statement COALESCE a column the table no longer has."""
+    assert type(repo)._BROWSER_RECORD_COALESCE_COLUMNS == ("extension",)
 
 
 def test_every_pointer_column_is_overwritten(repo):

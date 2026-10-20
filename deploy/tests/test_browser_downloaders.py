@@ -613,11 +613,29 @@ class TestHarnessSources:
         assert "PAGE_GRACE_MS" in harness
         assert "Promise.race" in harness
 
-    def test_traces_are_never_deleted_by_the_harness(self):
-        # The traces ARE the dataset this role produces; a rotation policy here
-        # would discard the evidence for the round somebody is asking about.
+    def test_the_trace_is_appended_to_the_forwarded_log_not_a_file_per_download(self):
+        """V2-1650: one append-only file under the directory telegraf tails, so
+        the records reach the run's Elasticsearch as they are produced. The
+        file-per-download path cost DEV-01 (id 685) 2 h 47 min of `scp` after
+        its last measured round."""
         harness = (HARNESS_DIR / "harness.mjs").read_text()
-        assert "Never deleted by the harness" in harness
+        assert "appendTrace" in harness
+        assert "config.traceLog" in harness
+        assert "writeTrace" not in harness
+        assert "traceDir" not in harness
+        trace = (HARNESS_DIR / "lib" / "trace.mjs").read_text()
+        # NOT `appendFile`: `fs/promises` splits a buffer into 512 KiB chunks
+        # and awaits each, and a per-download block is 599 KB-1.30 MB, so two
+        # instances interleaved at a chunk boundary and cut a line of each in
+        # half. One `write` on a handle opened "a" plus a process-wide queue.
+        assert "appendFile(" not in trace, "the prose may mention it; nothing may call it"
+        assert 'from "node:fs/promises"' in trace and "appendFile," not in trace
+        assert 'await open(path, "a")' in trace
+        assert "handle.write(buffer, written, buffer.length - written)" in trace
+        assert "appendQueue = run.then(" in trace
+        # Rotated the way the native roles are, and checked BEFORE the append
+        # so the block that crosses the cap is kept whole.
+        assert "FORWARD_LOG_MAX_BYTES" in trace
 
 
 class TestTraceFixture:
@@ -854,7 +872,7 @@ class TestBrowserOps:
             "DOWNLOAD_TIMEOUT_SECS=300",
             "BOOTSTRAP_WEBRTC_MULTIADDRS=",
             "ADDRESSES_BASE_URL=",
-            "TRACE_DIR=",
+            "TRACE_LOG=",
             "FORWARD_LOGS=",
         ):
             assert key in cmds, key

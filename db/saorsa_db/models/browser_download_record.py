@@ -18,6 +18,11 @@ Windowable by ``started_at``, which is exactly the round's boundary (the harness
 stamps ``start_ns`` as ``round_id x period``, not as the instant the browser
 happened to launch), so a labelled phase of a run can be re-derived after the
 VMs and their InfluxDB are gone.
+
+The RAW per-dial records are deliberately not here and never were: the harness
+forwards them to the run's Elasticsearch as they are produced (V2-1650), where
+`analysis browser-reads` reads them to work out which holder served each chunk's
+first read. A run is ~8 million of them, which is a log, not a registry table.
 """
 
 import enum
@@ -159,11 +164,6 @@ class DeploymentBrowserDownloadRecord(Base):
     first_reads: Mapped[Optional[list]] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"), nullable=True
     )
-    # Where `clients fetch-browser-traces` archived this download's raw trace.
-    # Filled by that command, never by `record-results` -- which must therefore
-    # PRESERVE it on upsert, or a later re-run would erase the only pointer to
-    # the evidence.
-    trace_s3_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -198,6 +198,5 @@ class DeploymentBrowserDownloadRecord(Base):
             "stalls": self.stalls,
             "refused_dials": self.refused_dials,
             "first_reads": self.first_reads,
-            "trace_s3_key": self.trace_s3_key,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

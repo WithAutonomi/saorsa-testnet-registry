@@ -22,7 +22,6 @@ from collections.abc import Iterable, Mapping
 
 BROWSER_CLIENT_DIR = "/opt/ant-browser-downloader"
 BROWSER_CLIENT_DATA_DIR = "/var/lib/ant-browser-downloader"
-BROWSER_CLIENT_TRACE_DIR = f"{BROWSER_CLIENT_DATA_DIR}/trace"
 BROWSER_CLIENT_ENV_PATH = "/etc/ant-browser-downloader.env"
 #: The bundle goes under the harness directory rather than the WASM roles'
 #: ``/opt/ant-wasm-client``: a browser VM runs neither the Node harness nor the
@@ -35,6 +34,14 @@ BROWSER_CLIENT_ENTRY = f"{BROWSER_CLIENT_DIR}/harness.mjs"
 BROWSER_FORWARD_LOG_DIR = "/var/log/ant-client-forward"
 BROWSER_STDOUT_LOG = f"{BROWSER_FORWARD_LOG_DIR}/browser-downloader.stdout.log"
 BROWSER_STDERR_LOG = f"{BROWSER_FORWARD_LOG_DIR}/browser-downloader.stderr.log"
+#: The per-dial trace records, one JSON object per line, appended by the harness
+#: as each download finishes (V2-1650). Here rather than under
+#: ``/var/lib/ant-browser-downloader/trace/`` because this directory is the one
+#: telegraf tails: the records go to the run's Elasticsearch as they are
+#: produced, and `analysis browser-reads` queries them there. They used to be
+#: one file per download fetched with ``scp`` afterwards, which took 2 h 47 min
+#: for 2,676 files on DEV-01 (id 685) and pushed that run past its ceiling.
+BROWSER_TRACE_LOG = f"{BROWSER_FORWARD_LOG_DIR}/browser-trace.jsonl"
 
 #: Pinned, like wasm-pack is: Playwright's browser build is tied to the npm
 #: package version, and "whatever npx resolves today" would make two VMs in one
@@ -101,8 +108,7 @@ def build_bundle_install_command(bundle_url: str) -> str:
     """
     return (
         f"rm -rf {BROWSER_BUNDLE_DIR} && "
-        f"mkdir -p {BROWSER_BUNDLE_DIR} {BROWSER_CLIENT_TRACE_DIR} "
-        f"{BROWSER_FORWARD_LOG_DIR} && "
+        f"mkdir -p {BROWSER_BUNDLE_DIR} {BROWSER_FORWARD_LOG_DIR} && "
         f"wget -q '{bundle_url}' -O /tmp/ant-browser-bundle.tar.gz && "
         f"tar xzf /tmp/ant-browser-bundle.tar.gz -C {BROWSER_BUNDLE_DIR} && "
         f"rm -f /tmp/ant-browser-bundle.tar.gz && "

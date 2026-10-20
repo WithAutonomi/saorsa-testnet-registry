@@ -6,9 +6,17 @@ paper in `fixtures/browser-reads/README.md`, and the numbers asserted here are
 those — not whatever the code happened to produce, which is the only way a test
 over arithmetic this interlinked says anything.
 
+Each has TWO files: the recorded Postgres rows, and the Elasticsearch trace
+documents the per-chunk section and G3 now read (V2-1650). The documents are
+generated from the rows' own `first_reads`, so the two cannot disagree about
+which holder served a read — see the fixture README.
+
 The gate the whole report exists for is G3, the busiest holder's share of a
-chunk's FIRST reads: that is the quantity ADR-0023 (hot-record read spreading)
-moves, and a report that got it wrong would read as a clean result.
+chunk's first reads **by the holder that served them**: that is the quantity
+ADR-0023 (hot-record read spreading) moves, and a report that got it wrong would
+read as a clean result. It did, before this: counted against the peer the first
+GET was sent to, DEV-01 (id 685) credited the bootstrap seeds that answered
+`NotFound` for every one of 1,260 downloads.
 """
 
 import json
@@ -29,8 +37,8 @@ from saorsa_deploy.browser_reads import (
     derive_period_secs,
     render_markdown,
     rounds_in_window,
-    summarise_chunks,
 )
+from saorsa_deploy.browser_traces import normalise_trace_doc, summarise_chunks
 
 FIXTURES = Path(__file__).parent / "fixtures" / "browser-reads"
 
@@ -52,9 +60,23 @@ def _hot_files() -> dict:
     return json.loads((FIXTURES / "hot-files.json").read_text())
 
 
+def _trace_docs(name: str, rows) -> list[dict]:
+    """The fixture's trace documents, narrowed to the rounds in the window.
+
+    Narrowing here is what `fetch_trace_docs` does in the command: the query
+    names the window's round ids, so a round outside it contributes no document
+    — which is also why the excluded round in `spread` cannot leak into the
+    per-chunk section.
+    """
+    rounds = {r["round_id"] for r in rows}
+    raw = json.loads((FIXTURES / name).read_text())
+    return [normalise_trace_doc(d) for d in raw if d["browser_trace"]["round_id"] in rounds]
+
+
 def _report(
     name: str,
     *,
+    traces: str,
     window_end: datetime = WINDOW_END,
     expected_instances: int | None = 8,
     min_completion: float = 0.99,
@@ -66,6 +88,7 @@ def _report(
         deployment="DEV-03",
         deployment_id=701,
         rows=rows,
+        trace_docs=_trace_docs(traces, rows),
         hot_files=_hot_files(),
         period_secs=PERIOD,
         period_source="deploy_args.browser_downloaders",
@@ -80,13 +103,14 @@ def _report(
 
 @pytest.fixture
 def spread():
-    return _report("spread-rows.json")
+    return _report("spread-rows.json", traces="spread-trace-docs.json")
 
 
 @pytest.fixture
 def nearest():
     return _report(
         "nearest-first-rows.json",
+        traces="nearest-first-trace-docs.json",
         window_end=datetime(2026, 10, 18, 10, 0, tzinfo=timezone.utc),
         expected_instances=4,
     )
@@ -165,6 +189,7 @@ def test_a_selected_file_nothing_read_shows_as_a_file_with_no_rounds():
         deployment="DEV-03",
         deployment_id=701,
         rows=rows,
+        trace_docs=_trace_docs("spread-trace-docs.json", rows),
         hot_files=hot,
         period_secs=PERIOD,
         period_source="test",
@@ -195,7 +220,7 @@ def test_the_per_round_section_counts_instances_against_the_role_config(spread):
 def test_instances_expected_is_unknown_without_a_role_config():
     """None, never 0: a report that compared 8 reporting instances against a
     zero expectation would flag every round of every pre-config deployment."""
-    report = _report("spread-rows.json", expected_instances=None)
+    report = _report("spread-rows.json", traces="spread-trace-docs.json", expected_instances=None)
     assert report["rounds"][0]["instances_expected"] is None
     assert report["rounds"][0]["instances_missing"] is None
 
@@ -293,10 +318,97 @@ def test_a_chunk_below_the_read_floor_is_listed_but_not_gated(spread):
     assert MIN_FIRST_READS_FOR_GATE == 20
 
 
-def test_a_row_with_no_first_reads_contributes_no_chunk():
-    """A bundle built without `test-utils` reports none at all, and that must
-    read as a missing instrument rather than as a chunk read by nobody."""
-    assert summarise_chunks([{"first_reads": None}, {"first_reads": []}]) == []
+def test_no_trace_documents_means_no_chunk_at_all():
+    """A bundle built without `test-utils` forwards no trace records at all, and
+    that must read as a missing instrument rather than as a chunk read by
+    nobody. The command turns it into exit 2 for exactly that reason."""
+    assert summarise_chunks([], [{"first_reads": None}], min_first_reads=20) == {
+        "chunks": [],
+        "chunks_without_a_holder": [],
+    }
+
+
+def test_a_first_get_to_a_non_holder_is_not_a_first_read():
+    """The defect this change exists to fix. On DEV-01 (id 685) every one of
+    1,260 downloads sent its first GET for the file-address chunk to a bootstrap
+    seed, which answered `NotFound` — so the old gate measured where speculative
+    misses landed. The first read is the first GET that reached a peer which
+    answered `found` somewhere in the window."""
+    docs = [
+        _doc(1, "rpc", "start", "c", "seed", seq=1),
+        _doc(1, "rpc", "finish", "c", "seed", "NotFound { address: [1] }", seq=2),
+        _doc(1, "rpc", "start", "c", "holder", seq=3),
+        _doc(1, "rpc", "finish", "c", "holder", "found 10 bytes", seq=4),
+    ]
+    out = summarise_chunks(docs, [], min_first_reads=1)["chunks"]
+    assert [c["busiest_holder"] for c in out] == ["holder"]
+    assert out[0]["reads"] == 1
+    assert out[0]["first_get_to_holder"] == 0.0
+    assert out[0]["gets_per_download"] == 2
+    assert out[0]["not_found_per_download"] == 1
+
+
+def test_a_chunk_no_peer_ever_served_is_listed_not_gated():
+    """No first read, so nothing to gate — but a chunk every GET of which was
+    answered `NotFound` is a finding, and dropping it would hide it."""
+    docs = [
+        _doc(1, "rpc", "start", "gone", "p1", seq=1),
+        _doc(1, "rpc", "finish", "gone", "p1", "NotFound { address: [1] }", seq=2),
+    ]
+    out = summarise_chunks(docs, [], min_first_reads=1)
+    assert out["chunks"] == []
+    assert out["chunks_without_a_holder"][0]["chunk"] == "gone"
+    assert out["chunks_without_a_holder"][0]["downloads"] == 1
+
+
+def test_a_holder_in_one_download_is_a_holder_in_every_download():
+    """The holder set is resolved over the WHOLE window: a peer that served the
+    chunk to one browser holds it for all of them, and a per-download set would
+    leave the first read of an early download unattributable."""
+    docs = [
+        _doc(1, "rpc", "start", "c", "late", seq=1),
+        _doc(1, "rpc", "finish", "c", "late", "", seq=2),
+        _doc(2, "rpc", "start", "c", "late", seq=1),
+        _doc(2, "rpc", "finish", "c", "late", "found 10 bytes", seq=2),
+    ]
+    out = summarise_chunks(docs, [], min_first_reads=1)["chunks"]
+    assert out[0]["reads"] == 2
+    assert out[0]["busiest_holder_share"] == 1.0
+
+
+def test_g3_passes_on_a_uniform_holder_distribution_and_fails_on_a_concentrated_one():
+    uniform = summarise_chunks(
+        _dealt_docs(["h0", "h1", "h2", "h3", "h4", "h5"], 24), [], min_first_reads=20
+    )["chunks"][0]
+    assert uniform["busiest_holder_share"] == pytest.approx(4 / 24)
+    assert uniform["gated"] is True
+    concentrated = summarise_chunks(_dealt_docs(["h0"], 24), [], min_first_reads=20)["chunks"][0]
+    assert concentrated["busiest_holder_share"] == 1.0
+    assert concentrated["gated"] is True
+
+
+def _doc(instance, operation, phase, target, peer, detail="", *, seq, round_id=R0, host="H1"):
+    return {
+        "round_id": round_id,
+        "instance": instance,
+        "seq": seq,
+        "host": host,
+        "operation": operation,
+        "phase": phase,
+        "target": target,
+        "peer": peer,
+        "detail": detail,
+    }
+
+
+def _dealt_docs(holders, downloads):
+    """`downloads` reads of one chunk, dealt round-robin over `holders`."""
+    out = []
+    for n in range(downloads):
+        holder = holders[n % len(holders)]
+        out.append(_doc(n + 1, "rpc", "start", "c", holder, seq=1))
+        out.append(_doc(n + 1, "rpc", "finish", "c", holder, "found 10 bytes", seq=2))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +439,7 @@ def test_the_stall_share_is_over_the_rows_that_carry_a_count():
             {"round_id": R0, "status": "success", "stalls": 2, "started_at": WINDOW_START},
             {"round_id": R0, "status": "success", "stalls": None, "started_at": WINDOW_START},
         ],
+        trace_docs=[],
         hot_files=_hot_files(),
         period_secs=PERIOD,
         period_source="test",
@@ -415,7 +528,9 @@ def test_g1_fails_a_window_in_which_everything_was_skipped():
     has no completion rate at all, and that is reported as a failure with the
     reason rather than as a clean result."""
     report = _report(
-        "spread-rows.json", window_end=datetime(2026, 10, 18, 9, 10, tzinfo=timezone.utc)
+        "spread-rows.json",
+        traces="spread-trace-docs.json",
+        window_end=datetime(2026, 10, 18, 9, 10, tzinfo=timezone.utc),
     )
     assert report["totals"]["skipped"] == 8
     assert report["totals"]["completion"] is None
@@ -443,7 +558,7 @@ def test_g3_boundary_is_inclusive(spread):
     that met the threshold."""
     gate = next(g for g in spread["gates"] if g["name"] == "G3 busiest holder share")
     assert gate["status"] == GATE_PASS
-    tightened = _report("spread-rows.json", max_holder_share=0.2)
+    tightened = _report("spread-rows.json", traces="spread-trace-docs.json", max_holder_share=0.2)
     tightened_gate = next(g for g in tightened["gates"] if g["name"] == "G3 busiest holder share")
     assert tightened_gate["status"] == GATE_FAIL
 
@@ -457,6 +572,7 @@ def test_g2_counts_only_not_found_failures(spread):
 def test_g4_honours_a_raised_ceiling(nearest):
     relaxed = _report(
         "nearest-first-rows.json",
+        traces="nearest-first-trace-docs.json",
         window_end=datetime(2026, 10, 18, 10, 0, tzinfo=timezone.utc),
         expected_instances=4,
         max_refused=2,
@@ -483,10 +599,14 @@ def test_skips_are_listed_separately_and_in_no_denominator(spread):
     assert {r["error_kind"] for r in spread["skipped_rows"]} == {"no_hot_files"}
 
 
-def test_the_totals_carry_the_archived_trace_count(spread):
-    """24 of the 32 in-window rows were archived (the 8 skips were not), which
-    is how an operator sees that the evidence came off the VMs."""
-    assert spread["totals"]["traces_archived"] == 24
+def test_the_totals_carry_the_trace_record_count(spread):
+    """How an operator sees that the instrument was running: a cohort whose
+    bundle lacks `test-utils` forwards nothing, and the per-chunk section would
+    then be empty for a reason that has nothing to do with the network."""
+    # 24 successful downloads x (5 chunk-a records + 2 chunk-b) + 6 stalled
+    # downloads x 3 chunk-c = 168 + 18 = 186. The pre-window round contributes
+    # none: the query names the window's round ids.
+    assert spread["totals"]["trace_records"] == 24 * 7 + 6 * 3
 
 
 def test_the_markdown_is_fixed_format_and_reproducible(spread):
@@ -565,7 +685,62 @@ class _Repo:
         return self.rows
 
 
-def _run(args, rows, deploy_args=None, hot_files="present", s3_error=None):
+class _FakeEs:
+    """The run's Elasticsearch, serving the fixture's trace documents.
+
+    Deliberately a fake `search` rather than a patched `fetch_trace_docs`: the
+    query body, the `search_after` paging and the `[round_id, host, instance,
+    seq]` sort are the parts most likely to be silently wrong, and a stub that
+    returned the documents directly would exercise none of them.
+    """
+
+    def __init__(self, docs, page_size=7, error=None):
+        self.docs = docs
+        self.page_size = page_size
+        self.error = error
+        self.pages = 0
+
+    def client_index(self):
+        return "telegraf-ant-clients-dev-03*"
+
+    def search(self, body, index=None):
+        if self.error is not None:
+            raise self.error
+        assert index == self.client_index()
+        self.pages += 1
+        filters = body["query"]["bool"]["filter"]
+        terms = {
+            next(iter(f["terms"])): next(iter(f["terms"].values())) for f in filters if "terms" in f
+        }
+        wanted_rounds = set(terms["browser_trace.round_id"])
+        wanted_ops = set(terms["tag.operation.keyword"])
+        hits = []
+        for d in self.docs:
+            t, tags = d["browser_trace"], d["tag"]
+            if t["round_id"] not in wanted_rounds or tags["operation"] not in wanted_ops:
+                continue
+            hits.append(
+                {
+                    "_source": d,
+                    "sort": [t["round_id"], tags["host"], t["instance"], t["seq"]],
+                }
+            )
+        hits.sort(key=lambda h: h["sort"])
+        after = body.get("search_after")
+        if after:
+            hits = [h for h in hits if h["sort"] > after]
+        return {"hits": {"hits": hits[: self.page_size]}}
+
+
+def _run(
+    args,
+    rows,
+    deploy_args=None,
+    hot_files="present",
+    s3_error=None,
+    traces="spread-trace-docs.json",
+    es_error=None,
+):
     """Drive the command offline.
 
     `hot_files` is what the LIVE S3 object holds ("present", a document, or
@@ -582,10 +757,15 @@ def _run(args, rows, deploy_args=None, hot_files="present", s3_error=None):
         if s3_error is not None
         else patch("saorsa_deploy.analysis.browser_reads.load_hot_files", return_value=hot)
     )
+    docs = json.loads((FIXTURES / traces).read_text()) if traces else []
     with (
         patch(
             "saorsa_deploy.analysis.browser_reads.get_repository",
             return_value=_Repo(rows, deploy_args),
+        ),
+        patch(
+            "saorsa_deploy.analysis.browser_reads.EsRun",
+            return_value=_FakeEs(docs, error=es_error),
         ),
         patched_load,
     ):
@@ -615,6 +795,7 @@ def test_exit_one_when_a_gate_fails():
         _run(
             _args(window_end="2026-10-18T10:00:00Z"),
             _rows("nearest-first-rows.json"),
+            traces="nearest-first-trace-docs.json",
         )
         == 1
     )
@@ -787,3 +968,119 @@ def test_json_out_dash_writes_the_object_once_and_nothing_else(capsys):
     assert code == 0
     out = capsys.readouterr().out
     assert json.loads(out)["deployment"] == "DEV-03"
+
+
+def test_exit_two_when_the_window_has_no_trace_documents():
+    """Distinct from "a gate failed": an empty per-chunk table would otherwise
+    read as a cohort whose reads reached no holder, when the real cause is
+    `forward_logs` off, a bundle without `test-utils`, or a stack already
+    destroyed. The message names the index and the window."""
+    assert _run(_args(), _rows("spread-rows.json"), traces=None) == 2
+
+
+def test_exit_two_when_elasticsearch_cannot_be_read():
+    """A missing elastic state, an unreachable endpoint and an expired key are
+    all "the records could not be read" — reported as exit 2, never a
+    traceback."""
+    assert _run(_args(), _rows("spread-rows.json"), es_error=RuntimeError("no elastic state")) == 2
+
+
+def test_the_trace_query_pages_rather_than_taking_one_page():
+    """`search_after` on `[round_id, host, instance, seq]`, which is unique per
+    document because the harness gives the header seq 0 and the events 1..N. A
+    tie in that tuple would silently drop a document."""
+    from saorsa_deploy.browser_traces import fetch_trace_docs
+
+    docs = json.loads((FIXTURES / "spread-trace-docs.json").read_text())
+    es = _FakeEs(docs, page_size=7)
+    out, counts = fetch_trace_docs(es, [R0 + 1, R0 + 2, R0 + 3], page_size=7)
+    assert len(out) == len(docs)
+    assert counts == {"unusable": 0, "duplicates": 0}
+    assert es.pages > 1
+    assert [d["seq"] for d in out] == [
+        d["browser_trace"]["seq"]
+        for d in sorted(
+            docs,
+            key=lambda d: (
+                d["browser_trace"]["round_id"],
+                d["tag"]["host"],
+                d["browser_trace"]["instance"],
+                d["browser_trace"]["seq"],
+            ),
+        )
+    ]
+
+
+def test_a_re_read_round_is_deduplicated_on_the_harness_key():
+    """`force_document_id` does NOT make a forwarder restart a no-op: telegraf
+    derives the id from the timestamp and the tag set, never the fields, and the
+    tail input stamps each line when it is READ — so `from_beginning = true`
+    re-indexes every line already on disk under a new id. Counting those twice
+    would double `gets_per_download` and `not_found_per_download`."""
+    from saorsa_deploy.browser_traces import fetch_trace_docs, summarise_chunks
+
+    docs = json.loads((FIXTURES / "spread-trace-docs.json").read_text())
+    es = _FakeEs(docs + docs, page_size=500)
+    out, counts = fetch_trace_docs(es, [R0 + 1, R0 + 2, R0 + 3], page_size=500)
+    assert counts["duplicates"] == len(docs)
+    assert len(out) == len(docs)
+    # And the figures are the ones the un-duplicated stream gives.
+    once, _ = fetch_trace_docs(_FakeEs(docs, page_size=500), [R0 + 1, R0 + 2, R0 + 3])
+    assert summarise_chunks(out, [], min_first_reads=20) == summarise_chunks(
+        once, [], min_first_reads=20
+    )
+
+
+def test_duplicates_would_otherwise_double_the_per_download_costs():
+    """Named explicitly, because it is the figure the duplication moves: the
+    first read survives either way (a minimum over `seq` against a holder SET),
+    so a report could look right while both cost columns were twice life."""
+    from saorsa_deploy.browser_traces import summarise_chunks
+
+    docs = [
+        _doc(1, "rpc", "start", "c", "seed", seq=1),
+        _doc(1, "rpc", "finish", "c", "seed", "NotFound { address: [1] }", seq=2),
+        _doc(1, "rpc", "start", "c", "holder", seq=3),
+        _doc(1, "rpc", "finish", "c", "holder", "found 10 bytes", seq=4),
+    ]
+    clean = summarise_chunks(docs, [], min_first_reads=1)["chunks"][0]
+    doubled = summarise_chunks(docs + docs, [], min_first_reads=1)["chunks"][0]
+    assert clean["gets_per_download"] == 2
+    assert doubled["gets_per_download"] == 4
+    assert clean["not_found_per_download"] == 1
+    assert doubled["not_found_per_download"] == 2
+    # Unmoved, which is why the dedupe has to be in the fetch and not left to
+    # G3 looking fine.
+    assert doubled["busiest_holder"] == clean["busiest_holder"]
+    assert doubled["reads"] == clean["reads"]
+
+
+def test_a_document_missing_its_place_in_the_download_is_counted_not_guessed():
+    """`index.mapping.ignore_malformed` is on for this index, so a field that
+    did not fit its mapping is DROPPED and the document still arrives. Treating
+    a missing `seq` as 0 would make it the first read of its chunk."""
+    from saorsa_deploy.browser_traces import normalise_trace_doc
+
+    assert normalise_trace_doc({"browser_trace": {"round_id": 1, "instance": 1}, "tag": {}}) is None
+    assert (
+        normalise_trace_doc(
+            {"browser_trace": {"round_id": 1, "instance": 1, "seq": 3}, "tag": {"host": ""}}
+        )
+        is None
+    )
+    assert normalise_trace_doc(
+        {
+            "browser_trace": {"round_id": 1, "instance": 1, "seq": 3},
+            "tag": {"host": "H", "operation": "rpc", "phase": "start"},
+        }
+    ) == {
+        "round_id": 1,
+        "instance": 1,
+        "seq": 3,
+        "host": "H",
+        "operation": "rpc",
+        "phase": "start",
+        "target": "",
+        "peer": "",
+        "detail": "",
+    }

@@ -1503,21 +1503,24 @@ clients` extension too, which is the normal way to use it.
   is *when* each instance read and *which holder served it*. `count: N` (this
   role only) expands to N VMs with consecutive `client_index`, as repeated
   `--browser-downloader` flags, because the argv is what the journal compares.
-- Traces land at `/var/lib/ant-browser-downloader/trace/<round>-<instance>.jsonl`
-  and are **never deleted** by the harness — `clients fetch-browser-traces`
-  before destroy (below).
+- **Traces are FORWARDED, not fetched** (V2-1650): the harness appends every
+  record to `/var/log/ant-client-forward/browser-trace.jsonl` and telegraf ships
+  them to the run's Elasticsearch as `browser_trace` documents. Nothing SSHes a
+  browser VM after the run.
 
 See `deploy/README.md` §"Browser client VMs (real Chromium, hot-read cohort)".
 
-#### Persisting the rounds, the traces, and the report (V2-1618)
+#### Persisting the rounds, the traces, and the report (V2-1618, V2-1650)
 
 `record-results` copies every `browser_download` point into
 **`deployment_browser_download_records`** in the same pass as the file-op and
-pointer records, `clients fetch-browser-traces` archives the raw traces to S3
-before teardown, and **`analysis browser-reads`** is the report a hot-read run is
-judged by. `print-downloads --name <n> --browser` is the live Influx view (one
-row per round) and `print-recorded-results --id` gains a "Browser downloads"
-summary. `deployments archive` carries the table like the others.
+pointer records, the raw per-dial records are **forwarded to the run's
+Elasticsearch as they are produced**, and **`analysis browser-reads`** is the
+report a hot-read run is judged by. `print-downloads --name <n> --browser` is
+the live Influx view (one row per round) and `print-recorded-results --id` gains
+a "Browser downloads" summary. `deployments archive` carries the table like the
+others. **Phase 4 of a run is `record-results` then `browser-reads`** — there is
+no fetch step and no S3 archive.
 
 - **Its own table, and a `skipped` row is stored but in no denominator.** Pooling
   a synchronised cohort's reads of ONE file with a client's reads of random files
@@ -1526,17 +1529,19 @@ summary. `deployments archive` carries the table like the others.
 - **`started_at` is the round's BOUNDARY**, not when the browser came up
   (`started_late_ms` carries that), which is what makes a window selection over
   these rows select whole rounds. The window is half-open on `round_id × period`.
-- **`trace_s3_key` AND `extension` COALESCE on upsert**, both because the Influx
-  point carries neither, so a re-run that cannot resolve one would erase what an
-  earlier pass recorded. The traces die with the VM, so erasing the pointer
-  leaves no second chance; and `extension` is resolved from state teardown
-  deletes, so a re-run after `clients down` — where a run's procedure puts its
-  second `record-results` — would relabel a whole cohort as the deployment's own
-  tier. `extension` resolves from `deploy_args.browser_downloaders` FIRST and
-  the live client tiers second (the config survives teardown; the two cannot
-  disagree, since the extension name is part of the hostname).
-- **Everything the report needs is snapshotted into the registry, because it
-  reads Postgres alone and runs after the cohort is gone.** `clients provision`
+- **`extension` COALESCEs on upsert**, because the Influx point does not carry
+  it, so a re-run that cannot resolve it would erase what an earlier pass
+  recorded. It is resolved from state teardown deletes, so a re-run after
+  `clients down` — where a run's procedure puts its second `record-results` —
+  would relabel a whole cohort as the deployment's own tier. It resolves from
+  `deploy_args.browser_downloaders` FIRST and the live client tiers second (the
+  config survives teardown; the two cannot disagree, since the extension name is
+  part of the hostname). **There is no `trace_s3_key`** — dropped in 1.7.0 with
+  the archive it pointed at.
+- **The report reads Postgres AND the run's Elasticsearch, so it must run
+  BEFORE teardown.** Everything off the Influx point comes from the rows (which
+  survive the cohort); §4 and G3 come from the forwarded trace records, and
+  `elastic destroy` takes those with it. `clients provision`
   denormalises the round period and instance count into
   `deploy_args.browser_downloaders` (rebuilt from every client tier each pass —
   a shallow merge cannot append — and without it the period is derived from the
@@ -1548,12 +1553,29 @@ summary. `deployments archive` carries the table like the others.
   selection leaves an earlier one alone), so **run `record-results` before
   tearing a cohort down**; the report prefers it and falls back to S3 only when
   nothing was recorded.
-- **`fetch-browser-traces` exits 2 if any VM is unreachable** — it runs while the
-  VMs are up, and a partial archive exiting 0 is indistinguishable from a
-  complete one once they are gone. It **never creates a row**: an unmatched trace
-  is reported and the next `record-results` writes the row. VMs come from the S3
-  client state, not the inventory (a cohort is normally an extension added hours
-  after `up` wrote it).
+- **Every trace line is self-describing and `seq` is unique within a download**
+  (header 0, events 1..N): the report pages with `search_after` on
+  `[round_id, host, instance, seq]`, a tie there would silently drop a document,
+  and the same tuple is what the reader DEDUPLICATES on —
+  `force_document_id` does not make a forwarder restart idempotent (telegraf
+  hashes the timestamp and tags, never the fields, and the tail input stamps
+  each line when it is read), so `from_beginning = true` re-indexes the whole
+  on-disk file and would double `gets_per_download`/`not_found_per_download`.
+- **Appends are serialised and each block is ONE `filehandle.write`**, not
+  `appendFile`: a per-download block is 599 KB–1.30 MB (measured over all 2,676
+  of id 685's traces) while `fs/promises` writes in 512 KiB chunks, so
+  concurrent instances interleaved at a chunk boundary and cut a line of each in
+  half — telegraf drops both halves and nothing reports it. A test at 200
+  records passed against that; it takes 3,000 to catch. Rotated wholesale at
+  1 GiB, checked BEFORE the append; an append that fails warns rather than
+  failing the round. The records are their own tail input (`data_format = "json"`, `name_override = "browser_trace"`), so
+  fields nest under `browser_trace.*` and `operation`/`phase` are `tag.*` —
+  analysed, hence `.keyword`. **`json_string_fields` must name every string**:
+  telegraf keeps numbers automatically and DROPS any other string it was not
+  told about, so a missing `target` would leave every document present and §4
+  empty. `elapsed_ms` is mapped `double` on purpose — a whole float serialises
+  as `0`, the first document would infer `long`, and `ignore_malformed` would
+  then silently drop every fractional value.
 - **Four gates, none of them a staging gate** (`deployments compare` is
   unchanged): G1 completion ≥ 0.99 in **every** round (per round, so one bad
   round cannot be averaged away; an all-skip round is not gated), G2 zero
@@ -1561,20 +1583,33 @@ summary. `deployments archive` carries the table like the others.
   first reads (below 20 a share is noise, so those are listed not gated), G4 zero
   refused dials. **Exit 0 / 1 / 2**, and 2 ("I measured nothing") is deliberately
   not 1 ("the read path got worse").
-- **G3 is the verdict on ADR-0023 and reads `first_reads` alone** — the holder
-  each chunk's FIRST read went to, because a fallback to a second holder has
-  already paid the first one's `NotFound` or silence. `known_holders` is the
-  download-wide discovery count, and `null` is its own bucket, never 0.
+- **G3 is the verdict on ADR-0023 and counts the holder that SERVED the read**
+  (V2-1650) — a peer that answered `found` for that chunk anywhere in the
+  window; a download's first read is its first GET that reached one, because a
+  fallback to a second holder has already paid the first one's `NotFound` or
+  silence. It used to read the row's `first_reads`, which records the peer the
+  first GET was **sent to** — on id 685 a bootstrap seed answering `NotFound` on
+  1,260 of 1,260 downloads, so the gate measured where speculative misses
+  landed: **3 of 51** chunks breached, against **41 of 51** by holder (median
+  34%, worst 90%). §4 also reports `gets_per_download` (10.04 on id 685 against
+  the ADR's 3.45), `not_found_per_download` (7.94 against 1.39),
+  `first_get_to_holder` and `decided_before_discovery`. A chunk no peer ever
+  answered `found` for has no first read and is listed, not gated.
+  `known_holders` stays from the row's `first_reads` — the download-wide
+  discovery count, `null` its own bucket, never 0.
 - **§7 bootstrap load is the round's download count**: every download dials every
   seed, so that IS the sessions one bootstrap sees at the round's start. The
   per-round **maximum** is printed against the 256-session ceiling — an average
   over a run that started small hides the peak.
 - Fixtures: `deploy/tests/fixtures/browser-reads/` — one cohort whose chunk is
   spread over 6 holders (16.7%, PASS) and one nearest-first at 100% (FAIL), with
-  every expected figure worked out on paper in its README.
+  every expected figure worked out on paper in its README, plus
+  **`id685-trace-docs.jsonl.gz`**: 1,738 REAL Elasticsearch documents from id
+  685's round 2987404, two chunks over twenty downloads (busiest share 70% and
+  45%, first-GET-to-holder 0% on both).
 
-See `deploy/README.md` §"Persisting the rounds", §"Archiving the traces" and
-§"The report (`analysis browser-reads`)".
+See `deploy/README.md` §"Persisting the rounds", §"The trace: forwarded to
+Elasticsearch as it is produced" and §"The report (`analysis browser-reads`)".
 
 ### The pointer client tier (`clients.pointers[]`)
 
