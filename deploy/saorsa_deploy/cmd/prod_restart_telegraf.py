@@ -27,10 +27,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
-
-from saorsa_deploy.analysis.json_out import console_for, emit_json
 from rich.table import Table
 
+from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_deploy.inventory import NodeVm, load_node_inventory
 from saorsa_deploy.provisioning.telegraf_restart import (
     LOG_FORWARDER_SERVICE,

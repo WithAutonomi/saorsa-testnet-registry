@@ -32,8 +32,6 @@ from decimal import Decimal
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-
-from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_db.models import (
     VERIFY_MISMATCH,
     VERIFY_OK,
@@ -49,6 +47,7 @@ from saorsa_db.models import (
     ProdUploadStatus,
 )
 
+from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_deploy.derived_metrics import format_metric_value
 from saorsa_deploy.registry import get_repository
 

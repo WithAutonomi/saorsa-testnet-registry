@@ -18,12 +18,12 @@ import json
 from argparse import Namespace
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+
+from rich.console import Console
 
 from saorsa_deploy.cmd.print_file_ops import _emit_ops_json, _json_point
 from saorsa_deploy.cmd.prod_restart_telegraf import _emit_probe_json
 from saorsa_deploy.cmd.prod_services import _survey_as_dict
-from rich.console import Console
 
 QUIET = Console(quiet=True)
 

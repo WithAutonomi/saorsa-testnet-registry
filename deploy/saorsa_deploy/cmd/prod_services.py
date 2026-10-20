@@ -32,11 +32,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 from rich.table import Table
-
-from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_db.models.prod_service_audit import ProdServiceAuditAction
 
 from saorsa_deploy import registry
+from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_deploy.disk_survey import (
     FAILURE_KIND_LABELS,
     SurveyFailure,
