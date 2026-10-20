@@ -110,13 +110,25 @@ def cmd_print_recorded_results(args) -> None:
         )
         sys.exit(1)
 
-    deployment = repo.get(args.deployment_id)
-    if deployment is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No deployment with id="
-            f"{args.deployment_id} in the registry."
-        )
-        sys.exit(1)
+    name = getattr(args, "name", None)
+    if name:
+        # The live row, so a recreated deployment is followed automatically —
+        # a pinned id keeps printing a well-formed report for the destroyed
+        # row and nothing says the deployment moved on.
+        deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+        if deployment is None:
+            console.print(
+                f"[bold red]Error:[/bold red] No deployment named '{name}' in the registry."
+            )
+            sys.exit(1)
+    else:
+        deployment = repo.get(args.deployment_id)
+        if deployment is None:
+            console.print(
+                f"[bold red]Error:[/bold red] No deployment with id="
+                f"{args.deployment_id} in the registry."
+            )
+            sys.exit(1)
 
     kind = _resolve_kind(deployment.deploy_args)
     console.rule(
