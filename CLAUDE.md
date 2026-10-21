@@ -1904,9 +1904,9 @@ Two command groups record the release train in the registry. Both are
 **CLI-only** (not exposed over the REST API) and both **require `DATABASE_URL`**,
 exiting non-zero rather than silently no-opping the way the deployment registry
 does. Both are driven by skills in the separate `releases` repo
-(`/home/chris/dev/releases/.claude/skills/`), not from here — and those skills
-call the **bare** `saorsa-deploy` binary, since their cwd would make `uv run`
-resolve the wrong project.
+(`~/dev/github.com/WithAutonomi/autonomi-release-ops/.claude/skills/`), not from
+here — and those skills call the **bare** `saorsa-deploy` binary, since their cwd
+would make `uv run` resolve the wrong project.
 
 **`release-candidates`** records each RC *cut*: one row per binary target
 (`ant-node 0.17.1-rc.1`, `ant 0.3.3-rc.1`), its constituent crates, and the PRs

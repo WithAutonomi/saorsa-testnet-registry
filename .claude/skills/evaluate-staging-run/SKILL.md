@@ -723,7 +723,7 @@ candidate id and train date — in three places, replacing the placeholder in ea
 
 1. This skill's **Baseline chain** section (Step 2).
 2. The equivalent **Baseline chain** entry in the `gate-verdict` skill
-   (`/home/chris/dev/releases/.claude/skills/gate-verdict/SKILL.md`).
+   (`~/dev/github.com/WithAutonomi/autonomi-release-ops/.claude/skills/gate-verdict/SKILL.md`).
 3. The memory note `project_staging_baseline_chain_break_wasm.md` in
    `/home/chris/.claude/projects/-home-chris-dev-github-com-jacderida-saorsa-testnet-registry/memory/`.
 
