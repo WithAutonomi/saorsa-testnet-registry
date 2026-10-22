@@ -38,6 +38,14 @@ HASH_CHUNK_BYTES = 1 << 20
 
 DOWNLOAD_TIMEOUT_SECONDS = 600
 
+#: `verify` refuses a retirement larger than this fraction of the entries it
+#: scanned, and larger than MASS_RETIREMENT_FLOOR entries, unless --force is
+#: passed. Both thresholds together: a three-entry --limit run that
+#: legitimately retires one is unaffected, while a source outage that takes
+#: out an inventory is not mistaken for per-file rot.
+MASS_RETIREMENT_FRACTION = 0.2
+MASS_RETIREMENT_FLOOR = 10
+
 
 def _require_repo(console: Console):
     repo = get_file_pool_repository()
@@ -1213,14 +1221,26 @@ def cmd_prod_pool_mark_uploaded(args) -> None:
 
 
 def cmd_prod_pool_verify(args) -> None:
-    """Re-check catalogued entries against reality.
+    """Re-check catalogued entries against reality, retiring what it cannot confirm.
 
     Public URLs rot and local files move. Discovering either mid-deploy — on a
     funded mainnet wallet, after infrastructure is up — is the expensive way to
     find out.
+
+    This **writes**: an entry it cannot confirm is set inactive, and a changed
+    size is updated. Two refusals keep that from being destructive. An entry
+    whose parent directory is absent is ``unreachable``, not gone — an
+    unmounted volume removes the whole tree at once, and then whether the file
+    exists is simply unknown. And a retirement spanning most of what was
+    scanned is a source or mount outage rather than per-file rot, so it is
+    refused outright without ``--force``. ``--dry-run`` performs every check
+    and no write.
     """
     console = Console()
     repo = _require_repo(console)
+
+    dry_run = getattr(args, "dry_run", False)
+    forced = getattr(args, "force", False)
 
     kind = PoolFileKind(args.kind) if getattr(args, "kind", None) else None
     rows = repo.list_pool_files(kind=kind, active=True, limit=getattr(args, "limit", None))
@@ -1233,6 +1253,7 @@ def cmd_prod_pool_verify(args) -> None:
     ok = 0
     resized: list[tuple] = []
     gone: list[tuple] = []
+    unreachable: list[tuple] = []
     undigested: list = []
 
     for row in _with_progress(
@@ -1251,31 +1272,54 @@ def cmd_prod_pool_verify(args) -> None:
                 # Cannot distinguish "gone" from "publishes no Content-Length"
                 # by size alone, so only retire it if it also refuses to answer.
                 if not _url_reachable(row.locator):
-                    gone.append((row, "unreachable"))
-                    repo.set_pool_file_active(row.id, False)
+                    gone.append((row, "does not answer"))
                 else:
                     ok += 1
                 continue
         else:
             path = Path(row.locator)
             if not path.is_file():
+                if not path.parent.is_dir():
+                    # A deleted file leaves its parent behind. An absent parent
+                    # means the whole tree went — an unmounted volume, a moved
+                    # directory — and `is_file()` then says nothing about the
+                    # file itself. The URL branch already refuses to retire on
+                    # one ambiguous signal; this is the same refusal.
+                    unreachable.append((row, path.parent))
+                    continue
                 gone.append((row, "missing"))
-                repo.set_pool_file_active(row.id, False)
                 continue
             size = path.stat().st_size
-            if size != row.size_bytes and args.rehash:
+            if size != row.size_bytes and args.rehash and not dry_run:
                 repo.add_pool_file_digests(row.id, hash_local_file(path))
 
         if size != row.size_bytes:
             resized.append((row, row.size_bytes, size))
-            repo.update_pool_file_size(row.id, size)
+            if not dry_run:
+                repo.update_pool_file_size(row.id, size)
         else:
             ok += 1
+
+    # A retirement of most of what was scanned describes the source, not the
+    # files: an archive.org outage, or a volume mounted and empty. Both
+    # thresholds together, so a three-entry --limit run that legitimately
+    # retires one is unaffected.
+    mass_retirement = (
+        len(gone) > MASS_RETIREMENT_FLOOR and len(gone) > len(rows) * MASS_RETIREMENT_FRACTION
+    )
+    blocked = mass_retirement and not forced
+
+    if gone and not blocked and not dry_run:
+        for row, _reason in gone:
+            repo.set_pool_file_active(row.id, False)
 
     console.print()
     console.print(f"  ok        {ok:>4}")
     if resized:
-        console.print(f"  changed   {len(resized):>4}   size updated")
+        console.print(
+            f"  changed   {len(resized):>4}   "
+            + ("size would be updated" if dry_run else "size updated")
+        )
         for row, before, after in resized[:10]:
             # A size change can move an entry between classes, which changes
             # which requests can ever draw it.
@@ -1291,9 +1335,39 @@ def cmd_prod_pool_verify(args) -> None:
                 f"{format_size(after)}[/dim]{note}"
             )
     if gone:
-        console.print(f"[red]  gone      {len(gone):>4}   retired (set inactive)[/red]")
-        for row, reason in gone[:10]:
-            console.print(f"[red]            #{row.id} {row.name}: {reason}[/red]")
+        if blocked:
+            outcome = "NOT retired — see below"
+        elif dry_run:
+            outcome = "would be retired (set inactive)"
+        else:
+            outcome = "retired (set inactive)"
+        console.print(f"[red]  gone      {len(gone):>4}   {outcome}[/red]")
+        if not blocked:
+            # Blocked, the guard block below names them — printing both would
+            # be the same ten lines twice.
+            for row, reason in gone[:10]:
+                console.print(f"[red]            #{row.id} {row.name}: {reason}[/red]")
+    if unreachable:
+        # Named once per directory, not once per entry: 1728 identical "missing"
+        # lines are what hid an unmounted volume the first time this happened.
+        by_parent: dict[str, int] = {}
+        for row, parent in unreachable:
+            by_parent[str(parent)] = by_parent.get(str(parent), 0) + 1
+        console.print(
+            f"[yellow]  unreachable {len(unreachable):>2}   not retired — "
+            f"directory not present ({len(by_parent)} of them)[/yellow]"
+        )
+        for parent, count in sorted(by_parent.items())[:10]:
+            console.print(
+                f"[yellow]            {parent}: {count} entr{'y' if count == 1 else 'ies'}[/yellow]"
+            )
+        if len(by_parent) > 10:
+            console.print(f"[dim]            … and {len(by_parent) - 10} more directories[/dim]")
+        console.print(
+            "[dim]            Whether those files still exist is unknown, so "
+            "nothing was retired. The usual cause is a volume that is not "
+            "mounted — mount it and re-run.[/dim]"
+        )
     if undigested:
         # The honest residual. These entries cannot be recognised as the same
         # content as anything else, so a URL and a local copy of one file could
@@ -1307,6 +1381,31 @@ def cmd_prod_pool_verify(args) -> None:
             "[dim]            The datamap address catches these after the fact; "
             "`pool add --materialise` avoids the situation entirely.[/dim]"
         )
+
+    if mass_retirement:
+        console.print()
+        verdict = (
+            "Would refuse to retire" if forced or dry_run else "Refusing to retire"
+        ) + f" {len(gone)} of the {len(rows)} entries scanned."
+        console.print(f"[bold red]{verdict}[/bold red]")
+        console.print(
+            "A retirement of that proportion is a source or mount outage, not per-file rot."
+        )
+        for row, reason in gone[:10]:
+            console.print(f"[dim]  #{row.id} {row.name}: {reason}[/dim]")
+        if len(gone) > 10:
+            console.print(f"[dim]  … and {len(gone) - 10} more[/dim]")
+        if forced:
+            console.print("[yellow]--force was passed, so they were retired anyway.[/yellow]")
+        else:
+            console.print(
+                "Re-run with --force to retire them anyway. `pool reactivate` undoes a retirement."
+            )
+
+    if dry_run:
+        console.print("\n[dim]Dry run — nothing was written.[/dim]")
+    elif blocked:
+        sys.exit(2)
 
 
 def _url_reachable(url: str) -> bool:
@@ -1327,6 +1426,101 @@ def _url_reachable(url: str) -> bool:
         except requests.RequestException:
             continue
     return False
+
+
+def cmd_prod_pool_reactivate(args) -> None:
+    """Undo a retirement, after re-confirming each entry against reality.
+
+    `verify` reads only active rows, so a retirement is invisible to every
+    later run: the drive coming back does not bring the entries back with it,
+    and before this command the only route was SQL against the registry.
+
+    Each entry is re-checked rather than taken on trust — a local path must
+    pass `is_file()`, a URL must answer the same two-signal test `verify`
+    retires on — so this cannot be used to blanket-resurrect dead links. It
+    sets nothing but the `active` flag: a retirement never touched a claim, so
+    a file that was already spent stays spent.
+    """
+    console = Console()
+    repo = _require_repo(console)
+
+    ids = list(getattr(args, "ids", None) or [])
+    kind = PoolFileKind(args.kind) if getattr(args, "kind", None) else None
+    if not ids and kind is None and not getattr(args, "all", False):
+        console.print(
+            "[bold red]Error:[/bold red] Nothing selected. Pass --id, --kind or "
+            "--all. A bare `reactivate` would be a whole-catalogue operation, "
+            "which is not something to do by accident."
+        )
+        sys.exit(1)
+
+    dry_run = getattr(args, "dry_run", False)
+    verbose = getattr(args, "verbose", False)
+
+    rows = repo.list_pool_files(kind=kind, active=None)
+    if ids:
+        wanted = set(ids)
+        rows = [row for row in rows if row.id in wanted]
+        absent = sorted(wanted - {row.id for row in rows})
+        if absent:
+            console.print(
+                "[yellow]No pool entry with id " + ", ".join(f"#{i}" for i in absent) + ".[/yellow]"
+            )
+
+    already = [row for row in rows if row.active]
+    inactive = [row for row in rows if not row.active]
+
+    if not inactive:
+        console.print("[yellow]Nothing inactive to reactivate.[/yellow]")
+        if already:
+            console.print(
+                f"[dim]  {len(already)} already active — left alone, not written again.[/dim]"
+            )
+        return
+
+    console.print(
+        f"Re-checking {len(inactive)} inactive entr{'y' if len(inactive) == 1 else 'ies'}…"
+    )
+
+    reactivated: list = []
+    still_missing: list = []
+    for row in _with_progress(console, inactive, "re-checking", verbose, lambda r: r.name):
+        if row.kind is PoolFileKind.URL:
+            # The same two signals `verify` retires on, read the other way
+            # round: either one answering is enough to call it real.
+            confirmed = probe_url_size(row.locator) is not None or _url_reachable(row.locator)
+        else:
+            confirmed = Path(row.locator).is_file()
+        if confirmed:
+            reactivated.append(row)
+            if not dry_run:
+                repo.set_pool_file_active(row.id, True)
+        else:
+            still_missing.append(row)
+
+    console.print()
+    console.print(
+        f"  reactivated   {len(reactivated):>4}"
+        + ("   (would be)" if dry_run and reactivated else "")
+    )
+    if verbose:
+        for row in reactivated:
+            console.print(f"[dim]                #{row.id} {row.name}[/dim]")
+    if still_missing:
+        console.print(f"[yellow]  still missing {len(still_missing):>4}   left inactive[/yellow]")
+        for row in still_missing[: (len(still_missing) if verbose else 10)]:
+            console.print(f"[yellow]                #{row.id} {row.name}: {row.locator}[/yellow]")
+        if not verbose and len(still_missing) > 10:
+            console.print(f"[dim]                … and {len(still_missing) - 10} more[/dim]")
+    if already:
+        console.print(f"[dim]  already active {len(already):>3}   not written again[/dim]")
+    console.print(
+        "[dim]Retiring an entry only ever cleared its `active` flag — claims "
+        "were never touched, so a file that was already spent stays spent. "
+        "This restores nothing but the flag.[/dim]"
+    )
+    if dry_run:
+        console.print("\n[dim]Dry run — nothing was written.[/dim]")
 
 
 # =============================================================================

@@ -7392,9 +7392,10 @@ def main(argv=None):
 
     prod_pool_verify_parser = prod_pool_subparsers.add_parser(
         "verify",
-        help="Re-check entries against reality: URLs that have rotted, local "
-        "files that moved, sizes that changed. Finding out mid-deploy on a "
-        "funded mainnet wallet is the expensive way.",
+        help="Re-check entries against reality and RETIRE what cannot be "
+        "confirmed: URLs that have rotted, local files that moved, sizes that "
+        "changed. This writes — use --dry-run first. Finding out mid-deploy on "
+        "a funded mainnet wallet is the expensive way.",
     )
     prod_pool_verify_parser.add_argument(
         "--kind", choices=["url", "local"], help="Restrict to one inventory."
@@ -7413,6 +7414,54 @@ def main(argv=None):
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Re-hash a local file whose size changed (default on).",
+    )
+    prod_pool_verify_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Perform every check and report what would be retired, resized "
+        "and rehashed, without writing anything.",
+    )
+    prod_pool_verify_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Retire entries even when the retirement spans more than 20%% of "
+        "the entries scanned (and more than 10 of them), which is otherwise "
+        "refused as a source or mount outage rather than per-file rot.",
+    )
+
+    prod_pool_reactivate_parser = prod_pool_subparsers.add_parser(
+        "reactivate",
+        help="Set entries `verify` retired back to active, after re-confirming "
+        "each one is real. The way back from a retirement caused by an "
+        "unmounted volume or a source outage.",
+    )
+    prod_pool_reactivate_parser.add_argument(
+        "--kind", choices=["url", "local"], help="Restrict to one inventory."
+    )
+    prod_pool_reactivate_parser.add_argument(
+        "--id",
+        dest="ids",
+        action="append",
+        type=int,
+        metavar="N",
+        help="Reactivate this entry. Repeatable.",
+    )
+    prod_pool_reactivate_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Act on every inactive entry. Required when no --id or --kind "
+        "narrows the selection, so a bare `reactivate` cannot be a "
+        "whole-catalogue operation by accident.",
+    )
+    prod_pool_reactivate_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print a line per entry instead of a progress bar.",
+    )
+    prod_pool_reactivate_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be reactivated without writing anything.",
     )
 
     prod_pool_import_parser = prod_pool_subparsers.add_parser(
@@ -8534,6 +8583,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_verify
 
             cmd_prod_pool_verify(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "reactivate":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_reactivate
+
+            cmd_prod_pool_reactivate(args)
         elif args.prod_subcommand == "pool" and args.prod_pool_action == "history":
             from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_history
 
