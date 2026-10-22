@@ -2355,16 +2355,24 @@ per-op timestamps.
   taken across the two halves, and the bucket's figure is the **median across
   clients**. A client without
   `transfer_duration_drift_min_ops_per_half` (20) successful ops in **each**
-  half is **excluded, never read as flat** — which is what makes the
-  deliberately clock-skewed clients self-handling, since a skewed client's
-  completions all land in one half. **Do not add skew correction.** Compared
+  half is **excluded, never read as flat** — a sample-size floor, and nothing
+  more. **The split is on `finished_at` because it is the one timestamp in a
+  single frame** (assigned where the op is recorded); `started_at` carries the
+  client's own clock, and the deliberate ±2h client skew reaches only that one —
+  measured on #699, four clients are ±7,200 s out on
+  `finished_at - started_at - duration_ms` while every client's `finished_at`
+  spans the same 03:10 → 08:26. So a skewed client is **assessed like any
+  other, never excluded**; if an op timestamp ever becomes client-framed this
+  statistic needs its own frame. Compared
   against the BASELINE's own drift, in percentage POINTS
   (`transfer_duration_drift_increase_pp`, 15), because a fleet whose disks are
   filling may legitimately slow and a relative change against a near-zero
   baseline is undefined. Calibrated on runs 596/627/655/667 (worst clean
   reading +8.41 pp) with 699 as the regression fixture (+18 to +21 pp on three
   buckets). **Prefer a labelled phase window**: on `full-run` the two halves are
-  not two halves of the measurement phase.
+  not two halves of the measurement phase. **The 2σ criterion cannot be enabled
+  for it** — `apply_noise_rule`'s band is relative, so a points metric whose
+  history sits near zero would have every real breach downgraded FAIL → GRAY.
 
 **Deliberately does NOT cover** three hard gates, and the report is silent on
 them entirely: crashes (panics go to stderr/journald, not the JSON logs telegraf

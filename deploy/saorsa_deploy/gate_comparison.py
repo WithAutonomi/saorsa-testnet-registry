@@ -359,15 +359,26 @@ def duration_drift_by_bucket(
        compare has not demonstrated flatness.
     4. The bucket's drift is the **median across hosts**.
 
-    Per-host-then-median rather than pooling every op, for two reasons. A host
-    that only transfers late in the window cannot manufacture a trend out of
-    being slower than a different host was earlier. And it makes the
-    deliberately clock-skewed clients self-handling: the staging profile skews
-    two uploaders and one downloader by +-2h, so a skewed host's ``finished_at``
-    values all shift together, land in one half (or outside the window), fail
-    step 3 and drop out. **Do not add skew detection or correction here** -- the
-    exclusion IS the correction, and a corrected timestamp would put a host's
-    ops back into halves whose boundary its own clock never agreed with.
+    Per-host-then-median rather than pooling every op: a host that only
+    transfers late in the window cannot then manufacture a trend out of being
+    slower than a different host was earlier.
+
+    The split is on ``finished_at`` because it is the one timestamp here in a
+    SINGLE frame. It is assigned where the operation is recorded, not by the
+    client, so every host's completions sit on one clock and a boundary drawn
+    through them means the same thing for all of them. ``started_at`` carries
+    the client's own clock, and the staging profile deliberately skews three
+    uploaders and one downloader by +-2h -- which is exactly what
+    ``print_file_ops._clock_skew_seconds`` estimates, from the gap between the
+    two. Measured on STG-01 #699: four clients report
+    ``finished_at - started_at - duration_ms`` of +-7200s while every other
+    client reports 0-2s, and yet **every** client's ``finished_at`` spans the
+    same 03:10 -> 08:26. So a skewed client is not displaced into one half and
+    is not excluded; it is assessed like any other, which is what splitting in
+    one frame buys. **If an op timestamp ever becomes client-framed, this
+    statistic needs a frame of its own** -- halves drawn through mixed clocks
+    would put a skewed client's early ops in the late half and read its drift
+    backwards.
 
     On a ``full-run`` window the two halves are not two halves of the
     measurement phase -- that window opens when the first host started reporting
@@ -861,6 +872,16 @@ def apply_noise_rule(
     ``history`` is a list of that metric's values on prior accepted runs.
     Choosing which runs are "accepted" is a judgment call and belongs to the
     operator; only the arithmetic lives here.
+
+    **The sigma band is RELATIVE and a gate measured in POINTS cannot use it.**
+    ``sigma_percent`` divides by ``abs(mean)``, so for a metric whose history
+    sits near zero -- the within-window duration DRIFT gate (V2-1717) is one --
+    the band comes out enormous and ``exceeds_sigma`` is unreachable: supply
+    history for such a gate and a genuine breach is silently downgraded FAIL ->
+    GRAY, for good. It is harmless for ``success_rate_drop_pp`` only because
+    that metric's mean sits near 100. Latent today, since ``_collect_history``
+    populates only the two per-GB ratios; a points gate that wants the
+    criterion needs its own band expressed in points, not this one.
     """
     if delta_percent is None:
         return NOT_ASSESSED, None

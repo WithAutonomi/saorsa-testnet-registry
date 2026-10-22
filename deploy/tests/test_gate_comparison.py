@@ -6,7 +6,7 @@ These tests pin the arithmetic, the three comparability invariants, and the
 rule that a gate which cannot be measured is NOT ASSESSED rather than a pass.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -65,6 +65,11 @@ class FakeOp:
     #: within-window drift gate (V2-1717) are unchanged: a record with no
     #: hostname cannot be attributed to a client and is skipped by that gate.
     client_hostname: str | None = None
+    #: The CLIENT's clock. Carried here only so a test can pin that nothing in
+    #: this module reads it -- the staging profile skews it deliberately, and
+    #: every window decision is made on `finished_at`, which is not the
+    #: client's clock.
+    started_at: datetime | None = None
 
 
 def op(
@@ -1041,16 +1046,17 @@ def test_both_runs_drifting_equally_passes(config):
 
 
 def test_a_client_confined_to_one_half_is_excluded_not_read_as_flat(config):
-    """What makes the deliberate client clock skew self-handling.
+    """A client present in only one half contributes nothing, rather than 0%.
 
-    The staging profile skews two uploaders and one downloader by +-2h, so a
-    skewed client's completions all land in one half of the window. It drops out
-    on the per-half minimum, and the median is taken over the clients that
-    stayed. Nothing detects or corrects the skew -- the exclusion is the
-    correction.
+    This is a SAMPLE-SIZE rule, not a clock-skew one: client clock skew never
+    reaches `finished_at`, so the deliberately skewed staging clients are
+    assessed like any other (see `duration_drift_by_bucket`). What it catches is
+    a client that genuinely only transferred in part of the window -- it has
+    nothing to compare against itself, so it is dropped rather than read as
+    flat, and it cannot drag the median with the one half it does have.
     """
     late = [
-        op(size_mb=10, duration_ms=90_000, minutes=minute, host="STG-01-upload-skewed")
+        op(size_mb=10, duration_ms=90_000, minutes=minute, host="STG-01-upload-late")
         for minute in range(100, 180)
     ]
     stats = duration_drift_by_bucket(
@@ -1065,7 +1071,33 @@ def test_a_client_confined_to_one_half_is_excluded_not_read_as_flat(config):
     assert stats["drift_percent"] == pytest.approx(0.0)
     # Pooled over every op, the late client's 90s transfers would land entirely
     # in the second half and manufacture a trend out of nothing.
-    assert "skewed" not in stats["worst_host"]
+    assert "late" not in stats["worst_host"]
+
+
+def test_a_clock_skewed_client_is_assessed_like_any_other(config):
+    """Client clock skew does not reach `finished_at`, so nothing excludes it.
+
+    The staging profile skews three uploaders and one downloader by +-2h, and
+    that skew lands on `started_at` only: measured on STG-01 #699, four clients
+    report `finished_at - started_at - duration_ms` of +-7200s while every
+    client's `finished_at` spans the same 03:10 -> 08:26. The split is on
+    `finished_at` precisely because it is the one timestamp in a single frame.
+
+    So a skewed client is neither excluded nor corrected -- it is assessed like
+    any other, and this gate's figures must not move when `started_at` does.
+    The guard matters because the obvious "fix" for skew is to read
+    `started_at`, which would draw halves through mixed clocks.
+    """
+    window = (T0, T0 + timedelta(minutes=DRIFT_WINDOW_MINUTES))
+    in_frame = _drift_ops(UPLOADERS, _stepped)
+    skewed = [replace(record, started_at=T0 - timedelta(hours=2)) for record in in_frame]
+    args = (config.file_size_buckets_mb, *window, config.transfer_duration_drift_min_ops_per_half)
+
+    plain = duration_drift_by_bucket(in_frame, *args)["0-32MB"]
+    with_skew = duration_drift_by_bucket(skewed, *args)["0-32MB"]
+    assert with_skew == plain
+    assert with_skew["hosts"] == len(UPLOADERS)
+    assert with_skew["excluded_hosts"] == 0
 
 
 def test_a_bucket_with_no_qualifying_client_is_not_assessed_not_passed(config):
@@ -1098,10 +1130,8 @@ def test_fewer_than_the_per_half_minimum_is_not_assessed(config):
 
 
 def test_the_per_half_minimum_comes_from_config(config):
-    from dataclasses import replace as dc_replace
-
     sparse = _drift_ops(("STG-01-upload-1",), _flat, step=9)
-    lax = dc_replace(config, transfer_duration_drift_min_ops_per_half=10)
+    lax = replace(config, transfer_duration_drift_min_ops_per_half=10)
     verdict = compare_runs(
         _drift_run(1, "STG-01", sparse),
         _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _flat)),

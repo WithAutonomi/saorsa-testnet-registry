@@ -157,8 +157,17 @@ soft_gates:
   # threshold low enough to catch those would fire on #596's own +18.4%
   # within-window drift on upload 64-128MB. That overlap is why this gate is
   # soft.
-  # Revisit at the quarterly review, when a few trains of history exist and the
-  # 2-sigma criterion can start doing the work.
+  #
+  # Revisit at the quarterly review -- but NOT by populating `--history` for
+  # this gate and leaning on the 2-sigma criterion, which is the one thing that
+  # cannot help here. `apply_noise_rule` expresses the band as
+  # `100 * (k * stdev) / abs(mean)`, a RELATIVE figure, while this gate's delta
+  # is in POINTS and its history sits near zero: the band comes out enormous,
+  # `exceeds_sigma` is unreachable, and a genuine +20 pp breach would be
+  # silently downgraded FAIL -> GRAY for good. (`success_rate_drop_pp` escapes
+  # that only because its mean sits near 100.) A recalibration here means
+  # moving this number against more clean runs, or giving a points gate its own
+  # band expressed in points.
   transfer_duration_drift_increase_pp: 15.0
 
   # Successful operations a client needs in EACH half of the window, for a given
@@ -169,13 +178,17 @@ soft_gates:
   # it serves on all five calibration runs, while the download tiers' sparser
   # large-file buckets fall out rather than contributing a drift computed from a
   # dozen transfers (at 10, run 655's 768-1536MB download read +12.5% off
-  # n=13/15 -- a reading the 20 minimum correctly refuses).
+  # n=13/15 -- a reading the 20 minimum correctly refuses). That is the whole
+  # justification: it is a sample-size floor and nothing else.
   #
-  # This is also what makes the deliberate client clock skew self-handling: the
-  # staging profile skews two uploaders and one downloader by +-2h, so a skewed
-  # client's completions all shift together into one half of the window and it
-  # drops out here. The exclusion IS the correction; nothing detects or corrects
-  # the skew.
+  # It does NOT exclude the deliberately clock-skewed clients, and nothing here
+  # does. Client skew never reaches `finished_at`, which the split uses --
+  # measured on #699, four clients are +-2h out on
+  # `finished_at - started_at - duration_ms` while every client's `finished_at`
+  # spans the same 03:10 -> 08:26. A skewed client is assessed like any other,
+  # which is what splitting in one clock frame buys; three of #699's own
+  # breaching buckets have a skewed client among their qualifying clients, one
+  # of them as its only client.
   transfer_duration_drift_min_ops_per_half: 20
 
   # Node-tier host metrics.

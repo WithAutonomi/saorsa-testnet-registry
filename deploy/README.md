@@ -3129,17 +3129,36 @@ The statistic, per transport and per size bucket:
    **excluded** — never read as 0% drift.
 4. The bucket's drift is the **median across clients**.
 
-Per-client-then-median rather than pooling every op, for two reasons. A client
-that only transfers late in the window cannot manufacture a trend out of being
-slower than a different client was earlier. And it makes the deliberately
-clock-skewed clients **self-handling**: the staging profile skews two uploaders
-and one downloader by ±2h, so a skewed client's completions all shift together
-into one half and it drops out at step 3. Nothing detects or corrects the skew —
-the exclusion *is* the correction.
+Per-client-then-median rather than pooling every op: a client that only
+transfers late in the window cannot then manufacture a trend out of being slower
+than a different client was earlier.
+
+**The split is on `finished_at` because it is the one timestamp in a single
+frame.** It is assigned where the operation is recorded rather than by the
+client, so every client's completions sit on one clock and a boundary drawn
+through them means the same thing for all of them. `started_at` carries the
+client's own clock, and the staging profile deliberately skews three uploaders
+and one downloader by ±2h — the gap between the two is what
+`print-uploads`/`print-downloads` report as a client's clock offset. Measured on
+STG-01 #699, four clients are ±7,200 s out on
+`finished_at - started_at - duration_ms` while every other client is 0–2 s, and
+**every** client's `finished_at` spans the same 03:10 → 08:26.
+
+So a skewed client is **not** displaced into one half and **not** excluded — it
+is assessed like any other, which is the point of splitting in one frame. (Three
+of #699's breaching buckets have a skewed client among their qualifying clients,
+one of them as its only client.) The per-half minimum is a sample-size floor and
+nothing more. If an op timestamp ever becomes client-framed, this statistic
+needs a frame of its own.
 
 The gate compares the candidate's median drift against the **baseline's**, in
 **percentage points** of extra drift (`soft_gates.transfer_duration_drift_increase_pp`,
-shipped **15**), under the ordinary noise rule. Drift against drift, because a
+shipped **15**), under the ordinary noise rule — though **the 2σ half of that rule
+cannot help this gate**: `apply_noise_rule` expresses the band as a percentage of
+the metric's own mean, and a points metric whose history sits near zero gets an
+enormous band, so supplying `--history` for it would silently downgrade a real
+breach FAIL → GRAY. Recalibration means moving the number, not populating
+history. Drift against drift, because a
 fleet whose disks are filling may legitimately slow a little across any window
 and the baseline is the control for that; in points rather than percent for the
 same reason `success_rate_drop_pp` is — both sides are already percentages, and a
