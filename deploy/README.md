@@ -3098,9 +3098,83 @@ enforces it.
 
 #### What it covers
 
-Two hard gates (upload success floor < 99%, download success floor < 99.5%) and eight soft gates: upload/download success rate, transfer duration p50/p95 **per file-size bucket**, node CPU, node RSS, memory leak slope, outbound bytes per GB of traffic, and disk bytes per GB stored. Plus one soft gate per **connection-error group** recorded by `deployments record-log-counts` (see below).
+Two hard gates (upload success floor < 99%, download success floor < 99.5%) and nine soft gates: upload/download success rate, transfer duration p50/p95 **per file-size bucket**, within-window transfer-duration **drift** per bucket, node CPU, node RSS, memory leak slope, outbound bytes per GB of traffic, and disk bytes per GB stored. Plus one soft gate per **connection-error group** recorded by `deployments record-log-counts` (see below).
 
 Transfer-duration percentiles are exact — they come from the per-op `deployment_upload_records` / `deployment_download_records`, which carry each operation's own `duration_ms` and timestamps. `deployment_file_results` is not used: it is an aggregate with no per-op timestamps and therefore cannot be windowed.
+
+#### Within-window transfer-duration drift
+
+`Upload duration drift [<bucket>]` / `Download duration drift [<bucket>]` — a
+**soft** gate measuring whether transfers got slower **across a run's own
+measurement window**, compared against the baseline run's drift across its own.
+
+The pooled percentile gates above cannot see a degradation that starts part-way
+through the window: the healthy earlier part dilutes it, and whether a gate trips
+depends on where the pooled figure happens to land rather than on how bad the
+degradation is. On STG-01 #699 against #667 native transfers slowed ~30% in the
+back third of the steady-state window, in both directions and at every file size,
+and `Upload duration p50 [0-32MB]` — the bucket with by far the most samples
+(n=1,719) and the clearest degradation — **passed at +4.78%**. It surfaced only
+because somebody happened to look at the per-op rows by hand.
+
+The statistic, per transport and per size bucket:
+
+1. Split the window at its **midpoint by time**. Not by clock hour: hour buckets
+   leave a partial final slice (#699's fourth hour was 10 minutes, n=84 against
+   ~500), which is noise dressed as a trend.
+2. Per `client_hostname`, take the p50 of `duration_ms` in each half, and that
+   client's drift as `second_half_p50 / first_half_p50 - 1`.
+3. A client needs `soft_gates.transfer_duration_drift_min_ops_per_half`
+   (shipped **20**) successful ops in **each** half, for that bucket, or it is
+   **excluded** — never read as 0% drift.
+4. The bucket's drift is the **median across clients**.
+
+Per-client-then-median rather than pooling every op: a client that only
+transfers late in the window cannot then manufacture a trend out of being slower
+than a different client was earlier.
+
+**The split is on `finished_at` because it is the one timestamp in a single
+frame.** It is assigned where the operation is recorded rather than by the
+client, so every client's completions sit on one clock and a boundary drawn
+through them means the same thing for all of them. `started_at` carries the
+client's own clock, and the staging profile deliberately skews three uploaders
+and one downloader by ±2h — the gap between the two is what
+`print-uploads`/`print-downloads` report as a client's clock offset. Measured on
+STG-01 #699, four clients are ±7,200 s out on
+`finished_at - started_at - duration_ms` while every other client is 0–2 s, and
+**every** client's `finished_at` spans the same 03:10 → 08:26.
+
+So a skewed client is **not** displaced into one half and **not** excluded — it
+is assessed like any other, which is the point of splitting in one frame. (Three
+of #699's breaching buckets have a skewed client among their qualifying clients,
+one of them as its only client.) The per-half minimum is a sample-size floor and
+nothing more. If an op timestamp ever becomes client-framed, this statistic
+needs a frame of its own.
+
+The gate compares the candidate's median drift against the **baseline's**, in
+**percentage points** of extra drift (`soft_gates.transfer_duration_drift_increase_pp`,
+shipped **15**), under the ordinary noise rule — though **the 2σ half of that rule
+cannot help this gate**: `apply_noise_rule` expresses the band as a percentage of
+the metric's own mean, and a points metric whose history sits near zero gets an
+enormous band, so supplying `--history` for it would silently downgrade a real
+breach FAIL → GRAY. Recalibration means moving the number, not populating
+history. Drift against drift, because a
+fleet whose disks are filling may legitimately slow a little across any window
+and the baseline is the control for that; in points rather than percent for the
+same reason `success_rate_drop_pp` is — both sides are already percentages, and a
+relative change against a baseline drifting +0.35% is undefined noise. The gate's
+`detail` carries the candidate's **absolute** figures — worst client,
+`19.0 s → 24.7 s`, and the per-half n — so a reader sees the slowdown itself and
+not only that it is worse than last week.
+
+A bucket where no client cleared the per-half minimum on either run reads **NOT
+ASSESSED** with that reason, as the pooled bucket gates do, and `--new-baseline`
+blanks it with every other relative gate.
+
+Prefer a **labelled phase window** for this gate even more than for the others.
+On `full-run` the two halves are not two halves of the measurement phase: that
+window opens when the first host started reporting (the node clock skew drags
+that up to 3h before T0) and closes after whatever followed.
 
 A run carrying pointer clients adds eleven `[pointer]` gates — see "Pointer gates"
 below.
@@ -4828,11 +4902,62 @@ number that looks credible and is not.
 | `prod pool history <file>` | Every claim ever made against one file. |
 | `prod pool mark-uploaded <file> --address <addr> [--chunks-stored …] [--storage-cost-atto …]` | Record that a checked-out file reached the network. |
 | `prod pool release <file>…` | Give claimed file(s) back. |
-| `prod pool verify [--kind] [--limit] [--no-rehash]` | Re-check entries: rotted URLs, moved files, changed sizes. |
+| `prod pool verify [--kind] [--limit] [--no-rehash] [--dry-run] [--force]` | Re-check entries: rotted URLs, moved files, changed sizes. **This writes** — it retires what it cannot confirm and updates sizes. See below. |
+| `prod pool reactivate [--kind] [--id N …] [--all] [--verbose] [--dry-run]` | Undo a retirement, re-confirming each entry first. The way back from a `verify` run against an unmounted volume. |
 | `prod pool import-history [--dry-run]` | Mark files already on the network as spent, from **both** upload tables. Partially-uploaded history lands as `partial`, not as spent. |
 
 Everything is addressed by **file id**, never claim id — a file carries at most
 one blocking claim, so a claim id is an implementation detail.
+
+#### `verify` writes, and what stops it being destructive
+
+`verify` reads as a report and is not one: an entry it cannot confirm is set
+**inactive**, and a changed size is **updated**. On 2026-10-22 it retired every
+`local` entry in the catalogue — all 1728 — because the volume holding them was
+not mounted when it ran. The files were all there; the mount was not, and
+recovery took hand-written SQL. Three things now stand in the way:
+
+| Outcome | What it means | Written? |
+|---------|---------------|----------|
+| `ok` | confirmed, size unchanged | no |
+| `changed` | confirmed, size differs — the entry can move size class | size updated (and rehashed, for a local file, unless `--no-rehash`) |
+| `gone` | a URL that answers nothing **and** is unreachable, or a local file whose **parent directory is present** and which is not there | retired (set inactive) |
+| `unreachable` | a local entry whose **parent directory is absent** | **no** |
+| `no digest` | confirmed, but cannot be deduplicated against another entry | no |
+
+* **`--dry-run` performs every check and no write** — the URLs are still
+  probed and the files still `stat`ed — and prints the same tallies and
+  per-entry lines a real run would, ending with `Dry run — nothing was
+  written.` Run it first.
+* **`unreachable` is not `gone`.** A deleted file leaves its parent directory
+  behind; an unmounted volume or a renamed tree removes the whole path, and
+  then `is_file()` says nothing about the file itself. Those entries are
+  counted, reported in yellow and **not retired**, and the missing directory is
+  named **once per directory** rather than once per entry — 1728 identical
+  `missing` lines are what hid the incident the first time. This mirrors the
+  refusal the URL branch already made, where a size probe returning nothing is
+  not enough on its own.
+* **A bulk retirement is refused.** When a run would retire more than **20% of
+  the entries it scanned** *and* more than **10** of them, nothing is retired:
+  the count and the first ten are printed, and the command **exits 2**. A
+  retirement of that proportion is a source outage (archive.org down) or a
+  mount that is present but empty, not per-file rot. Both thresholds together,
+  so a three-entry `--limit` run that legitimately retires one is unaffected.
+  `--force` performs it anyway. The proportion is of what was **scanned**, so a
+  `--limit 20` run over a 2000-entry pool measures the 20.
+* **Under `--dry-run` the guard is reported and the exit code stays `0`** — a
+  preview says what would happen rather than failing.
+
+`prod pool reactivate` is the way back. It sets `active` on inactive entries,
+having **re-confirmed each one**: a local path must pass `is_file()`, a URL must
+answer the same two-signal test `verify` retires on. An entry it cannot confirm
+is left inactive and named, so this cannot blanket-resurrect dead links.
+`--all` is required when no `--id` or `--kind` narrows the selection, so a bare
+`reactivate` is never a whole-catalogue operation by accident.
+
+Retirement only ever cleared the `active` flag — **claims were never touched**,
+so a file that was already spent stays spent and reactivating it cannot hand
+out content that is on the network. That is what makes the undo safe to offer.
 
 Tags are repeatable on both `add` and `list` (`--tag prc --tag video`), stored
 lower-cased in an indexed side table, and `list --tag a --tag b` matches **any**

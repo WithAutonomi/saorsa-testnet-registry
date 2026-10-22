@@ -6,7 +6,7 @@ These tests pin the arithmetic, the three comparability invariants, and the
 rule that a gate which cannot be measured is NOT ASSESSED rather than a pass.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -15,6 +15,7 @@ from saorsa_deploy.gate_comparison import (
     DATA_INTEGRITY_GATE,
     FAIL,
     GRAY,
+    NEW_BASELINE_REASON,
     NOT_ASSESSED,
     PASS,
     ComparisonError,
@@ -23,6 +24,7 @@ from saorsa_deploy.gate_comparison import (
     bucket_label,
     check_comparability,
     compare_runs,
+    duration_drift_by_bucket,
     duration_percentiles_by_bucket,
     filter_ops_to_window,
     linear_slope,
@@ -58,15 +60,33 @@ class FakeOp:
     #: Content verification (V2-757). None on an upload row, on a failed
     #: download, and on every row recorded before verification existed.
     verify_status: str | None = None
+    #: The client VM that performed the operation. Non-nullable in both op
+    #: tables, but left optional here so the tests that predate the
+    #: within-window drift gate (V2-1717) are unchanged: a record with no
+    #: hostname cannot be attributed to a client and is skipped by that gate.
+    client_hostname: str | None = None
+    #: The CLIENT's clock. Carried here only so a test can pin that nothing in
+    #: this module reads it -- the staging profile skews it deliberately, and
+    #: every window decision is made on `finished_at`, which is not the
+    #: client's clock.
+    started_at: datetime | None = None
 
 
-def op(status="success", size_mb=100, duration_ms=1000, minutes=0, verify_status=None):
+def op(
+    status="success",
+    size_mb=100,
+    duration_ms=1000,
+    minutes=0,
+    verify_status=None,
+    host=None,
+):
     return FakeOp(
         status=status,
         file_size_bytes=size_mb * MB,
         duration_ms=duration_ms,
         finished_at=T0 + timedelta(minutes=minutes),
         verify_status=verify_status,
+        client_hostname=host,
     )
 
 
@@ -890,3 +910,272 @@ def test_the_integrity_gate_is_rendered_in_the_hard_gate_table(config):
     # A count, so no percent suffix: "> 0 %" would read as a percentage of
     # something.
     assert "> 0 |" in report
+
+
+# ---------------------------------------------------------------------------
+# Within-window transfer-duration drift (V2-1717)
+# ---------------------------------------------------------------------------
+
+#: A 3h window, like the staging profile's steady-state slice, so the midpoint
+#: split falls at 90 minutes.
+DRIFT_WINDOW_MINUTES = 180
+DRIFT_GATE = "Upload duration drift [0-32MB]"
+POOLED_GATE = "Upload duration p50 [0-32MB]"
+
+
+def _drift_ops(hosts, duration_at, minutes=DRIFT_WINDOW_MINUTES, size_mb=10, step=1):
+    """One successful 10MB upload per host per `step` minutes across the window.
+
+    ``duration_at`` is called with the minute offset and returns the duration in
+    milliseconds, which is how a mid-window step is expressed.
+    """
+    return [
+        op(size_mb=size_mb, duration_ms=duration_at(minute), minutes=minute, host=host)
+        for host in hosts
+        for minute in range(0, minutes, step)
+    ]
+
+
+def _drift_run(deployment_id, name, records, label="steady-state"):
+    return RunMetrics(
+        deployment_id=deployment_id,
+        name=name,
+        window_label=label,
+        window_start=T0,
+        window_end=T0 + timedelta(minutes=DRIFT_WINDOW_MINUTES),
+        upload_records=records,
+        download_records=records,
+    )
+
+
+def _gate(verdict, name):
+    return next(g for g in verdict["gates"] if g["gate"] == name)
+
+
+FLAT = 19_000
+#: +30%, the size of the step #699 took part-way through its window.
+DEGRADED = 24_700
+
+#: #699 degraded in the back third of the window, not at the midpoint -- which
+#: is exactly why the pooled percentile survived it: two thirds of the
+#: operations are still healthy, so the pooled p50 does not move at all.
+_STEP_AT = 120
+
+
+def _stepped(minute):
+    return FLAT if minute < _STEP_AT else DEGRADED
+
+
+def _flat(minute):
+    return FLAT
+
+
+UPLOADERS = ("STG-01-upload-1", "STG-01-upload-2", "STG-01-upload-3", "STG-01-upload-4")
+
+
+def test_the_2026_10_22_shape_fails_drift_while_the_pooled_percentile_passes(config):
+    """The regression fixture, and the whole reason this gate exists.
+
+    On STG-01 #699 against #667 native uploads slowed ~30% in the back third of
+    the steady-state window, and the pooled `Upload duration p50 [0-32MB]` gate
+    -- the bucket with the most samples and the clearest degradation -- PASSED
+    at +4.78%. A degradation that a reader can see in an hour-by-hour table
+    must not depend on where a pooled figure happens to land.
+    """
+    candidate = _drift_run(1, "STG-01", _drift_ops(UPLOADERS, _stepped))
+    baseline = _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _flat))
+    verdict = compare_runs(candidate, baseline, config)
+
+    drift = _gate(verdict, DRIFT_GATE)
+    assert drift["verdict"] == FAIL
+    assert drift["kind"] == "soft"
+    assert drift["advisory"] is False
+    assert drift["single_run"] is False
+    assert drift["unit"] == "pp"
+    assert drift["candidate"] == pytest.approx(30.0)
+    assert drift["baseline"] == pytest.approx(0.0)
+    assert drift["delta_percent"] == pytest.approx(30.0)
+
+    pooled = _gate(verdict, POOLED_GATE)
+    assert pooled["verdict"] == PASS
+
+    # Soft, so it reaches the overall verdict and never the exit code.
+    assert verdict["overall"] == "SOFT FAIL"
+
+
+def test_the_drift_detail_carries_the_absolute_seconds_and_the_per_half_counts(config):
+    # "worse than last week" is not actionable on its own; a reader needs
+    # 19.0 s -> 24.7 s.
+    verdict = compare_runs(
+        _drift_run(1, "STG-01", _drift_ops(UPLOADERS, _stepped)),
+        _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _flat)),
+        config,
+    )
+    detail = _gate(verdict, DRIFT_GATE)["detail"]
+    assert "median of 4 client(s)" in detail
+    assert "19.0 s → 24.7 s" in detail
+    assert "n=90/90" in detail
+
+
+def test_a_flat_candidate_against_a_flat_baseline_passes(config):
+    verdict = compare_runs(
+        _drift_run(1, "STG-01", _drift_ops(UPLOADERS, _flat)),
+        _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _flat)),
+        config,
+    )
+    drift = _gate(verdict, DRIFT_GATE)
+    assert drift["verdict"] == PASS
+    assert drift["candidate"] == pytest.approx(0.0)
+    assert drift["delta_percent"] == pytest.approx(0.0)
+
+
+def test_both_runs_drifting_equally_passes(config):
+    # Drift against drift, not an absolute drift alarm: a fleet whose disks are
+    # filling may legitimately slow across any run's own window, and the
+    # baseline is the control for that.
+    verdict = compare_runs(
+        _drift_run(1, "STG-01", _drift_ops(UPLOADERS, _stepped)),
+        _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _stepped)),
+        config,
+    )
+    drift = _gate(verdict, DRIFT_GATE)
+    assert drift["verdict"] == PASS
+    assert drift["candidate"] == pytest.approx(30.0)
+    assert drift["baseline"] == pytest.approx(30.0)
+    assert drift["delta_percent"] == pytest.approx(0.0)
+
+
+def test_a_client_confined_to_one_half_is_excluded_not_read_as_flat(config):
+    """A client present in only one half contributes nothing, rather than 0%.
+
+    This is a SAMPLE-SIZE rule, not a clock-skew one: client clock skew never
+    reaches `finished_at`, so the deliberately skewed staging clients are
+    assessed like any other (see `duration_drift_by_bucket`). What it catches is
+    a client that genuinely only transferred in part of the window -- it has
+    nothing to compare against itself, so it is dropped rather than read as
+    flat, and it cannot drag the median with the one half it does have.
+    """
+    late = [
+        op(size_mb=10, duration_ms=90_000, minutes=minute, host="STG-01-upload-late")
+        for minute in range(100, 180)
+    ]
+    stats = duration_drift_by_bucket(
+        _drift_ops(UPLOADERS, _flat) + late,
+        config.file_size_buckets_mb,
+        T0,
+        T0 + timedelta(minutes=DRIFT_WINDOW_MINUTES),
+        config.transfer_duration_drift_min_ops_per_half,
+    )["0-32MB"]
+    assert stats["hosts"] == 4
+    assert stats["excluded_hosts"] == 1
+    assert stats["drift_percent"] == pytest.approx(0.0)
+    # Pooled over every op, the late client's 90s transfers would land entirely
+    # in the second half and manufacture a trend out of nothing.
+    assert "late" not in stats["worst_host"]
+
+
+def test_a_clock_skewed_client_is_assessed_like_any_other(config):
+    """Client clock skew does not reach `finished_at`, so nothing excludes it.
+
+    The staging profile skews three uploaders and one downloader by +-2h, and
+    that skew lands on `started_at` only: measured on STG-01 #699, four clients
+    report `finished_at - started_at - duration_ms` of +-7200s while every
+    client's `finished_at` spans the same 03:10 -> 08:26. The split is on
+    `finished_at` precisely because it is the one timestamp in a single frame.
+
+    So a skewed client is neither excluded nor corrected -- it is assessed like
+    any other, and this gate's figures must not move when `started_at` does.
+    The guard matters because the obvious "fix" for skew is to read
+    `started_at`, which would draw halves through mixed clocks.
+    """
+    window = (T0, T0 + timedelta(minutes=DRIFT_WINDOW_MINUTES))
+    in_frame = _drift_ops(UPLOADERS, _stepped)
+    skewed = [replace(record, started_at=T0 - timedelta(hours=2)) for record in in_frame]
+    args = (config.file_size_buckets_mb, *window, config.transfer_duration_drift_min_ops_per_half)
+
+    plain = duration_drift_by_bucket(in_frame, *args)["0-32MB"]
+    with_skew = duration_drift_by_bucket(skewed, *args)["0-32MB"]
+    assert with_skew == plain
+    assert with_skew["hosts"] == len(UPLOADERS)
+    assert with_skew["excluded_hosts"] == 0
+
+
+def test_a_bucket_with_no_qualifying_client_is_not_assessed_not_passed(config):
+    # Absence is never a pass: a bucket where nobody transferred in both halves
+    # has not demonstrated flatness.
+    one_sided = [
+        op(size_mb=10, duration_ms=FLAT, minutes=minute, host="STG-01-upload-1")
+        for minute in range(100, 180)
+    ]
+    verdict = compare_runs(
+        _drift_run(1, "STG-01", one_sided),
+        _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _flat)),
+        config,
+    )
+    drift = _gate(verdict, DRIFT_GATE)
+    assert drift["verdict"] == NOT_ASSESSED
+    assert drift["candidate"] is None
+    assert "in each half of the window" in drift["detail"]
+
+
+def test_fewer_than_the_per_half_minimum_is_not_assessed(config):
+    # Ten ops a half, against a minimum of 20.
+    sparse = _drift_ops(("STG-01-upload-1",), _flat, step=9)
+    verdict = compare_runs(
+        _drift_run(1, "STG-01", sparse),
+        _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _flat)),
+        config,
+    )
+    assert _gate(verdict, DRIFT_GATE)["verdict"] == NOT_ASSESSED
+
+
+def test_the_per_half_minimum_comes_from_config(config):
+    sparse = _drift_ops(("STG-01-upload-1",), _flat, step=9)
+    lax = replace(config, transfer_duration_drift_min_ops_per_half=10)
+    verdict = compare_runs(
+        _drift_run(1, "STG-01", sparse),
+        _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _flat)),
+        lax,
+    )
+    assert _gate(verdict, DRIFT_GATE)["verdict"] == PASS
+
+
+def test_a_run_without_a_window_cannot_be_split(config):
+    # `full-run` comparisons on a run whose derived metrics never recorded a
+    # window have no midpoint, and a guessed one would split on something other
+    # than what the caller asked to compare.
+    candidate = RunMetrics(
+        deployment_id=1,
+        name="STG-01",
+        window_label="steady-state",
+        upload_records=_drift_ops(UPLOADERS, _stepped),
+    )
+    verdict = compare_runs(candidate, _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _flat)), config)
+    drift = _gate(verdict, DRIFT_GATE)
+    assert drift["verdict"] == NOT_ASSESSED
+    assert drift["candidate"] is None
+
+
+def test_new_baseline_blanks_the_drift_gate(config):
+    # Relative, so it is blanked with every other relative gate -- emitted, not
+    # omitted: a gate missing from the report reads as one nobody thought about.
+    verdict = compare_runs(
+        _drift_run(1, "STG-01", _drift_ops(UPLOADERS, _stepped)), None, config, new_baseline=True
+    )
+    drift = _gate(verdict, DRIFT_GATE)
+    assert drift["verdict"] == NOT_ASSESSED
+    assert drift["detail"] == NEW_BASELINE_REASON
+    assert drift["baseline"] is None
+
+
+def test_the_drift_gate_renders_in_the_report(config):
+    report = render_report(
+        compare_runs(
+            _drift_run(1, "STG-01", _drift_ops(UPLOADERS, _stepped)),
+            _drift_run(2, "STG-00", _drift_ops(UPLOADERS, _flat)),
+            config,
+        )
+    )
+    assert DRIFT_GATE in report
+    # Points, like the success-rate gate, not percent.
+    assert "> 15 pp" in report

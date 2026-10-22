@@ -747,8 +747,22 @@ What will bite you:
   the source from `deploy_args.kind`, since `deployment_prod_upload_results` is
   written by two kinds and carries no hint of which.
 - A URL from a source publishing no checksum that is never downloaded **cannot**
-  be deduplicated before upload; `verify` reports how many entries are in that
+  be deduplicated before upload; `verify` counts how many entries are in that
   state.
+- **`prod pool verify` WRITES — it retires what it cannot confirm** — and it
+  retired all 1728 `local` entries on 2026-10-22 because their volume was not
+  mounted, leaving SQL as the only way back. Three guards now: `--dry-run`
+  performs every check and no write; a local entry whose **parent directory is
+  absent** is `unreachable`, counted and **not** retired (a deleted file leaves
+  its parent behind, an unmounted volume does not), named once per directory
+  rather than once per entry; and a run that would retire **more than 20% of
+  what it scanned AND more than 10 entries** retires nothing and exits 2, since
+  that is a source or mount outage rather than per-file rot — `--force`
+  overrides, and under `--dry-run` the guard is reported with exit 0.
+  **`prod pool reactivate`** is the way back, re-confirming each entry (a URL by
+  the same two-signal rule) and requiring `--all` when no `--id`/`--kind`
+  narrows it. A retirement only ever cleared `active`: claims are untouched, so
+  a spent file stays spent.
 
 Scale: the canary is the dominant consumer, burning ~350 distinct files
 permanently per run, small+medium only. `pool add --from-listing
@@ -2325,11 +2339,40 @@ reused every train. There is deliberately **no run-identity plumbing**: no
 baseline is the operator's judgment, supplied as an id.
 
 **Covers** 3 hard gates (upload floor 99%, download floor 99.5%, data integrity)
-and 8 soft gates (success rate, transfer p50/p95 **per file-size bucket**, node
-CPU, node RSS, leak slope, outbound bytes/GB, disk bytes/GB), plus one soft gate
+and 9 soft gates (success rate, transfer p50/p95 **per file-size bucket**,
+within-window transfer-duration **drift** per bucket, node CPU, node RSS, leak
+slope, outbound bytes/GB, disk bytes/GB), plus one soft gate
 per connection-error group. Transfer percentiles are exact, from the per-op
 records — **`deployment_file_results` is unusable**, being an aggregate with no
 per-op timestamps.
+
+- **The drift gate measures the SLOPE, not the level** (V2-1717). Every pooled
+  percentile dilutes a degradation that starts part-way through the window: on
+  STG-01 #699 native transfers slowed ~30% in the back third and
+  `Upload duration p50 [0-32MB]` — the most-sampled bucket — **passed at
+  +4.78%**. Per bucket, the window is split at its **midpoint by time** (hour
+  buckets leave a partial final slice), each `client_hostname`'s p50 drift is
+  taken across the two halves, and the bucket's figure is the **median across
+  clients**. A client without
+  `transfer_duration_drift_min_ops_per_half` (20) successful ops in **each**
+  half is **excluded, never read as flat** — a sample-size floor, and nothing
+  more. **The split is on `finished_at` because it is the one timestamp in a
+  single frame** (assigned where the op is recorded); `started_at` carries the
+  client's own clock, and the deliberate ±2h client skew reaches only that one —
+  measured on #699, four clients are ±7,200 s out on
+  `finished_at - started_at - duration_ms` while every client's `finished_at`
+  spans the same 03:10 → 08:26. So a skewed client is **assessed like any
+  other, never excluded**; if an op timestamp ever becomes client-framed this
+  statistic needs its own frame. Compared
+  against the BASELINE's own drift, in percentage POINTS
+  (`transfer_duration_drift_increase_pp`, 15), because a fleet whose disks are
+  filling may legitimately slow and a relative change against a near-zero
+  baseline is undefined. Calibrated on runs 596/627/655/667 (worst clean
+  reading +8.41 pp) with 699 as the regression fixture (+18 to +21 pp on three
+  buckets). **Prefer a labelled phase window**: on `full-run` the two halves are
+  not two halves of the measurement phase. **The 2σ criterion cannot be enabled
+  for it** — `apply_noise_rule`'s band is relative, so a points metric whose
+  history sits near zero would have every real breach downgraded FAIL → GRAY.
 
 **Deliberately does NOT cover** three hard gates, and the report is silent on
 them entirely: crashes (panics go to stderr/journald, not the JSON logs telegraf

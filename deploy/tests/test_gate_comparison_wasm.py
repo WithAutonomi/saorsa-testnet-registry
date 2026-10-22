@@ -30,20 +30,33 @@ class FakeOp:
     duration_ms: int | None
     finished_at: datetime | None
     client_kind: str | None
+    #: Which client VM ran the op. The within-window drift gate (V2-1717) takes
+    #: a p50 per client before taking the median, so it needs this; one client
+    #: per transport is enough to exercise the per-transport split.
+    client_hostname: str | None = None
 
 
-def op(status="success", size_mb=10, duration_ms=15000, minutes=0, kind=None):
+def op(status="success", size_mb=10, duration_ms=15000, minutes=0, kind=None, host=None):
     return FakeOp(
         status=status,
         file_size_bytes=size_mb * MB,
         duration_ms=duration_ms,
         finished_at=T0 + timedelta(minutes=minutes),
         client_kind=kind,
+        client_hostname=host or f"STG-01-{kind or 'native'}-1",
     )
 
 
-def ops(n, *, failures=0, kind=None, duration_ms=15000, start=0):
-    out = [op(duration_ms=duration_ms, minutes=start + i, kind=kind) for i in range(n - failures)]
+def ops(n, *, failures=0, kind=None, duration_ms=15000, start=0, duration_at=None):
+    """``n`` ops a minute apart. ``duration_at(minute)`` overrides the duration."""
+
+    def _duration(minute):
+        return duration_at(minute) if duration_at else duration_ms
+
+    out = [
+        op(duration_ms=_duration(start + i), minutes=start + i, kind=kind)
+        for i in range(n - failures)
+    ]
     out += [
         op(status="failure", duration_ms=duration_ms, minutes=start + n - failures + i, kind=kind)
         for i in range(failures)
@@ -153,7 +166,10 @@ class TestMixedRunsAreSplit:
         client_gates = [
             g["gate"]
             for g in payload["gates"]
-            if any(k in g["gate"] for k in ("success floor", "success rate", "duration p"))
+            if any(
+                k in g["gate"]
+                for k in ("success floor", "success rate", "duration p", "duration drift")
+            )
         ]
         assert client_gates
         assert all(g.endswith("[native]") or g.endswith("[wasm]") for g in client_gates)
@@ -336,3 +352,66 @@ class TestRecordResultsReadsBothBuckets:
         ):
             out = _fetch_all_op_points("u", "t", "o", "testnet-metrics", "0")
         assert len(out) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Within-window duration drift, per transport (V2-1717)
+# --------------------------------------------------------------------------- #
+WINDOW_MINUTES = 180
+FLAT = 19_000
+DEGRADED = 24_700
+
+
+def _flat(minute):
+    return FLAT
+
+
+def _stepped(minute):
+    # Degrades in the back third, as STG-01 #699 did, so the pooled percentile
+    # over the whole window barely moves.
+    return FLAT if minute < 120 else DEGRADED
+
+
+def _windowed(deployment_id, *, wasm_duration_at):
+    """A mixed run over a 3h window whose WASM tier drifts as given."""
+    return RunMetrics(
+        deployment_id=deployment_id,
+        name="STG-01",
+        window_label="steady-state",
+        window_start=T0,
+        window_end=T0 + timedelta(minutes=WINDOW_MINUTES),
+        upload_records=(
+            ops(WINDOW_MINUTES, kind="native", duration_at=_flat)
+            + ops(WINDOW_MINUTES, kind="wasm", duration_at=wasm_duration_at)
+        ),
+        download_records=ops(WINDOW_MINUTES, kind="native", duration_at=_flat),
+    )
+
+
+class TestDriftIsPerTransport:
+    def test_a_wasm_drift_regression_is_a_soft_fail_and_does_not_block(self, config):
+        # A relative gate, so it COUNTS for the WASM tier -- the floors are the
+        # advisory ones -- but no WASM gate ever reaches the exit code.
+        payload = compare_runs(
+            _windowed(1, wasm_duration_at=_stepped),
+            _windowed(2, wasm_duration_at=_flat),
+            config,
+        )
+        drift = _gate(payload, "Upload duration drift [0-32MB] [wasm]")
+        assert drift["verdict"] == FAIL
+        assert drift["kind"] == "soft"
+        assert drift["advisory"] is False
+        assert drift["delta_percent"] == pytest.approx(30.0)
+        assert payload["overall"] == "SOFT FAIL"
+
+    def test_the_native_tier_is_judged_on_its_own_records(self, config):
+        # The WASM tier slowing 30% must not move the native gate: blended, the
+        # drift would be an average of two instruments.
+        payload = compare_runs(
+            _windowed(1, wasm_duration_at=_stepped),
+            _windowed(2, wasm_duration_at=_flat),
+            config,
+        )
+        native = _gate(payload, "Upload duration drift [0-32MB] [native]")
+        assert native["verdict"] == PASS
+        assert native["candidate"] == pytest.approx(0.0)
