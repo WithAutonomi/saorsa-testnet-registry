@@ -2651,6 +2651,52 @@ def main(argv=None):
         help="Skip the interactive confirmation prompt",
     )
 
+    # deployments collect-client-logs
+    deployments_collect_client_logs_parser = deployments_subparsers.add_parser(
+        "collect-client-logs",
+        help=(
+            "Copy a prod client deployment's forensic surface off its VM(s) "
+            "before teardown: the per-operation log directory as a tar.gz, the "
+            "systemd status/result/journal, a log-directory listing and (on "
+            "upload units) the payment markers, for EVERY host of EVERY unit "
+            "the kind runs. Exits 0 only when every archive verified."
+        ),
+    )
+    deployments_collect_client_logs_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must have client state in S3).",
+    )
+    deployments_collect_client_logs_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help=(
+            "Directory to write the capture into (default: "
+            "<state dir>/client-test-forensics/<name>-<id>)."
+        ),
+    )
+    deployments_collect_client_logs_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/ant_deploy",
+        help=(
+            "Path to SSH key (default: ~/.ssh/ant_deploy — the key the prod "
+            "client VMs take, not id_rsa)."
+        ),
+    )
+    deployments_collect_client_logs_parser.add_argument(
+        "--kind",
+        type=str,
+        default=None,
+        help=(
+            "Deployment kind, for a run with no registry row to read it from. "
+            "The kind names the systemd unit and its log directory, so it is "
+            "never guessed."
+        ),
+    )
+
     # deployments upgrade-ant-binary
     deployments_upgrade_ant_binary_parser = deployments_subparsers.add_parser(
         "upgrade-ant-binary",
@@ -8196,6 +8242,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.unextend import cmd_unextend
 
             cmd_unextend(args)
+        elif args.deployments_subcommand == "collect-client-logs":
+            from saorsa_deploy.cmd.collect_client_logs import cmd_collect_client_logs
+
+            cmd_collect_client_logs(args)
         elif args.deployments_subcommand == "upgrade-ant-binary":
             from saorsa_deploy.cmd.upgrade_ant_binary import cmd_upgrade_ant_binary
 

@@ -4737,6 +4737,56 @@ uv run saorsa-deploy prod downloaders destroy --name PROD-DL-OS-01
 # add --keep-monitoring to preserve the InfluxDB VM
 ```
 
+### Collecting a prod client deployment's logs (`deployments collect-client-logs`)
+
+`deployments collect-client-logs` copies a production client deployment's forensic surface off its VM(s) over SSH, so a failed run can be torn down without losing the only copy of what went wrong. No infrastructure is touched and nothing on the hosts is changed.
+
+Everything that makes a failed client prod test diagnosable lives on the VM — each operation's `stdout` holding the result JSON (`payment_sent`, `error_kind`, `client_build`), its `stderr` holding the progress, the storage quotes, the peer sets and the error, the payment markers, and what systemd saw — and `deployments down` destroys all of it together with the VM. The per-operation *records* are already in Postgres by then (`record-results`), so they need no capture; these files are the only copy of anything else.
+
+```bash
+uv run saorsa-deploy deployments collect-client-logs --name STG-WUL-01
+# somewhere other than the state directory
+uv run saorsa-deploy deployments collect-client-logs --name STG-UL-01 --output /tmp/stg-ul-01
+# no registry to read the kind from
+uv run saorsa-deploy deployments collect-client-logs --name STG-DL-01 --kind prod-downloaders
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--name` | string | required | Deployment name (its S3 client state supplies the VM IP(s) and roles) |
+| `--output` | path | `<state dir>/client-test-forensics/<name>-<id>` | Directory to write the capture into |
+| `--ssh-key-path` | string | `~/.ssh/ant_deploy` | SSH key used to reach the VM(s) — **not** `id_rsa`; the prod client VMs take the `ant_deploy` key |
+| `--kind` | string | from the registry | Deployment kind, for a run with no registry row to read it from |
+
+**Per host, into `<out>/<unit>-<ip>/`:**
+
+| File | Contents |
+|------|----------|
+| `logs.tar.gz` | the unit's whole log directory, `tar -cz -C /var/log <basename>` streamed to the local file |
+| `service.txt` | `systemctl status`, `systemctl show -p Result -p ExecMainStatus`, and `journalctl -n 500` for the unit |
+| `manifest.txt` | `ls -la /var/log/ant-prod-*/`, so a file missing from the archive is visible later |
+| `payment-markers.txt` | upload units only: `ls -la <log dir>/*.paid`. Their **absence** is the evidence that no payment went out, which separates a `partial` pool claim from a released one |
+
+**Every host of every unit the kind runs is collected**, which is what the hand-run SSH block it replaced could not do: one pasted IP cannot cover a `prod-uploaders` run (repeatable `--uploader`, so several VMs) or a `prod-continuous-uploader` (an uploader VM plus N verifiers on a different unit). The kind → unit/log-directory map is `deploy/saorsa_deploy/prod_client_units.py`, which imports the names from the provisioner modules that write the units:
+
+| Kind | Role in client state | Unit | Log directory |
+|------|----------------------|------|---------------|
+| `prod-uploaders` | every VM | `ant-prod-uploader` | `/var/log/ant-prod-uploader` |
+| `prod-downloaders` | every VM | `ant-prod-downloader` | `/var/log/ant-prod-downloader` |
+| `prod-continuous-downloader` | every VM | `ant-prod-downloader` | `/var/log/ant-prod-downloader` |
+| `prod-continuous-uploader` | `upload` | `ant-prod-continuous-uploader` | `/var/log/ant-prod-continuous-uploader` |
+| `prod-continuous-uploader` | anything else (verifier) | `ant-prod-upload-verifier` | `/var/log/ant-prod-upload-verifier` |
+
+**Both transports share the unit and the log directory** — a WASM client spawns `ant-wasm` where a native one spawns `ant`, and nothing around the spawn changes — so there is no WASM variant, and unlike `upgrade-ant-binary` a WASM continuous-uploader's uploader VM is **collected**, not skipped: there is no `ant` there to upgrade, but its logs are the browser path's own evidence.
+
+**An unknown kind is refused, not guessed at.** `upgrade-ant-binary` falls through to the downloader unit when it cannot resolve a kind, which is safe there because the install is idempotent and a restart of a missing unit simply fails; here the same guess would archive a directory that does not exist on the host and report a complete capture. `prod-local-uploads` / `prod-local-downloads` are refused by name — they run on the operator's own machine, so there is no VM to reach. With no `DATABASE_URL` the command still runs off client state and SSH, warning that the capture directory is named after the deployment alone (no id), and `--kind` supplies the kind the registry would have.
+
+**Exit 0 only when every host's capture verified.** Each archive is verified locally with `tarfile` — present, non-empty, and listing at least one entry — rather than by shelling out to `tar -tzf`, so a truncated archive is reported instead of printing an error to a terminal nobody is reading. Each distinguishable failure gets its own reason: nothing written, zero bytes (the SSH died before any output), an unreadable gzip tar, or a valid archive with no entries (the log directory was empty). A non-zero exit names each failed host and why; **one unreachable host does not abandon the others**, since on a multi-VM deployment the hosts that can be read are often the ones holding the failure.
+
+`<out>/summary.json` records the deployment name and id, the kind, the `client_kind`, the collection timestamp and, per host, the unit, the IP, the files written with their byte sizes, the archive's entry count and `ok` with the reason on failure — which is what makes the capture checkable by something other than an operator's eyes. Re-running overwrites the per-host files in place.
+
+The `run-client-prod-tests` skill's Step 8b is this one command plus its exit-code check, and a non-zero exit is the **capture failed** exception that keeps a failed deployment standing.
+
 ### Upgrading the `ant` binary in place (`deployments upgrade-ant-binary`)
 
 `deployments upgrade-ant-binary` force-installs the latest (or a pinned/branch) native `ant` binary on an already-running prod client VM over SSH, and restarts the service that VM runs — no Terraform infrastructure is touched. It exists because the binary-install steps used by `deploy` are presence-gated (they skip if `ant` is already installed at `/root/.local/bin/ant`), so re-running `deploy` against an existing deployment never picks up a new release.

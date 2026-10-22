@@ -89,10 +89,10 @@ def test_a_capture_step_precedes_teardown():
         "Step 8b must come before Step 9 — the capture is the precondition for the teardown"
     )
     step8b = _section(text, "## Step 8b")
-    for token in ("client-test-forensics", "tar"):
+    for token in ("client-test-forensics", "collect-client-logs"):
         assert token in step8b, (
             f"Step 8b no longer mentions {token!r} — it must name the capture destination "
-            "and archive the per-op log directory"
+            "and the command that archives the per-op log directory"
         )
 
 
