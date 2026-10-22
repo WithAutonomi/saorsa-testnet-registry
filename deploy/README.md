@@ -4828,11 +4828,62 @@ number that looks credible and is not.
 | `prod pool history <file>` | Every claim ever made against one file. |
 | `prod pool mark-uploaded <file> --address <addr> [--chunks-stored …] [--storage-cost-atto …]` | Record that a checked-out file reached the network. |
 | `prod pool release <file>…` | Give claimed file(s) back. |
-| `prod pool verify [--kind] [--limit] [--no-rehash]` | Re-check entries: rotted URLs, moved files, changed sizes. |
+| `prod pool verify [--kind] [--limit] [--no-rehash] [--dry-run] [--force]` | Re-check entries: rotted URLs, moved files, changed sizes. **This writes** — it retires what it cannot confirm and updates sizes. See below. |
+| `prod pool reactivate [--kind] [--id N …] [--all] [--verbose] [--dry-run]` | Undo a retirement, re-confirming each entry first. The way back from a `verify` run against an unmounted volume. |
 | `prod pool import-history [--dry-run]` | Mark files already on the network as spent, from **both** upload tables. Partially-uploaded history lands as `partial`, not as spent. |
 
 Everything is addressed by **file id**, never claim id — a file carries at most
 one blocking claim, so a claim id is an implementation detail.
+
+#### `verify` writes, and what stops it being destructive
+
+`verify` reads as a report and is not one: an entry it cannot confirm is set
+**inactive**, and a changed size is **updated**. On 2026-10-22 it retired every
+`local` entry in the catalogue — all 1728 — because the volume holding them was
+not mounted when it ran. The files were all there; the mount was not, and
+recovery took hand-written SQL. Three things now stand in the way:
+
+| Outcome | What it means | Written? |
+|---------|---------------|----------|
+| `ok` | confirmed, size unchanged | no |
+| `changed` | confirmed, size differs — the entry can move size class | size updated (and rehashed, for a local file, unless `--no-rehash`) |
+| `gone` | a URL that answers nothing **and** is unreachable, or a local file whose **parent directory is present** and which is not there | retired (set inactive) |
+| `unreachable` | a local entry whose **parent directory is absent** | **no** |
+| `no digest` | confirmed, but cannot be deduplicated against another entry | no |
+
+* **`--dry-run` performs every check and no write** — the URLs are still
+  probed and the files still `stat`ed — and prints the same tallies and
+  per-entry lines a real run would, ending with `Dry run — nothing was
+  written.` Run it first.
+* **`unreachable` is not `gone`.** A deleted file leaves its parent directory
+  behind; an unmounted volume or a renamed tree removes the whole path, and
+  then `is_file()` says nothing about the file itself. Those entries are
+  counted, reported in yellow and **not retired**, and the missing directory is
+  named **once per directory** rather than once per entry — 1728 identical
+  `missing` lines are what hid the incident the first time. This mirrors the
+  refusal the URL branch already made, where a size probe returning nothing is
+  not enough on its own.
+* **A bulk retirement is refused.** When a run would retire more than **20% of
+  the entries it scanned** *and* more than **10** of them, nothing is retired:
+  the count and the first ten are printed, and the command **exits 2**. A
+  retirement of that proportion is a source outage (archive.org down) or a
+  mount that is present but empty, not per-file rot. Both thresholds together,
+  so a three-entry `--limit` run that legitimately retires one is unaffected.
+  `--force` performs it anyway. The proportion is of what was **scanned**, so a
+  `--limit 20` run over a 2000-entry pool measures the 20.
+* **Under `--dry-run` the guard is reported and the exit code stays `0`** — a
+  preview says what would happen rather than failing.
+
+`prod pool reactivate` is the way back. It sets `active` on inactive entries,
+having **re-confirmed each one**: a local path must pass `is_file()`, a URL must
+answer the same two-signal test `verify` retires on. An entry it cannot confirm
+is left inactive and named, so this cannot blanket-resurrect dead links.
+`--all` is required when no `--id` or `--kind` narrows the selection, so a bare
+`reactivate` is never a whole-catalogue operation by accident.
+
+Retirement only ever cleared the `active` flag — **claims were never touched**,
+so a file that was already spent stays spent and reactivating it cannot hand
+out content that is on the network. That is what makes the undo safe to offer.
 
 Tags are repeatable on both `add` and `list` (`--tag prc --tag video`), stored
 lower-cased in an indexed side table, and `list --tag a --tag b` matches **any**
