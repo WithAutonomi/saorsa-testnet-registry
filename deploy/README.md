@@ -3098,9 +3098,83 @@ enforces it.
 
 #### What it covers
 
-Two hard gates (upload success floor < 99%, download success floor < 99.5%) and eight soft gates: upload/download success rate, transfer duration p50/p95 **per file-size bucket**, node CPU, node RSS, memory leak slope, outbound bytes per GB of traffic, and disk bytes per GB stored. Plus one soft gate per **connection-error group** recorded by `deployments record-log-counts` (see below).
+Two hard gates (upload success floor < 99%, download success floor < 99.5%) and nine soft gates: upload/download success rate, transfer duration p50/p95 **per file-size bucket**, within-window transfer-duration **drift** per bucket, node CPU, node RSS, memory leak slope, outbound bytes per GB of traffic, and disk bytes per GB stored. Plus one soft gate per **connection-error group** recorded by `deployments record-log-counts` (see below).
 
 Transfer-duration percentiles are exact — they come from the per-op `deployment_upload_records` / `deployment_download_records`, which carry each operation's own `duration_ms` and timestamps. `deployment_file_results` is not used: it is an aggregate with no per-op timestamps and therefore cannot be windowed.
+
+#### Within-window transfer-duration drift
+
+`Upload duration drift [<bucket>]` / `Download duration drift [<bucket>]` — a
+**soft** gate measuring whether transfers got slower **across a run's own
+measurement window**, compared against the baseline run's drift across its own.
+
+The pooled percentile gates above cannot see a degradation that starts part-way
+through the window: the healthy earlier part dilutes it, and whether a gate trips
+depends on where the pooled figure happens to land rather than on how bad the
+degradation is. On STG-01 #699 against #667 native transfers slowed ~30% in the
+back third of the steady-state window, in both directions and at every file size,
+and `Upload duration p50 [0-32MB]` — the bucket with by far the most samples
+(n=1,719) and the clearest degradation — **passed at +4.78%**. It surfaced only
+because somebody happened to look at the per-op rows by hand.
+
+The statistic, per transport and per size bucket:
+
+1. Split the window at its **midpoint by time**. Not by clock hour: hour buckets
+   leave a partial final slice (#699's fourth hour was 10 minutes, n=84 against
+   ~500), which is noise dressed as a trend.
+2. Per `client_hostname`, take the p50 of `duration_ms` in each half, and that
+   client's drift as `second_half_p50 / first_half_p50 - 1`.
+3. A client needs `soft_gates.transfer_duration_drift_min_ops_per_half`
+   (shipped **20**) successful ops in **each** half, for that bucket, or it is
+   **excluded** — never read as 0% drift.
+4. The bucket's drift is the **median across clients**.
+
+Per-client-then-median rather than pooling every op: a client that only
+transfers late in the window cannot then manufacture a trend out of being slower
+than a different client was earlier.
+
+**The split is on `finished_at` because it is the one timestamp in a single
+frame.** It is assigned where the operation is recorded rather than by the
+client, so every client's completions sit on one clock and a boundary drawn
+through them means the same thing for all of them. `started_at` carries the
+client's own clock, and the staging profile deliberately skews three uploaders
+and one downloader by ±2h — the gap between the two is what
+`print-uploads`/`print-downloads` report as a client's clock offset. Measured on
+STG-01 #699, four clients are ±7,200 s out on
+`finished_at - started_at - duration_ms` while every other client is 0–2 s, and
+**every** client's `finished_at` spans the same 03:10 → 08:26.
+
+So a skewed client is **not** displaced into one half and **not** excluded — it
+is assessed like any other, which is the point of splitting in one frame. (Three
+of #699's breaching buckets have a skewed client among their qualifying clients,
+one of them as its only client.) The per-half minimum is a sample-size floor and
+nothing more. If an op timestamp ever becomes client-framed, this statistic
+needs a frame of its own.
+
+The gate compares the candidate's median drift against the **baseline's**, in
+**percentage points** of extra drift (`soft_gates.transfer_duration_drift_increase_pp`,
+shipped **15**), under the ordinary noise rule — though **the 2σ half of that rule
+cannot help this gate**: `apply_noise_rule` expresses the band as a percentage of
+the metric's own mean, and a points metric whose history sits near zero gets an
+enormous band, so supplying `--history` for it would silently downgrade a real
+breach FAIL → GRAY. Recalibration means moving the number, not populating
+history. Drift against drift, because a
+fleet whose disks are filling may legitimately slow a little across any window
+and the baseline is the control for that; in points rather than percent for the
+same reason `success_rate_drop_pp` is — both sides are already percentages, and a
+relative change against a baseline drifting +0.35% is undefined noise. The gate's
+`detail` carries the candidate's **absolute** figures — worst client,
+`19.0 s → 24.7 s`, and the per-half n — so a reader sees the slowdown itself and
+not only that it is worse than last week.
+
+A bucket where no client cleared the per-half minimum on either run reads **NOT
+ASSESSED** with that reason, as the pooled bucket gates do, and `--new-baseline`
+blanks it with every other relative gate.
+
+Prefer a **labelled phase window** for this gate even more than for the others.
+On `full-run` the two halves are not two halves of the measurement phase: that
+window opens when the first host started reporting (the node clock skew drags
+that up to 3h before T0) and closes after whatever followed.
 
 A run carrying pointer clients adds eleven `[pointer]` gates — see "Pointer gates"
 below.
