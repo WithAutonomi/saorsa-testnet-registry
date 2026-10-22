@@ -942,7 +942,10 @@ Teardown:   destroyed (forensics at <path>) | STILL RUNNING at <ip> (<capture fa
 <whether the WASM pair ran, was advisory, or was SKIPPED — and if skipped, the exact reason>
 ```
 
-Fill every field — an unfillable field is itself a finding, so say why.
+Fill every field — an unfillable field is itself a finding, so say why. On a deployment that passed
+there is no capture, so `Teardown:` is the bare word `destroyed` and `Forensics:` is
+`n/a (no failures)`; the `(forensics at <path>)` suffix belongs to a failed deployment that was
+captured and then torn down.
 
 The WASM download section's `Large:` native durations come from STG-DL-01's `print-recorded-results`
 for the same train. If STG-DL-01 did not run or did not record, write `native: not available` instead

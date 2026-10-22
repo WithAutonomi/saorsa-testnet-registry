@@ -19,11 +19,15 @@ from pathlib import Path
 
 import pytest
 
-SKILL_PATH = Path(__file__).resolve().parents[2] / ".claude/skills/run-client-prod-tests/SKILL.md"
+SKILLS_DIR = Path(__file__).resolve().parents[2] / ".claude/skills"
+SKILL_PATH = SKILLS_DIR / "run-client-prod-tests/SKILL.md"
 
 #: A wheel-only install or a sparse clone has no `.claude/`, and the suite must not fail there.
+#: The predicate is the skills DIRECTORY, never the skill file: a checkout that has the directory
+#: and not this skill has moved or renamed it, and that must fail loudly, or every guard below
+#: silently stops asserting anything while CI stays green.
 pytestmark = pytest.mark.skipif(
-    not SKILL_PATH.is_file(), reason=f"{SKILL_PATH} is not in this checkout"
+    not SKILLS_DIR.is_dir(), reason=f"{SKILLS_DIR} is not in this checkout"
 )
 
 #: The phrases the old rule was written in. Neither may come back in any form.
@@ -34,6 +38,7 @@ EXCEPTIONS = ("capture failed", "no results recorded")
 
 
 def _text() -> str:
+    assert SKILL_PATH.is_file(), f"{SKILL_PATH} has moved — update SKILL_PATH in this module"
     return SKILL_PATH.read_text()
 
 
