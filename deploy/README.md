@@ -2378,7 +2378,7 @@ whether a manifest's `eth:` figures will survive a full run at today's price.
 
 ```bash
 uv run saorsa-deploy clients estimate-gas \
-  --config deploy/manifests/runs/staging/STG-01.yaml \
+  --config <manifest>.yaml \
   --baseline-id 566
 ```
 
@@ -3091,7 +3091,10 @@ uv run saorsa-deploy deployments compare --id 596 --new-baseline \
 
 There is deliberately **no guard against comparing across a rebaseline** — the
 tool cannot know which profile change invalidated which history. That judgment
-belongs to the release process, and the `evaluate-staging-run` skill enforces it.
+belongs to the release process, and the staging verification skill in the
+releases repo
+(`~/dev/github.com/WithAutonomi/autonomi-release-ops/.claude/skills/evaluate-staging-run/SKILL.md`)
+enforces it.
 
 #### What it covers
 
@@ -3189,7 +3192,7 @@ The detail line reports `<ok> ok / <mismatch> mismatch / <unavailable> unavailab
 
 #### What it deliberately does NOT cover
 
-Three hard gates from the release process are **not derivable from anything the registry stores**: **crashes** (panics reach stderr/journald, not the JSON logs Telegraf forwards, and Elasticsearch dies at teardown), **mixed-version chunk storage** (an SSH check on `chunks.mdb` growth), and **production canaries** (a separate deployment with its own assessment). Those are gathered observationally and recorded by the `evaluate-staging-run` skill, alongside this report.
+Three hard gates from the release process are **not derivable from anything the registry stores**: **crashes** (panics reach stderr/journald, not the JSON logs Telegraf forwards, and Elasticsearch dies at teardown), **mixed-version chunk storage** (an SSH check on `chunks.mdb` growth), and **production canaries** (a separate deployment with its own assessment). Those are gathered observationally and recorded by the staging verification skill in the releases repo (`~/dev/github.com/WithAutonomi/autonomi-release-ops/.claude/skills/evaluate-staging-run/SKILL.md`), alongside this report.
 
 #### Comparability guards
 

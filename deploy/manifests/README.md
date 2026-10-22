@@ -58,7 +58,7 @@ saorsa-deploy deployments down --name STG-01                                # de
 
 ## Writing a run manifest
 
-A testnet run that extends the staging profile (drop this in `runs/staging/STG-01.yaml`):
+A testnet run that extends the staging profile:
 
 ```yaml
 extends: profile:staging   # a profile bundled with the tool, from any directory

@@ -121,8 +121,8 @@ Interpretation, in order:
 
 `deployments record-results` / `print-recorded-results` do **not** handle the `prod-debug-nodes`
 or `prod-nodes` kinds — they fall through to an empty file-ops path and record nothing useful for
-passive storage nodes. So, exactly like the `run-staging-testnet` skill, the canary's health is
-read from:
+passive storage nodes. So, exactly like the staging run composed by `compose-staging-run` in the
+releases repo, the canary's health is read from:
 
 | Signal | Source |
 |---|---|

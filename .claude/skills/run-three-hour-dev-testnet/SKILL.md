@@ -9,9 +9,11 @@ Runs a testnet for four hours to gather a comparable set of results: 1 hour of
 warm-up, then a 3 hour measurement window. Deploys from a manifest the user
 supplies, records the results, and tears down.
 
-This is the general-purpose sibling of `run-staging-testnet`. Same phase structure
-and same recording, but no release train, no mixed-version phase, and no manifest
-editing — the manifest is taken as given.
+This is the general-purpose sibling of the release train's staging run, which
+`compose-staging-run` in `~/dev/github.com/WithAutonomi/autonomi-release-ops`
+composes as its own run issue. Same phase structure and same recording, but no
+release train, no mixed-version phase, and no manifest editing — the manifest is
+taken as given.
 
 Rules:
 
