@@ -1,6 +1,6 @@
 ---
 name: run-client-prod-tests
-description: Run the release train's client production tests — the STG-UL-01 / STG-DL-01 native pair and the STG-WUL-01 / STG-WDL-01 browser-path (WASM) pair, all four driving the release candidate against the real production Autonomi network. Reads the current Release Train issue from Linear for the ant-cli RC version, resolves the matching ant-client tag for the WASM bundle, preflights the upload file sources, updates the four manifests, deploys them in parallel, waits for the transfers to finish, records results to Postgres, tears down the passing sides, and closes the four "Production compat — …(cloud VM)" sub-issues. Use when asked to "run the client production tests", "do the prod client tests", "run the production compat tests", "run the client tests for rc.N", "deploy STG-UL-01 and STG-DL-01", or "run the WASM production compat tests".
+description: Run the release train's client production tests — the STG-UL-01 / STG-DL-01 native pair and the STG-WUL-01 / STG-WDL-01 browser-path (WASM) pair, all four driving the release candidate against the real production Autonomi network. Reads the current Release Train issue from Linear for the ant-cli RC version, resolves the matching ant-client tag for the WASM bundle, preflights the upload file sources, updates the four manifests, deploys them in parallel, waits for the transfers to finish, records results to Postgres, captures a failed deployment's forensics, tears the deployments down, and closes the four "Production compat — …(cloud VM)" sub-issues. Use when asked to "run the client production tests", "do the prod client tests", "run the production compat tests", "run the client tests for rc.N", "deploy STG-UL-01 and STG-DL-01", or "run the WASM production compat tests".
 ---
 
 # run-client-prod-tests
@@ -40,8 +40,9 @@ Rules:
   which is a different thing. If the preflight in Step 3 fails, the answer is a topped-up pool or
   fresh URLs from a human, not an override.
 - **A failed test is a finding, not something to repair.** Do not restart the service, re-run the
-  upload, or redeploy to make a result look better. Record it, report it, leave that deployment
-  standing, and hand back.
+  upload, or redeploy to make a result look better. Capture its forensics (Step 8b), record it,
+  report it, tear it down, and hand back. Infrastructure left standing is the narrow exception for
+  when the capture genuinely could not happen — not the default for any failure.
 - **The WASM pair is ADVISORY, and independently so.** Report its counts, its failure modes and its
   over-cap skips; never let either WASM result change the native verdict, gate the train, or delay
   the native side's recording or teardown. This mirrors `wasm_floor_gates_advisory: true` in the
@@ -735,14 +736,98 @@ failures. Over-cap skips are **stored but excluded from every success-rate denom
 deliberate. Report both numbers: the rate over what was attempted, and the skip count. On
 STG-WDL-01 the expected skip count is now **0**.
 
-If recording fails or returns nothing for a deployment, leave **that** deployment up and say so — the
-data is still in InfluxDB while its monitoring stack is alive, and gone once it is destroyed. Carry
-on with the others.
+If recording fails or returns nothing for a deployment, keep **that** deployment alive and say
+so — the data is still in InfluxDB while its monitoring stack is alive, and gone once it is
+destroyed. Carry on with the others. This is the **no results recorded** exception in Step 9, and it
+is one of only two that keep a deployment alive.
 
-## Step 9 — Tear down the passing sides only
+## Step 8b — Capture the forensics of any failed deployment
 
-Decide **per deployment**, one of four independent judgements. A WASM verdict never changes a native
-one, and a native one never changes a WASM one:
+Applies to a deployment with **any** operation that failed, was `partial`, `dl-fail`, crashed, or
+never completed. A deployment whose operations all succeeded skips this step entirely and goes
+straight to Step 9 — nothing has gone wrong, so there is nothing to preserve.
+
+Do this **per failed deployment**, independently, and before that deployment's teardown. It is
+what makes the teardown in Step 9 safe: everything that makes a failed run diagnosable lives on the
+VM, and `down` destroys the VM, its per-op logs and its InfluxDB together.
+
+**Destination.** Write into a directory that survives teardown:
+
+```
+~/.local/share/saorsa-deploy/client-test-forensics/<deployment>-<id>/
+```
+
+where `<deployment>` is the name (`STG-WUL-01`) and `<id>` is the registry id from Step 8
+(`STG-WUL-01-697`). `SAORSA_DEPLOY_STATE_DIR` moves the parent — if it is set in the environment or
+the settings file, the capture goes under `$SAORSA_DEPLOY_STATE_DIR/client-test-forensics/` instead
+(`deploy/saorsa_deploy/paths.py` is the one definition; see CLAUDE.md §"The local state directory").
+**Never write the capture into the repo checkout.** A run manifest's own directory is git-ignored,
+but the skill's outputs have no business in the tree at all.
+
+**The VM's IP**, exactly as Step 7 explains it: on the **download** kinds from the inventory
+snapshot (`deployments generate-inventory --name <n> --ssh-key-path ~/.ssh/ant_deploy`); on the
+**uploaders** from the deploy output, the Slack post or S3 client state, because
+`generate-inventory` has no `prod-uploaders` path.
+
+**The unit name** is `ant-prod-uploader` on STG-UL-01 / STG-WUL-01 and `ant-prod-downloader` on
+STG-DL-01 / STG-WDL-01. **Both transports use the same unit and the same log directory** — only the
+spawned binary differs — so there is no WASM variant to look up.
+
+Run this, substituting the name, the id, the unit and the IP:
+
+```bash
+NAME=STG-WUL-01
+ID=697
+UNIT=ant-prod-uploader          # ant-prod-downloader on STG-DL-01 / STG-WDL-01
+IP=<client VM ip>
+SSH="ssh -i ~/.ssh/ant_deploy -o StrictHostKeyChecking=no -o BatchMode=yes root@$IP"
+OUT="${SAORSA_DEPLOY_STATE_DIR:-$HOME/.local/share/saorsa-deploy}/client-test-forensics/$NAME-$ID"
+mkdir -p "$OUT"
+
+# The per-op logs are the forensic surface: `ant --json`/`ant-wasm` puts the result JSON on
+# stdout, and the progress, quotes, peer sets and errors on stderr.
+$SSH "tar -cz -C /var/log $UNIT" > "$OUT/logs.tar.gz"
+
+# What systemd saw: how it exited and why.
+{
+  $SSH "systemctl status $UNIT --no-pager"
+  echo "== result =="
+  $SSH "systemctl show $UNIT -p Result -p ExecMainStatus"
+  echo "== journal =="
+  $SSH "journalctl -u $UNIT --no-pager -n 500"
+} > "$OUT/service.txt" 2>&1
+
+# A directory listing, so a file missing from the archive is visible later.
+$SSH "ls -la /var/log/ant-prod-*/" > "$OUT/manifest.txt" 2>&1
+
+# Uploaders only: the payment markers. Their ABSENCE is the evidence that no payment went out,
+# which is what separates a `partial` (chunks are in production) from a released pool claim.
+$SSH "ls -la /var/log/ant-prod-uploader/*.paid" > "$OUT/payment-markers.txt" 2>&1
+```
+
+**Check the capture locally before Step 9 is allowed to destroy anything:**
+
+```bash
+ls -l "$OUT/logs.tar.gz"
+tar -tzf "$OUT/logs.tar.gz"
+```
+
+The capture **passes** when the archive exists, is non-empty, and `tar -tzf` lists the per-op files
+— including the **failing operation's `.stderr`**. An archive that does not list the failing
+operation's `stderr` is a **failed capture**, whatever its size: the one file the investigation
+needs is the one that is missing. A `tar` that errors, an empty or truncated archive, or an
+unreachable host are failed captures too. Say which in the report.
+
+**What is not on the VM, and so needs no capture:** the per-operation records. `record-results` has
+already copied them into Postgres in Step 8, and `print-recorded-results --id <id>` reads them after
+teardown — including the ANT storage cost and gas, the `client_kind`, the bundle commit and the
+`status` of every operation. Do not keep a VM alive for those.
+
+## Step 9 — Tear down every deployment, with two narrow exceptions
+
+Every deployment is destroyed here, passing or failing. Decide **per deployment**, one of four
+independent judgements. A WASM verdict never changes a native one, and a native one never changes a
+WASM one:
 
 - **Passed** — every expected operation completed with success status (on STG-WDL-01, every
   *attempted* one; a skip is not a failure, but any skip at all is reported as a finding — see the
@@ -751,10 +836,29 @@ one, and a native one never changes a WASM one:
   ```bash
   uv run saorsa-deploy deployments down --config deploy/manifests/runs/staging/STG-UL-01.yaml
   ```
-- **Failed** — any operation failed, `partial`, `dl-fail`, crashed, or never completed: **leave it
-  up.** The VM, its per-file logs under `/var/log/ant-prod-*`, and its InfluxDB are the only forensic
-  surface, and `down` destroys all three. Say plainly in the report that it is still running, name
-  its VM IP, and say it will keep costing money until someone destroys it.
+- **Failed** — any operation failed, `partial`, `dl-fail`, crashed, or never completed: **destroy it
+  too**, once Step 8b's capture has been verified for that deployment — the forensic surface has
+  been copied off the VM and the per-operation rows are in Postgres, so all the VM still holds is a
+  bill.
+  ```bash
+  uv run saorsa-deploy deployments down --config deploy/manifests/runs/staging/STG-WUL-01.yaml
+  ```
+  Step 8b's local check is the precondition: do not run `down` on a failed deployment whose capture
+  you have not verified.
+
+**There are exactly two exceptions, and these are the only two.** In either one the deployment
+stays alive: name its VM IP in the report, say it is billing, and give the exact `down` command so
+whoever picks it up can destroy it in one paste:
+
+- **capture failed** — the host is unreachable, the archive is empty or truncated, or it does not
+  contain the failing operation's log (Step 8b). The evidence really is only on the VM, so it has to
+  stay up until someone can pull it.
+- **no results recorded** — `record-results` errored or returned no rows for that deployment. Step 8
+  already says to keep such a deployment alive: its InfluxDB is the only copy of the per-operation
+  records until the command succeeds.
+
+Neither exception is a judgement call about how interesting the failure is. A verified capture plus
+recorded rows means the deployment goes.
 
 **Tear down a passing native deployment even if the WASM pair is still running or has failed**, and
 vice versa. Four names, four independent teardowns; nothing here waits on anything else.
@@ -788,7 +892,8 @@ Result:     PASS | FAIL
 Files:      <ok>/<expected> ok, <partial> partial, <dl-fail> dl-fail
 Detail:     <file name> — <size> — <chunks stored>/<total> chunks — <duration>
 Spend:      <ANT storage cost> / <ETH gas> (from print-recorded-results)
-Teardown:   destroyed | STILL RUNNING at <ip> (failed — kept for investigation)
+Forensics:  <capture directory under client-test-forensics/> | n/a (no failures)
+Teardown:   destroyed (forensics at <path>) | STILL RUNNING at <ip> (<capture failed|no results recorded> — see below)
 
 ## Production compat — download (cloud VM)
 
@@ -796,7 +901,8 @@ Deployment: STG-DL-01 (registry id <id>) — DigitalOcean <region> <vm_size>, na
 T0:         <timestamp, UTC>
 Result:     PASS | FAIL
 Ops:        <successes>/<expected> succeeded, <failures> failed — avg <duration>
-Teardown:   destroyed | STILL RUNNING at <ip> (failed — kept for investigation)
+Forensics:  <capture directory under client-test-forensics/> | n/a (no failures)
+Teardown:   destroyed (forensics at <path>) | STILL RUNNING at <ip> (<capture failed|no results recorded> — see below)
 
 ## Production compat — WASM upload (cloud VM)   [ADVISORY]
 
@@ -810,7 +916,8 @@ Failures:   <verbatim error text per failed file, from /var/log/ant-prod-uploade
             <or "none">
 Pool:       <files drawn>, claims resolved <uploaded>/<partial>/<released>; results guard <clean|warning text>
 vs native:  <wall-clock ratio against STG-UL-01 for a comparable size, if the draws allow it>
-Teardown:   destroyed | STILL RUNNING at <ip> (failed — kept for investigation)
+Forensics:  <capture directory under client-test-forensics/> | n/a (no failures)
+Teardown:   destroyed (forensics at <path>) | STILL RUNNING at <ip> (<capture failed|no results recorded> — see below)
 
 ## Production compat — WASM download (cloud VM)   [ADVISORY]
 
@@ -824,7 +931,8 @@ Large:      <n>/5 of STG-DL-01's addresses downloaded — <duration range> vs na
 Ops:        avg <duration> over the <attempted> attempted — <size range>
 Failures:   <verbatim error text per failed address, from /var/log/ant-prod-downloader/*.stderr>
             <or "none">
-Teardown:   destroyed | STILL RUNNING at <ip> (failed — kept for investigation)
+Forensics:  <capture directory under client-test-forensics/> | n/a (no failures)
+Teardown:   destroyed (forensics at <path>) | STILL RUNNING at <ip> (<capture failed|no results recorded> — see below)
 
 ## Notes
 
@@ -834,7 +942,10 @@ Teardown:   destroyed | STILL RUNNING at <ip> (failed — kept for investigation
 <whether the WASM pair ran, was advisory, or was SKIPPED — and if skipped, the exact reason>
 ```
 
-Fill every field — an unfillable field is itself a finding, so say why.
+Fill every field — an unfillable field is itself a finding, so say why. On a deployment that passed
+there is no capture, so `Teardown:` is the bare word `destroyed` and `Forensics:` is
+`n/a (no failures)`; the `(forensics at <path>)` suffix belongs to a failed deployment that was
+captured and then torn down.
 
 The WASM download section's `Large:` native durations come from STG-DL-01's `print-recorded-results`
 for the same train. If STG-DL-01 did not run or did not record, write `native: not available` instead
@@ -856,7 +967,8 @@ built before that sidecar existed records `null`; say so rather than filling in 
 Then update the issues:
 
 - **`Production compat — upload (cloud VM)`**: PASS → **Done**. FAIL → **In Review**, with the
-  failure and the still-running deployment stated plainly.
+  failure stated plainly, the capture directory named, and — only if one of Step 9's two exceptions
+  applies — the still-running deployment and which exception it hit.
 - **`Production compat — download (cloud VM)`**: same rule, judged independently.
 - **`Production compat — WASM upload (cloud VM)`** and **`… WASM download (cloud VM)`**: → **Done**
   once the results are recorded and posted, **whatever the counts say**. They are advisory: the
@@ -869,7 +981,8 @@ Then update the issues:
   review is not yet settled. The Canceled children do not block it.
 
 Finally, if any deployment is still running, say so as the last line of your reply, with the
-name, the VM IP and the fact that it is billing.
+name, the VM IP, which of the two Step 9 exceptions it hit (**capture failed** or **no results
+recorded**), the fact that it is billing, and the `down` command that destroys it.
 
 ## Known gaps
 
@@ -886,8 +999,11 @@ State these in the report rather than working around them:
 - **The quoted cost estimate is not recorded anywhere queryable.** Actual spend
   (`storage_cost_atto` / `gas_cost_wei`) lands in Postgres and prints via `print-recorded-results`,
   but the client's *pre-upload quote* only ever appears in the `ant` stderr log on the VM
-  (`/var/log/ant-prod-uploader/*.stderr`). When a train asks for estimate-versus-actual, capture
-  that log over SSH **before Step 9 tears the VM down** — after teardown it is unrecoverable.
+  (`/var/log/ant-prod-uploader/*.stderr`). On a **failed** deployment Step 8b already archives that
+  log by default, so the quote is in the capture directory. It is a **passing** deployment — torn
+  down with no capture, because nothing went wrong — where a train asking for
+  estimate-versus-actual needs the log pulled deliberately over SSH **before Step 9 tears the VM
+  down**; after teardown it is unrecoverable either way.
 - **A `urls:`-sourced upload list is a human input.** Both uploaders draw from the managed pool
   today, which needs no curation — but an entry switched back to `urls:` has no pool of known-unused
   public URLs behind it, so the Step 3b preflight can only ever stop and ask. Tracked as V2-802.
@@ -921,4 +1037,4 @@ State these in the report rather than working around them:
   clock skew is untested against production by this skill.
 - **`generate-inventory` has no `prod-uploaders` path**, so neither uploader gets an inventory
   snapshot; the download kinds do. For the uploaders the VM IP comes from the deploy output or from
-  S3 client state, and the per-op logs must be pulled over SSH before teardown.
+  S3 client state, and the per-op logs must be pulled over SSH before teardown (Step 8b).
