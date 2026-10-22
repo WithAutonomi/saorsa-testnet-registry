@@ -747,8 +747,22 @@ What will bite you:
   the source from `deploy_args.kind`, since `deployment_prod_upload_results` is
   written by two kinds and carries no hint of which.
 - A URL from a source publishing no checksum that is never downloaded **cannot**
-  be deduplicated before upload; `verify` reports how many entries are in that
+  be deduplicated before upload; `verify` counts how many entries are in that
   state.
+- **`prod pool verify` WRITES — it retires what it cannot confirm** — and it
+  retired all 1728 `local` entries on 2026-10-22 because their volume was not
+  mounted, leaving SQL as the only way back. Three guards now: `--dry-run`
+  performs every check and no write; a local entry whose **parent directory is
+  absent** is `unreachable`, counted and **not** retired (a deleted file leaves
+  its parent behind, an unmounted volume does not), named once per directory
+  rather than once per entry; and a run that would retire **more than 20% of
+  what it scanned AND more than 10 entries** retires nothing and exits 2, since
+  that is a source or mount outage rather than per-file rot — `--force`
+  overrides, and under `--dry-run` the guard is reported with exit 0.
+  **`prod pool reactivate`** is the way back, re-confirming each entry (a URL by
+  the same two-signal rule) and requiring `--all` when no `--id`/`--kind`
+  narrows it. A retirement only ever cleared `active`: claims are untouched, so
+  a spent file stays spent.
 
 Scale: the canary is the dominant consumer, burning ~350 distinct files
 permanently per run, small+medium only. `pool add --from-listing
