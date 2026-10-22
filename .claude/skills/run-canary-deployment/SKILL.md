@@ -55,7 +55,8 @@ Notes:
 
 - **Only the `ant-node` version applies.** The canary is `kind: prod-debug-nodes`, which runs
   node services and no client — there is no `ant`/`ant-cli` binary in this manifest. (Contrast
-  `run-staging-testnet`, where STG-01 needs both.) Do not go looking for a second version field.
+  the staging run, composed by `compose-staging-run` in the releases repo, where STG-01 needs
+  both.) Do not go looking for a second version field.
 - **Read the RC version carefully — the table's shape is not what you might expect.** The
   `## Cut record` table has columns `Crate | Version | rc-branch head`, and the `Version` cell
   holds *both* versions in one field as `<previous> → **<RC>**`:

@@ -1968,12 +1968,20 @@ non-product reason. Throughput was **not** the cause — that run did less work
 than its baseline.
 
 `clients estimate-gas --config <manifest> --baseline-id <id>` is the read-only
-preflight, run as **Step 3b of the `run-staging-testnet` skill**: it reads the
-current base fee from the chain, takes per-uploader throughput from a previous
-run, and prints the ETH each uploader needs plus whether the funding wallet
-covers the total. **Exit 2 = something is short.** The fix is either the
-profile's `eth:` values (a profile SHA change, so a re-baselining event needing
-the RM) or a top-up of the funding wallet — no profile edit helps the latter.
+preflight, **run as a precondition of the staging run issue**, which
+`compose-staging-run` in
+`~/dev/github.com/WithAutonomi/autonomi-release-ops` composes after the cut: it
+reads the current base fee from the chain, takes per-uploader throughput from a
+previous run, and prints the ETH each uploader needs plus whether the funding
+wallet covers the total. **Exit 2 = something is short**, and the two cases
+part ways. An **under-funded uploader the run raises itself**: lists REPLACE
+under `extends:`, so it writes the whole merged `uploaders:` (or
+`wasm_uploaders:`) list into its own run manifest with only the named `eth:`
+values **raised, never lowered**, re-runs the preflight until it exits 0, and
+records each raise as a warning — a departure from the profile the baseline ran
+on. The bundled profile is never edited, so no SHA moves. A **short funding
+wallet no manifest edit helps**, so it is a precondition failure and the run
+abandons.
 
 Three load-bearing details:
 
@@ -2326,8 +2334,10 @@ per-op timestamps.
 **Deliberately does NOT cover** three hard gates, and the report is silent on
 them entirely: crashes (panics go to stderr/journald, not the JSON logs telegraf
 tails, and ES dies at teardown), mixed-version chunk storage (an SSH check), and
-canaries (a separate deployment). The **`evaluate-staging-run`** skill supplies
-those observationally.
+canaries (a separate deployment). The staging verification skill in the releases
+repo
+(`~/dev/github.com/WithAutonomi/autonomi-release-ops/.claude/skills/evaluate-staging-run/SKILL.md`)
+supplies those observationally.
 
 - **Data integrity** is **hard, candidate-only** (so it survives
   `--new-baseline`) and fails above `download_verify_mismatch_max: 0` — a COUNT,
