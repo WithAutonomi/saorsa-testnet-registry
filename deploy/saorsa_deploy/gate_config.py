@@ -77,6 +77,14 @@ class GateConfig:
     success_rate_drop_pp: float
     transfer_duration_p50_increase_percent: float
     transfer_duration_p95_increase_percent: float
+    #: Extra within-window duration drift, in PERCENTAGE POINTS, over the
+    #: baseline's drift on its own window (V2-1717). Points, not percent, for
+    #: the same reason `success_rate_drop_pp` is: both sides are already
+    #: percentages and a relative change of a near-zero baseline is noise.
+    transfer_duration_drift_increase_pp: float
+    #: Successful ops a client needs in EACH half of the window before its
+    #: drift counts. Below it the client is excluded, never read as flat.
+    transfer_duration_drift_min_ops_per_half: int
     node_cpu_increase_percent: float
     node_rss_increase_percent: float
     outbound_bytes_per_gb_increase_percent: float
@@ -153,6 +161,7 @@ _SOFT_GATE_KEYS = (
     "success_rate_drop_pp",
     "transfer_duration_p50_increase_percent",
     "transfer_duration_p95_increase_percent",
+    "transfer_duration_drift_increase_pp",
     "node_cpu_increase_percent",
     "node_rss_increase_percent",
     "outbound_bytes_per_gb_increase_percent",
@@ -334,6 +343,22 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
             )
         return float(value)
 
+    # An integer count, so it cannot go through `_require_number` with the rest
+    # of the soft gates. Two is the floor: a p50 over one op is that op, and the
+    # drift would then be one transfer against one transfer.
+    min_ops_per_half = soft.get("transfer_duration_drift_min_ops_per_half")
+    if (
+        isinstance(min_ops_per_half, bool)
+        or not isinstance(min_ops_per_half, int)
+        or min_ops_per_half < 2
+    ):
+        raise GateConfigError(
+            f"{path}: 'soft_gates.transfer_duration_drift_min_ops_per_half:' must "
+            "be an integer >= 2. A median over a single operation is that "
+            "operation, and a drift computed from one transfer against one "
+            "transfer measures nothing."
+        )
+
     rss_percentile = _percentile(soft, "node_rss_service_percentile", "soft_gates")
     leak_percentile = _percentile(leak, "service_percentile", "memory_leak")
 
@@ -376,6 +401,7 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
             min_history_runs=min_history,
             sigma_multiplier=_require_number(noise, "sigma_multiplier", path, "noise_rule"),
         ),
+        transfer_duration_drift_min_ops_per_half=min_ops_per_half,
         node_rss_service_percentile=rss_percentile,
         file_size_buckets_mb=tuple(float(b) for b in buckets),
         outbound_ratio_metric=outbound_metric,

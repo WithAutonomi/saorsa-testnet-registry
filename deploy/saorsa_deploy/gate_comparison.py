@@ -16,9 +16,10 @@ Scope
 This module evaluates only what the registry actually stores:
 
 * the two **success floors** (hard),
-* and the eight **soft gates** -- success rate, transfer duration p50/p95 per
-  file-size bucket, node CPU, node RSS, memory leak slope, outbound bytes per
-  GB, and disk bytes per GB stored.
+* and the nine **soft gates** -- success rate, transfer duration p50/p95 per
+  file-size bucket, within-window transfer-duration drift per bucket, node CPU,
+  node RSS, memory leak slope, outbound bytes per GB, and disk bytes per GB
+  stored.
 
 The other four hard gates from the process spec -- data integrity, crashes,
 mixed-version chunk storage, and production canaries -- are deliberately absent.
@@ -326,6 +327,132 @@ def duration_percentiles_by_bucket(records: list, edges_mb: tuple[float, ...]) -
             "p50_ms": percentile(values, 0.50),
             "p95_ms": percentile(values, 0.95),
             "count": len(values),
+        }
+    return result
+
+
+def duration_drift_by_bucket(
+    records: list,
+    edges_mb: tuple[float, ...],
+    window_start: datetime | None,
+    window_end: datetime | None,
+    min_ops_per_half: int,
+) -> dict[str, dict]:
+    """Within-window transfer-duration drift, per file-size bucket (V2-1717).
+
+    Every other duration statistic here pools the whole window into one
+    percentile, so a degradation that starts part-way through is diluted by the
+    healthy earlier part: on STG-01 #699 native uploads slowed ~30% in the back
+    third of the steady-state window at every file size, and the pooled 0-32MB
+    p50 gate -- the bucket with the most samples and the clearest degradation --
+    passed at +4.78%. This measures the slope instead of the level.
+
+    The statistic, per bucket:
+
+    1. Split the window at its **midpoint by time**. Not by clock hour: hour
+       buckets leave a partial final slice (#699's fourth hour was 10 minutes,
+       n=84 against ~500) which is noise dressed as a trend.
+    2. Per ``client_hostname``, take the p50 of ``duration_ms`` in each half and
+       that host's drift as ``second / first - 1``.
+    3. A host needs ``min_ops_per_half`` successful ops in **each** half, or it
+       is dropped. Dropped, never counted as 0% drift -- a host with nothing to
+       compare has not demonstrated flatness.
+    4. The bucket's drift is the **median across hosts**.
+
+    Per-host-then-median rather than pooling every op, for two reasons. A host
+    that only transfers late in the window cannot manufacture a trend out of
+    being slower than a different host was earlier. And it makes the
+    deliberately clock-skewed clients self-handling: the staging profile skews
+    two uploaders and one downloader by +-2h, so a skewed host's ``finished_at``
+    values all shift together, land in one half (or outside the window), fail
+    step 3 and drop out. **Do not add skew detection or correction here** -- the
+    exclusion IS the correction, and a corrected timestamp would put a host's
+    ops back into halves whose boundary its own clock never agreed with.
+
+    On a ``full-run`` window the two halves are not two halves of the
+    measurement phase -- that window opens when the first host started reporting
+    (which the node clock skew drags up to 3h before T0) and closes after
+    whatever followed. The split is still the window's midpoint, because the
+    window is what the caller chose; prefer a labelled phase window for this
+    gate.
+    """
+    if window_start is None or window_end is None:
+        return {}
+    start, end = _as_utc(window_start), _as_utc(window_end)
+    if end <= start:
+        return {}
+    midpoint = start + (end - start) / 2
+
+    # bucket -> host -> (first half durations, second half durations)
+    grouped: dict[str, dict[str, tuple[list[float], list[float]]]] = {}
+    for record in records:
+        if _status_value(record) != "success":
+            continue
+        duration = getattr(record, "duration_ms", None)
+        finished = getattr(record, "finished_at", None)
+        host = getattr(record, "client_hostname", None)
+        # Both op tables carry `client_hostname` in a unique constraint, so a
+        # row without one cannot come from the registry. If one ever does it is
+        # skipped rather than pooled into a shared pseudo-host, which would
+        # quietly reinstate the pooling this statistic exists to avoid.
+        if duration is None or finished is None or not host:
+            continue
+        finished = _as_utc(finished)
+        if finished < start or finished >= end:
+            continue
+        label = bucket_label(getattr(record, "file_size_bytes", 0) or 0, edges_mb)
+        if label is None:
+            continue
+        halves = grouped.setdefault(label, {}).setdefault(host, ([], []))
+        halves[0 if finished < midpoint else 1].append(float(duration))
+
+    result: dict[str, dict] = {}
+    for label in sorted(grouped):
+        drifts: list[tuple[float, str, float, float, int, int]] = []
+        excluded = 0
+        for host in sorted(grouped[label]):
+            first, second = grouped[label][host]
+            if len(first) < min_ops_per_half or len(second) < min_ops_per_half:
+                excluded += 1
+                continue
+            first_p50 = percentile(first, 0.50)
+            second_p50 = percentile(second, 0.50)
+            if not first_p50 or second_p50 is None:
+                excluded += 1
+                continue
+            drifts.append(
+                (
+                    100.0 * (second_p50 / first_p50 - 1.0),
+                    host,
+                    first_p50,
+                    second_p50,
+                    len(first),
+                    len(second),
+                )
+            )
+        if not drifts:
+            # The bucket is reported as present-but-unassessable rather than
+            # omitted, so the gate can say WHY it has no number.
+            result[label] = {
+                "drift_percent": None,
+                "hosts": 0,
+                "excluded_hosts": excluded,
+            }
+            continue
+        worst = max(drifts)
+        result[label] = {
+            "drift_percent": percentile([d[0] for d in drifts], 0.50),
+            "hosts": len(drifts),
+            "excluded_hosts": excluded,
+            # The worst host is always surfaced, as the RSS gate surfaces the
+            # worst service: the median is the verdict, but a reader needs a
+            # concrete "19.0 s -> 22.3 s" to act on.
+            "worst_host": worst[1],
+            "worst_drift_percent": worst[0],
+            "worst_first_p50_ms": worst[2],
+            "worst_second_p50_ms": worst[3],
+            "worst_first_count": worst[4],
+            "worst_second_count": worst[5],
         }
     return result
 
@@ -1019,6 +1146,7 @@ def _client_gates(
         return [
             *_soft_success_rates(run_c, run_b, config, history),
             *_soft_transfer_durations(run_c, run_b, config, history),
+            *_soft_transfer_duration_drift(run_c, run_b, config, history),
         ]
 
     if not (_has_wasm(candidate) or _has_wasm(baseline)):
@@ -1498,6 +1626,112 @@ def _soft_transfer_durations(
                         detail=(f"n={cand[bucket]['count']} vs {base[bucket]['count']}"),
                     )
                 )
+    return results
+
+
+def _soft_transfer_duration_drift(
+    candidate: RunMetrics,
+    baseline: RunMetrics,
+    config: GateConfig,
+    history: dict[str, list[float]],
+) -> list[GateResult]:
+    """Within-window duration drift, candidate against baseline (V2-1717).
+
+    Drift against drift, not the candidate's drift alone. A fleet whose disks
+    are filling may legitimately slow a little across any run's own window, and
+    the baseline is the control for that; an absolute drift alarm would fire on
+    the workload rather than on the release. So the comparison is in
+    **percentage points of extra drift** -- the same reason
+    ``success_rate_drop_pp`` is in points: both sides are already percentages,
+    and a relative change of a number near zero is undefined noise (a baseline
+    drifting +0.35% against a candidate drifting +14.38% is a "+4000%"
+    regression on one run and a sign flip on the next).
+    """
+    results = []
+    threshold = config.transfer_duration_drift_increase_pp
+    for op_label, cand_records, base_records in (
+        ("Upload", candidate.upload_records, baseline.upload_records),
+        ("Download", candidate.download_records, baseline.download_records),
+    ):
+        cand = duration_drift_by_bucket(
+            cand_records,
+            config.file_size_buckets_mb,
+            candidate.window_start,
+            candidate.window_end,
+            config.transfer_duration_drift_min_ops_per_half,
+        )
+        base = duration_drift_by_bucket(
+            base_records,
+            config.file_size_buckets_mb,
+            baseline.window_start,
+            baseline.window_end,
+            config.transfer_duration_drift_min_ops_per_half,
+        )
+        # Union, as the pooled duration gates use: a bucket on only one side
+        # means the two runs did not do the same work, which is itself worth
+        # reporting rather than hiding.
+        for bucket in sorted(set(cand) | set(base)):
+            gate = f"{op_label} duration drift [{bucket}]"
+            cand_entry = cand.get(bucket) or {}
+            base_entry = base.get(bucket) or {}
+            cand_value = cand_entry.get("drift_percent")
+            base_value = base_entry.get("drift_percent")
+            if cand_value is None or base_value is None:
+                missing, entry = (
+                    ("candidate", cand_entry) if cand_value is None else ("baseline", base_entry)
+                )
+                excluded = entry.get("excluded_hosts", 0)
+                reason = (
+                    f"no client in this size bucket on the {missing} run had "
+                    f"{config.transfer_duration_drift_min_ops_per_half} successful "
+                    "transfers in each half of the window"
+                    if excluded
+                    else f"no successful transfers in this size bucket on the {missing} run"
+                )
+                results.append(
+                    GateResult(
+                        gate=gate,
+                        kind="soft",
+                        verdict=NOT_ASSESSED,
+                        candidate=cand_value,
+                        baseline=base_value,
+                        threshold=threshold,
+                        unit="pp",
+                        statistic="drift",
+                        detail=reason,
+                    )
+                )
+                continue
+            delta_pp = cand_value - base_value
+            verdict, noise = apply_noise_rule(delta_pp, threshold, history.get(gate), config)
+            results.append(
+                GateResult(
+                    gate=gate,
+                    kind="soft",
+                    verdict=verdict,
+                    candidate=cand_value,
+                    baseline=base_value,
+                    delta_percent=delta_pp,
+                    threshold=threshold,
+                    unit="pp",
+                    statistic="drift",
+                    noise=noise,
+                    detail=(
+                        f"median of {cand_entry['hosts']} client(s)"
+                        + (
+                            f", {cand_entry['excluded_hosts']} below the per-half minimum"
+                            if cand_entry.get("excluded_hosts")
+                            else ""
+                        )
+                        + f"; worst {cand_entry['worst_host']} "
+                        f"{cand_entry['worst_first_p50_ms'] / 1000:.1f} s → "
+                        f"{cand_entry['worst_second_p50_ms'] / 1000:.1f} s "
+                        f"({cand_entry['worst_drift_percent']:+.1f}%, "
+                        f"n={cand_entry['worst_first_count']}/"
+                        f"{cand_entry['worst_second_count']})"
+                    ),
+                )
+            )
     return results
 
 

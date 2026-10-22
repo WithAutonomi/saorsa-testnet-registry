@@ -15,7 +15,14 @@
 # existing changed, so every pre-existing gate's v5 and v6 verdicts ARE
 # comparable; a run that recorded no `transfer` operations reports both new
 # gates NOT ASSESSED rather than as a pass.
-version: 6
+#
+# v7 (2026-10-22, V2-1717): ADDED the within-window transfer-duration DRIFT
+# gate -- `transfer_duration_drift_increase_pp` plus its
+# `transfer_duration_drift_min_ops_per_half`. Nothing existing changed: no
+# threshold moved and no gate's statistic changed, so every pre-existing gate's
+# v6 and v7 verdicts ARE comparable. The new gates read NOT ASSESSED on a run
+# whose clients did too little in either half of the window to compare.
+version: 7
 
 # ---------------------------------------------------------------------------
 # Hard gates the command can evaluate from stored metrics.
@@ -103,6 +110,73 @@ soft_gates:
   # dominated by the many small ones.
   transfer_duration_p50_increase_percent: 10.0
   transfer_duration_p95_increase_percent: 20.0
+
+  # Within-window duration DRIFT (V2-1717): how much each client's p50 grew
+  # from the first half of the window to the second, taken as the median across
+  # clients, compared against the baseline run's own drift.
+  #
+  # The gates above pool the whole window into one percentile, so a degradation
+  # that begins part-way through is diluted by the healthy earlier part and
+  # whether it trips a gate depends on where the pooled figure happens to land.
+  # On STG-01 #699 against #667 native transfers slowed ~30% in the back third
+  # of the steady-state window, in both directions and at every file size, and
+  # the pooled `Upload duration p50 [0-32MB]` gate -- the bucket with by far the
+  # most samples (n=1,719) and the clearest degradation -- PASSED at +4.78%.
+  #
+  # In PERCENTAGE POINTS of extra drift, not percent, exactly as
+  # `success_rate_drop_pp` is: both sides are already percentages and a relative
+  # change against a baseline drifting +0.35% is undefined noise.
+  #
+  # Calibrated over the five chain-valid STG-01 runs that still hold per-op
+  # records (596, 627, 655, 667, 699), on the `steady-state` window each
+  # recorded, evaluated as the four chain links an operator would actually have
+  # compared. Every CLEAN link's positive readings, worst first:
+  #
+  #   655 vs 627:  +8.41 pp  download 0-32MB [wasm]
+  #   627 vs 596:  +7.99 pp  upload 384-768MB
+  #   655 vs 627:  +6.92 pp  download 0-32MB
+  #   627 vs 596:  +6.11 pp  upload 128-384MB
+  #   667 vs 655:  +0.98 pp  upload 0-32MB  (that link's worst)
+  #
+  # 15 pp is ~1.8x the worst clean reading -- the headroom
+  # `memory_leak.max_growth_percent_per_hour` was given over its own noise
+  # floor -- and every clean link passes with room to spare.
+  #
+  # #699, the known-degraded run, is deliberately NOT part of that noise
+  # calibration. Against #667 it reads +20.77 / +20.28 / +18.17 pp on uploads
+  # 128-384 / 384-768 / 768-1536MB and BREACHES all three, while the pooled
+  # `Upload duration p50` gates for those same buckets passed at -2.08% and
+  # +5.14% and the 0-32MB one passed at +4.78%. So the gate fires on the run
+  # that prompted it, and does so where the pooled percentiles did not.
+  #
+  # Two caveats a future recalibration needs. #655's train shipped on an RM
+  # override of a staging hard-gate failure, so treat it with care as a "clean"
+  # observation. And the clean/degraded separation is NOT clean at every size:
+  # #699's 0-32MB upload drift -- its most-sampled bucket, n=1,719 -- is
+  # +14.03 pp and PASSES here, as do +9.62 and +8.87 pp on other buckets. A
+  # threshold low enough to catch those would fire on #596's own +18.4%
+  # within-window drift on upload 64-128MB. That overlap is why this gate is
+  # soft.
+  # Revisit at the quarterly review, when a few trains of history exist and the
+  # 2-sigma criterion can start doing the work.
+  transfer_duration_drift_increase_pp: 15.0
+
+  # Successful operations a client needs in EACH half of the window, for a given
+  # size bucket, before its drift counts towards the median. Below it the client
+  # is EXCLUDED, never read as 0% drift.
+  #
+  # 20 at the staging profile's rates: every uploader clears it in every bucket
+  # it serves on all five calibration runs, while the download tiers' sparser
+  # large-file buckets fall out rather than contributing a drift computed from a
+  # dozen transfers (at 10, run 655's 768-1536MB download read +12.5% off
+  # n=13/15 -- a reading the 20 minimum correctly refuses).
+  #
+  # This is also what makes the deliberate client clock skew self-handling: the
+  # staging profile skews two uploaders and one downloader by +-2h, so a skewed
+  # client's completions all shift together into one half of the window and it
+  # drops out here. The exclusion IS the correction; nothing detects or corrects
+  # the skew.
+  transfer_duration_drift_min_ops_per_half: 20
 
   # Node-tier host metrics.
   #

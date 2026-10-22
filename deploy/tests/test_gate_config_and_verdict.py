@@ -54,6 +54,10 @@ def test_shipped_config_loads_and_matches_the_process_spec():
     assert config.success_rate_drop_pp == 1.0
     assert config.transfer_duration_p50_increase_percent == 10.0
     assert config.transfer_duration_p95_increase_percent == 20.0
+    # V2-1717. In percentage POINTS of extra within-window drift over the
+    # baseline's own drift, calibrated on the five chain-valid STG-01 runs.
+    assert config.transfer_duration_drift_increase_pp == 15.0
+    assert config.transfer_duration_drift_min_ops_per_half == 20
     assert config.node_cpu_increase_percent == 15.0
     assert config.node_rss_increase_percent == 15.0
     assert config.outbound_bytes_per_gb_increase_percent == 10.0
@@ -166,6 +170,38 @@ def test_window_ratio_below_one_is_rejected(raw):
     data = copy.deepcopy(raw)
     data["max_window_length_ratio"] = 0.5
     with pytest.raises(GateConfigError, match="max_window_length_ratio"):
+        parse_gate_config(data, "test.yaml")
+
+
+def test_missing_drift_threshold_is_rejected_not_defaulted(raw):
+    data = copy.deepcopy(raw)
+    del data["soft_gates"]["transfer_duration_drift_increase_pp"]
+    with pytest.raises(GateConfigError, match="transfer_duration_drift_increase_pp"):
+        parse_gate_config(data, "test.yaml")
+
+
+def test_missing_drift_min_ops_per_half_is_rejected_not_defaulted(raw):
+    # Defaulting it to zero would admit a "drift" computed from one transfer
+    # against one transfer, in every bucket, which is the rubber stamp this
+    # file's validation exists to prevent.
+    data = copy.deepcopy(raw)
+    del data["soft_gates"]["transfer_duration_drift_min_ops_per_half"]
+    with pytest.raises(GateConfigError, match="transfer_duration_drift_min_ops_per_half"):
+        parse_gate_config(data, "test.yaml")
+
+
+def test_drift_min_ops_per_half_below_two_is_rejected(raw):
+    data = copy.deepcopy(raw)
+    data["soft_gates"]["transfer_duration_drift_min_ops_per_half"] = 1
+    with pytest.raises(GateConfigError, match="integer >= 2"):
+        parse_gate_config(data, "test.yaml")
+
+
+def test_fractional_drift_min_ops_per_half_is_rejected(raw):
+    # A count of operations, not a percentage.
+    data = copy.deepcopy(raw)
+    data["soft_gates"]["transfer_duration_drift_min_ops_per_half"] = 20.5
+    with pytest.raises(GateConfigError, match="transfer_duration_drift_min_ops_per_half"):
         parse_gate_config(data, "test.yaml")
 
 
