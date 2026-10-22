@@ -751,7 +751,31 @@ Do this **per failed deployment**, independently, and before that deployment's t
 what makes the teardown in Step 9 safe: everything that makes a failed run diagnosable lives on the
 VM, and `down` destroys the VM, its per-op logs and its InfluxDB together.
 
-**Destination.** Write into a directory that survives teardown:
+One command does the whole capture, for every VM of every unit the deployment's kind runs:
+
+```bash
+uv run saorsa-deploy deployments collect-client-logs --name STG-WUL-01
+```
+
+It resolves the deployment's kind from the registry and its client VM IPs from S3 client state, so
+there is nothing to substitute: no IP to look up, and no unit name to choose. **Both transports use
+the same unit and the same log directory** — only the spawned binary differs — so a browser-path
+deployment needs no different invocation. `--ssh-key-path` defaults to `~/.ssh/ant_deploy`, the key
+these VMs take.
+
+Per host it writes the unit's whole per-operation log directory as an archive — `ant --json` /
+`ant-wasm` puts each result JSON on stdout and the progress, quotes, peer sets and errors on stderr
+— plus the systemd status, result and journal, a log-directory listing, and on an upload unit the
+payment markers, whose **absence** is the evidence that no payment went out.
+
+**The capture passes when the command exits 0, and only then.** It verifies every host's archive
+locally before saying so, and exits non-zero naming each host it could not collect and why. One
+unreachable host does not abandon the others, so a multi-VM deployment still yields every host it
+could reach. There is no output to read and judge: the exit code is the verdict.
+
+**Destination.** The command prints the directory it resolved as its first line, and writes a
+`summary.json` there recording, per host, the files written with their sizes, the archive's entry
+count and `ok`:
 
 ```
 ~/.local/share/saorsa-deploy/client-test-forensics/<deployment>-<id>/
@@ -761,67 +785,17 @@ where `<deployment>` is the name (`STG-WUL-01`) and `<id>` is the registry id fr
 (`STG-WUL-01-697`). `SAORSA_DEPLOY_STATE_DIR` moves the parent — if it is set in the environment or
 the settings file, the capture goes under `$SAORSA_DEPLOY_STATE_DIR/client-test-forensics/` instead
 (`deploy/saorsa_deploy/paths.py` is the one definition; see CLAUDE.md §"The local state directory").
-**Never write the capture into the repo checkout.** A run manifest's own directory is git-ignored,
-but the skill's outputs have no business in the tree at all.
-
-**The VM's IP**, exactly as Step 7 explains it: on the **download** kinds from the inventory
-snapshot (`deployments generate-inventory --name <n> --ssh-key-path ~/.ssh/ant_deploy`); on the
-**uploaders** from the deploy output, the Slack post or S3 client state, because
-`generate-inventory` has no `prod-uploaders` path.
-
-**The unit name** is `ant-prod-uploader` on STG-UL-01 / STG-WUL-01 and `ant-prod-downloader` on
-STG-DL-01 / STG-WDL-01. **Both transports use the same unit and the same log directory** — only the
-spawned binary differs — so there is no WASM variant to look up.
-
-Run this, substituting the name, the id, the unit and the IP:
-
-```bash
-NAME=STG-WUL-01
-ID=697
-UNIT=ant-prod-uploader          # ant-prod-downloader on STG-DL-01 / STG-WDL-01
-IP=<client VM ip>
-SSH="ssh -i ~/.ssh/ant_deploy -o StrictHostKeyChecking=no -o BatchMode=yes root@$IP"
-OUT="${SAORSA_DEPLOY_STATE_DIR:-$HOME/.local/share/saorsa-deploy}/client-test-forensics/$NAME-$ID"
-mkdir -p "$OUT"
-
-# The per-op logs are the forensic surface: `ant --json`/`ant-wasm` puts the result JSON on
-# stdout, and the progress, quotes, peer sets and errors on stderr.
-$SSH "tar -cz -C /var/log $UNIT" > "$OUT/logs.tar.gz"
-
-# What systemd saw: how it exited and why.
-{
-  $SSH "systemctl status $UNIT --no-pager"
-  echo "== result =="
-  $SSH "systemctl show $UNIT -p Result -p ExecMainStatus"
-  echo "== journal =="
-  $SSH "journalctl -u $UNIT --no-pager -n 500"
-} > "$OUT/service.txt" 2>&1
-
-# A directory listing, so a file missing from the archive is visible later.
-$SSH "ls -la /var/log/ant-prod-*/" > "$OUT/manifest.txt" 2>&1
-
-# Uploaders only: the payment markers. Their ABSENCE is the evidence that no payment went out,
-# which is what separates a `partial` (chunks are in production) from a released pool claim.
-$SSH "ls -la /var/log/ant-prod-uploader/*.paid" > "$OUT/payment-markers.txt" 2>&1
-```
-
-**Check the capture locally before Step 9 is allowed to destroy anything:**
-
-```bash
-ls -l "$OUT/logs.tar.gz"
-tar -tzf "$OUT/logs.tar.gz"
-```
-
-The capture **passes** when the archive exists, is non-empty, and `tar -tzf` lists the per-op files
-— including the **failing operation's `.stderr`**. An archive that does not list the failing
-operation's `stderr` is a **failed capture**, whatever its size: the one file the investigation
-needs is the one that is missing. A `tar` that errors, an empty or truncated archive, or an
-unreachable host are failed captures too. Say which in the report.
+`--output` overrides it outright. **Never write the capture into the repo checkout.** A run
+manifest's own directory is git-ignored, but the skill's outputs have no business in the tree at all.
 
 **What is not on the VM, and so needs no capture:** the per-operation records. `record-results` has
 already copied them into Postgres in Step 8, and `print-recorded-results --id <id>` reads them after
 teardown — including the ANT storage cost and gas, the `client_kind`, the bundle commit and the
 `status` of every operation. Do not keep a VM alive for those.
+
+A non-zero exit is the **capture failed** exception in Step 9, for the hosts the command named: they
+hold the only copy of their own evidence, so they stay alive until someone can pull it by hand.
+Quote the resolved directory and the failing hosts in the report.
 
 ## Step 9 — Tear down every deployment, with two narrow exceptions
 

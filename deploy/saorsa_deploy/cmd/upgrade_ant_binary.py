@@ -28,11 +28,10 @@ from pyinfra.operations import server
 from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
-from saorsa_deploy.client_roles import ROLE_UPLOAD
 from saorsa_deploy.cmd.provision_clients import _resolve_ant_binary
-from saorsa_deploy.provisioning.prod_continuous_uploader import (
-    UPLOADER_SERVICE,
-    VERIFIER_SERVICE,
+from saorsa_deploy.prod_client_units import (
+    PROD_DOWNLOADER_UNIT,
+    group_clients_by_unit,
 )
 from saorsa_deploy.provisioning.prod_downloader import (
     SERVICE_NAME as PROD_DOWNLOADER_SERVICE_NAME,
@@ -92,21 +91,18 @@ def group_hosts_by_unit(
     if kind not in _VALID_KINDS or kind in _DOWNLOADER_KINDS:
         # An unknown kind falls through to here deliberately — see
         # `_resolve_deployment`: with no registry the command still runs on
-        # client state alone, as it always has.
-        return [HostGroup("downloader", PROD_DOWNLOADER_SERVICE_NAME, ips)] if ips else []
+        # client state alone, as it always has. `collect-client-logs` makes the
+        # opposite choice on purpose, and refuses.
+        unit = PROD_DOWNLOADER_UNIT
+        return [HostGroup(unit.label, unit.service, ips)] if ips else []
 
-    groups: list[HostGroup] = []
-    uploader_ips = [
-        c["ip"] for c in clients if c.get("ip") and c.get("role", ROLE_UPLOAD) == ROLE_UPLOAD
+    return [
+        HostGroup(unit.label, unit.service, host_ips)
+        for unit, host_ips in group_clients_by_unit(kind, clients)
+        # The uploader VM of a WASM deployment has no `ant` to upgrade, while
+        # its verifier VMs are deliberately native and do want one.
+        if not (unit.is_upload and client_kind == "wasm")
     ]
-    verifier_ips = [
-        c["ip"] for c in clients if c.get("ip") and c.get("role", ROLE_UPLOAD) != ROLE_UPLOAD
-    ]
-    if uploader_ips and client_kind != "wasm":
-        groups.append(HostGroup("uploader", UPLOADER_SERVICE, uploader_ips))
-    if verifier_ips:
-        groups.append(HostGroup("verifier", VERIFIER_SERVICE, verifier_ips))
-    return groups
 
 
 def _resolve_kind(deploy_args) -> str:

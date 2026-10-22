@@ -609,6 +609,61 @@ What is specific to the download kinds:
 
 See `deploy/README.md` §"The browser path on the production download kinds".
 
+### Collecting a prod client deployment's logs before teardown
+
+`deployments collect-client-logs --name <n>` copies a prod client deployment's
+forensic surface off every one of its VMs over SSH, so a failed run can be
+destroyed without losing the only copy of what went wrong. It is what the
+`run-client-prod-tests` skill's **Step 8b** runs, and that step is now this one
+command plus its exit code — it used to be six `ssh` invocations an operator
+substituted a name, an id, a unit and ONE IP into. Nothing on the hosts is
+changed and no infrastructure is touched.
+
+- **The kind→unit/log-directory map is one authority**,
+  `deploy/saorsa_deploy/prod_client_units.py`, importing the names from the
+  provisioner modules that write the units (a second copy of
+  `ant-prod-uploader` is the drift it exists to prevent). `prod-uploaders` →
+  `ant-prod-uploader`, both download kinds → `ant-prod-downloader`, and
+  `prod-continuous-uploader`'s `role: upload` → `ant-prod-continuous-uploader`
+  with every other role → `ant-prod-upload-verifier`. `group_hosts_by_unit` in
+  `upgrade-ant-binary` reads the same map.
+- **Every host of every group**, into `<out>/<unit>-<ip>/`: `logs.tar.gz` (the
+  unit's whole log directory), `service.txt` (status + `Result`/
+  `ExecMainStatus` + 500 journal lines), `manifest.txt` (`ls -la
+  /var/log/ant-prod-*/`) and, on an upload unit only, `payment-markers.txt` —
+  whose **absence** is the evidence that no payment went out, which separates a
+  `partial` pool claim from a released one. One pasted IP could never cover a
+  `prod-uploaders` run (repeatable `--uploader`) or a continuous uploader's
+  verifier fleet.
+- **An unknown kind is REFUSED, not guessed at.** `upgrade-ant-binary` falls
+  through to the downloader unit, which is safe there (the install is idempotent
+  and a restart of a missing unit just fails); here the same guess archives a
+  directory that does not exist and reports a complete capture — the exact
+  failure this command removes. The local kinds are refused by name: they run on
+  the operator's machine. `--kind` carries a run with no registry row, which is
+  also the only thing an absent `DATABASE_URL` costs (that, and the id in the
+  directory name).
+- **Both transports share the unit and the log directory**, so there is no WASM
+  variant — and unlike `upgrade-ant-binary` a WASM continuous-uploader's
+  uploader VM is **collected**, not skipped: no `ant` to upgrade there, but its
+  logs are the browser path's own evidence.
+- **Exit 0 only when every archive verified** — present, non-empty and listing
+  at least one entry, checked locally with `tarfile` rather than `tar -tzf`, so
+  a truncated archive raises instead of printing to a terminal nobody is
+  reading. Each failure mode has its own reason, `summary.json` records it per
+  host, and **one unreachable host does not abandon the others** (the hosts that
+  can be read are often the ones holding the failure). A non-zero exit is Step
+  8b's "capture failed" exception.
+- `--ssh-key-path` defaults to **`~/.ssh/ant_deploy`**, not `id_rsa` — the key
+  the prod client VMs actually take. The destination is
+  `state_dir()/client-test-forensics/<name>-<id>` (id, because a staging name is
+  reused every train); `--output` overrides it.
+
+The per-operation RECORDS need no capture: `record-results` has them in Postgres
+and `print-recorded-results --id` reads them after teardown.
+
+See `deploy/README.md` §"Collecting a prod client deployment's logs".
+
 ### Upgrading the native `ant` binary in place on a running prod client
 
 `deployments upgrade-ant-binary --name <n>` force-installs `ant` on an
