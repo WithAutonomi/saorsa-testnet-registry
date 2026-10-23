@@ -9,7 +9,6 @@ A single-user system for managing testnet deployments, structured as a uv worksp
 - **`deploy/`** (`saorsa-deploy`) - CLI tool that provisions testnets via Terraform and Pyinfra, records deployments in PostgreSQL. **This is the interface** — everything below is a `saorsa-deploy` command.
 - **`mcp/`** (`saorsa-deploy-mcp`) - **LEGACY, unused.** An MCP server wrapping a subset of `saorsa-deploy`. Not maintained: its `create_deployment`/`destroy_deployment` tools still shell out to the `infra`/`destroy` commands that `d3a56c5` (2026-04-17) split up, so they fail outright. Do not route work through it and do not extend it; drive the CLI.
 - **Database** - PostgreSQL, managed via Alembic migrations (inside `db/`)
-- **Deployment** - Digital Ocean App Platform (`app.yaml`)
 
 ### Data Flow
 
@@ -27,7 +26,6 @@ Claude / operator → saorsa-deploy (CLI) → infrastructure
 
 ```
 pyproject.toml                  # workspace root (not a package)
-app.yaml                        # DO App Platform spec
 db/
   pyproject.toml
   alembic.ini

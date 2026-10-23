@@ -187,14 +187,3 @@ uvx --no-sources --find-links /tmp/wheels saorsa-deploy==1.0.0 --version
 Running `scripts/bump_version.py` without `--no-commit` still commits, tags and
 pushes in one go. That path is for an emergency release when CI cannot make
 one; it pushes the same `v<version>` tag the release workflow would create.
-
-Pushing a `v*` tag **by hand** also triggers the `deploy.yml` GitHub Action,
-which deploys the web app to Digital Ocean App Platform. A tag created by the
-release workflow does not: GitHub does not run workflows on events raised with
-the built-in `GITHUB_TOKEN`, which is what stops a release from re-triggering
-itself. The App Platform deployment is therefore still a by-hand tag push, as
-it was before the release workflow existed.
-
-### Prerequisites
-
-A `ANT_DEPLOY_DO_APP_TOKEN` secret must be configured in the GitHub repository settings. Generate a Personal Access Token from the [DigitalOcean API settings](https://cloud.digitalocean.com/account/api/tokens) with the `app:update` scope (under Apps).
