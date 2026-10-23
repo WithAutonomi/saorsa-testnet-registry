@@ -187,7 +187,3 @@ uvx --no-sources --find-links /tmp/wheels saorsa-deploy==1.0.0 --version
 Running `scripts/bump_version.py` without `--no-commit` still commits, tags and
 pushes in one go. That path is for an emergency release when CI cannot make
 one; it pushes the same `v<version>` tag the release workflow would create.
-
-### Prerequisites
-
-A `ANT_DEPLOY_DO_APP_TOKEN` secret must be configured in the GitHub repository settings. Generate a Personal Access Token from the [DigitalOcean API settings](https://cloud.digitalocean.com/account/api/tokens) with the `app:update` scope (under Apps).
