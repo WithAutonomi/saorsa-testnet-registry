@@ -1840,6 +1840,49 @@ def main(argv=None):
         ),
     )
 
+    # deployments print-upgrade-state
+    deployments_print_upgrade_state_parser = deployments_subparsers.add_parser(
+        "print-upgrade-state",
+        help=(
+            "Print everything an in-place client upgrade is armed from, for a "
+            "prod client deployment: the registry id and status, the recorded "
+            "`ant_binary` and `wasm_build`, the transport, the newest "
+            "ant-binary / WASM-client upgrade event of each type, and every "
+            "client VM's IP, role and systemd unit. Reads Postgres and S3 "
+            "client state only — no SSH, no infrastructure. Emits NO "
+            "credential, so its output is safe to paste into an issue."
+        ),
+    )
+    deployments_print_upgrade_state_source = (
+        deployments_print_upgrade_state_parser.add_mutually_exclusive_group(required=True)
+    )
+    deployments_print_upgrade_state_source.add_argument(
+        "--name",
+        type=str,
+        help=(
+            "Deployment name. Resolves the LIVE row with that name, so a "
+            "permanent deployment recreated under the same name is followed "
+            "automatically; falls back to the most recent row once it has "
+            "been destroyed."
+        ),
+    )
+    deployments_print_upgrade_state_source.add_argument(
+        "--id",
+        dest="deployment_id",
+        type=int,
+        help="Deployment id from the registry, to read one specific historical row.",
+    )
+    deployments_print_upgrade_state_parser.add_argument(
+        "--json-out",
+        default=None,
+        help=(
+            "Write the result as JSON here, beside the human tables. `-` or "
+            "`/dev/stdout` writes it to stdout instead, as the command's only "
+            "output, so it can be piped into `jq`. Refusals always go to "
+            "stderr, so stdout stays parseable."
+        ),
+    )
+
     # deployments print-pointers
     deployments_print_pointers_parser = deployments_subparsers.add_parser(
         "print-pointers",
@@ -8198,6 +8241,12 @@ def main(argv=None):
             )
 
             cmd_print_recorded_results(args)
+        elif args.deployments_subcommand == "print-upgrade-state":
+            from saorsa_deploy.cmd.print_upgrade_state import (
+                cmd_print_upgrade_state,
+            )
+
+            cmd_print_upgrade_state(args)
         elif args.deployments_subcommand == "print-uploads":
             from saorsa_deploy.cmd.print_file_ops import cmd_print_uploads
 

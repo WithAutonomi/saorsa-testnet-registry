@@ -4787,6 +4787,46 @@ uv run saorsa-deploy deployments collect-client-logs --name STG-DL-01 --kind pro
 
 The `run-client-prod-tests` skill's Step 8b is this one command plus its exit-code check, and a non-zero exit is the **capture failed** exception that keeps a failed deployment standing.
 
+### Reading what a prod client deployment is running (`deployments print-upgrade-state`)
+
+`deployments print-upgrade-state` prints everything an in-place client upgrade is armed from, for one production client deployment: the registry row, the binary and bundle it is recorded as running, the newest upgrade event of each type, and every client VM's IP, role and systemd unit. It reads Postgres and S3 client state only — no SSH, no infrastructure, nothing changed.
+
+```bash
+# the human view
+uv run saorsa-deploy deployments print-upgrade-state --name PROD-WUL-01
+# the machine view, as the command's only output
+uv run saorsa-deploy deployments print-upgrade-state --name PROD-WUL-01 --json-out -
+# one specific historical row
+uv run saorsa-deploy deployments print-upgrade-state --id 611 --json-out /tmp/wul.json
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--name` | string | one of the two is required | Deployment name. Resolves the LIVE row, falling back to the most recent once destroyed |
+| `--id` | int | one of the two is required | Registry id, to read one specific historical row |
+| `--json-out` | path | none | Write the JSON here beside the tables; `-` / `/dev/stdout` makes the JSON the command's only output |
+
+**The JSON document:**
+
+| Field | Source |
+|-------|--------|
+| `deployment`, `id`, `status`, `saorsa_deploy_version` | the deployment row |
+| `kind`, `client_kind` | `deploy_args` (`client_kind` null means native, as the provisioner defaults) |
+| `ant_binary`, `wasm_build` | `deploy_args`, each the whole object — `wasm_build` grows fields (`features` arrived with the 0.3.12 bundles) and a caller transcribes the commit |
+| `upgrade_events` | the newest `deployment_events` row of each `ant_binary_upgrade*` / `wasm_client_upgrade*` type, newest first, with `event_type`, `created_at` and `details` |
+| `clients[]` | S3 client state: `ip`, `role`, `region`, `client_index`, `provider`, `client_kind`, plus the resolved `unit`, `label` and `is_upload` |
+| `client_state_error` | why there are no VMs, when the client-state key is absent |
+
+**It exists because the arming step was a library import, and an import reads the wrong database.** The release train's `upgrade-production-monitors` named `SqlAlchemyDeploymentRepository.get_active_by_name` and `saorsa_deploy.state.load_client_state` rather than commands, there being no command that returned these fields. But the env file is loaded by the **CLI** (`saorsa_deploy/env_file.py`), so a bare import skips it and `get_session_factory()` falls back to its own default and connects to a *local* Postgres. Measured on 2026-10-23 through `uv run` and through a pinned `uvx --from saorsa-deploy==1.11.0` alike — **pinning the tool does not fix it**, because the fallback is in the library path and not in the version. It surfaced only because the local copy was old enough to raise on a missing column; with matching schemas it would have returned plausible, wrong state and the arming would have written it into four production maintenance issues.
+
+**Nothing it prints can be a credential**, which is why it is a new command rather than a use of `deployments print` — that one emits the deployment's InfluxDB API token in its normal output, and an arming agent pastes what it reads into a Linear issue. The property is structural, not a matter of care: every value comes from a named field (`DEPLOY_ARGS_FIELDS` out of `deploy_args`, `CLIENT_FIELDS` out of each client-state entry), no monitoring or elastic state is loaded at all, and a detail key whose name contains `secret` / `token` / `password` / `credential` has its value replaced with `<redacted>`. So a secret added to any of those sources later is absent by default rather than newly exposed — client state especially, being a free-form dict that carries `wallet_secret_key` wherever `update_client_wallet` has run.
+
+**The unit comes from `prod_client_units.py`**, the same authority `collect-client-logs` and `upgrade-ant-binary` use, so this read cannot disagree with the commands that act on the hosts it names. `is_upload` is that module's own flag, and on a WASM `prod-continuous-uploader` it is what distinguishes the VM running the bundle from the verifiers that stay native — derived there rather than re-spelled here.
+
+**No VM name is returned, deliberately.** Client state carries no hostnames and the convention cannot be derived safely: PROD-UL-01's OVH verifier reports `prod-ul-01-ant-client-download-gra9-2` in lower case while its two siblings are upper case. `region` and `client_index` are what tell two VMs of one role apart; read hostnames over SSH if they are needed, since a guessed name would be worse than none.
+
+**A kind with no known client units is refused**, naming the supported kinds, rather than half-answered — guessing a unit is the failure `prod_client_units` exists to prevent — and so are the `prod-local-*` kinds, which run on the operator's own machine. A **missing** client-state key is tolerated and reported in `client_state_error` with `clients: []`, because a destroyed deployment's versions and upgrade history are still worth reading; any other S3 failure refuses, since "could not look" is not "nothing there" and an empty VM list would read as a deployment with nothing to upgrade. **Refusals go to stderr whatever `--json-out` is**, so stdout stays parseable and an unattended caller still gets the reason.
+
 ### Upgrading the `ant` binary in place (`deployments upgrade-ant-binary`)
 
 `deployments upgrade-ant-binary` force-installs the latest (or a pinned/branch) native `ant` binary on an already-running prod client VM over SSH, and restarts the service that VM runs — no Terraform infrastructure is touched. It exists because the binary-install steps used by `deploy` are presence-gated (they skip if `ant` is already installed at `/root/.local/bin/ant`), so re-running `deploy` against an existing deployment never picks up a new release.
