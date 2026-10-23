@@ -698,6 +698,42 @@ history. VM IPs come from S3 client state.
 
 See `deploy/README.md` §"Upgrading the `ant` binary in place".
 
+### Reading what a prod client deployment is running
+
+`deployments print-upgrade-state --name <n> [--json-out -]` is the credential-free
+read the two in-place upgrades are armed from: the registry row, `deploy_args`'
+`kind` / `client_kind` / `ant_binary` / `wasm_build`, the newest
+`ant_binary_upgrade*` / `wasm_client_upgrade*` event of each type, and every
+client VM's IP, role and resolved systemd unit. Postgres and S3 client state
+only.
+
+- **It exists because the release train's arming step was a library import, and
+  an import reads the WRONG DATABASE.** The env file is loaded by the CLI
+  (`env_file.py`), so a bare `get_session_factory()` falls back to its default
+  and connects to a **local** Postgres — through `uv run` and through a pinned
+  `uvx --from saorsa-deploy==1.11.0` alike, since the fallback is in the library
+  path and not in the version. It surfaced on 2026-10-23 only because the local
+  copy raised on a missing column; with matching schemas it would have returned
+  plausible, wrong state into four production maintenance issues.
+- **Nothing it prints can be a credential**, which is why it is not
+  `deployments print` — that one emits the deployment's InfluxDB token, and an
+  arming agent pastes what it reads into a Linear issue. Structural, not
+  careful: every value comes from a NAMED field (`DEPLOY_ARGS_FIELDS`,
+  `CLIENT_FIELDS`), no monitoring or elastic state is loaded, and a `details`
+  key containing `secret`/`token`/`password`/`credential` is `<redacted>`.
+- The unit comes from `prod_client_units.py`, so it cannot disagree with the
+  commands that act on the hosts it names; `is_upload` is that module's flag and
+  is what separates a WASM uploader VM from its native verifiers. **No VM name**
+  — client state has no hostnames and the case convention is not derivable
+  (PROD-UL-01's OVH verifier is lower case, its siblings upper), so `region` +
+  `client_index` identify a VM instead.
+- An unsupported kind is refused naming the supported ones, a **missing** client
+  state is reported in `client_state_error` with `clients: []` (a destroyed
+  deployment's history is still worth reading) and any other S3 failure refuses.
+  Refusals go to **stderr** whatever `--json-out` is.
+
+See `deploy/README.md` §"Reading what a prod client deployment is running".
+
 ### Upgrading the WASM client in place, and `client_build`
 
 `deployments upgrade-wasm-client --name <n> [--name <n>...] --branch-name <ref>`
