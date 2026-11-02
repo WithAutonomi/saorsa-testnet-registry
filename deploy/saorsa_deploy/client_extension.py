@@ -22,9 +22,15 @@ Three rules in here are load-bearing:
   (``upload-<region>-<n>.txt``), and each flush is a whole-object PUT -- so two
   uploaders sharing an index silently erase each other's address list on every
   flush.
-* **An extension never declares binaries.** It reuses what the deployment
-  recorded at provision time, so an extension cannot run a different client
-  build from the deployment it is measuring.
+* **An extension declares at most a released ``ant``.** By default it reuses
+  what the deployment recorded at provision time, so it cannot accidentally run
+  a different client build from the deployment it is measuring. The one
+  exception is a manifest ``binaries.ant`` in the VERSION form, which exists so
+  a cohort can run a *released* client against branch-built nodes — the only
+  coverage of an old client against new nodes there is. The branch form is
+  refused (``clients up`` has no build lane), and so is any override alongside a
+  WASM or browser tier, because one explicit binary flag switches the whole
+  reuse off and the bundle source would go with it.
 """
 
 from __future__ import annotations

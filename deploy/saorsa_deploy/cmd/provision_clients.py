@@ -504,6 +504,34 @@ def _record_client_binaries(args, console) -> None:
         )
 
 
+def _record_extension_client_binary(args, console, extension: str) -> None:
+    """Record the released `ant` an EXTENSION installed on its own client state.
+
+    The deployment's record (:func:`_record_client_binaries`) says what the
+    deployment is running and must not be touched by an extension — the
+    extension is the thing that differs from it. So what an extension installed
+    instead goes on the extension's own state, where its teardown takes it with
+    the cohort.
+
+    Only the version form is ever recorded, because that is the only form the
+    manifest accepts. Best-effort, like every other provision-time record: the
+    cohort is already provisioned by the time this runs.
+    """
+    from saorsa_deploy.state import update_client_state
+
+    try:
+        update_client_state(
+            args.name,
+            {CLIENT_BINARIES_STATE_KEY: {"ant": {"version": args.ant_version}}},
+            extension,
+        )
+    except Exception as e:  # noqa: BLE001 — recording is best-effort
+        console.print(
+            f"[yellow]Warning: failed to record the extension's client binary "
+            f"in its client state: {e}[/yellow]"
+        )
+
+
 def _apply_recorded_client_binaries(args, console) -> None:
     """Fill an extension's binary flags from what the deployment recorded.
 
@@ -553,6 +581,14 @@ def _apply_recorded_client_binaries(args, console) -> None:
             else (f"release v{ant['version']}" if ant.get("version") else "latest release")
         )
         console.print(f"  Reusing the deployment's client binary: {described}")
+    elif getattr(args, "ant_version", None):
+        # A manifest `binaries.ant` (or the flag by hand): the cohort runs a
+        # released client beside the deployment's own build, which is the whole
+        # reason the override exists. Say which, so a run log names the thing
+        # the two tiers differ by.
+        console.print(
+            f"  Installing the extension's own client binary: release v{args.ant_version}"
+        )
 
 
 def cmd_provision_clients(args):
@@ -561,6 +597,10 @@ def cmd_provision_clients(args):
     prod_mode = getattr(args, "prod", False)
 
     extension = getattr(args, "extension", None)
+    # Read before the fill below, which sets `ant_version` from the deployment's
+    # record when no flag was passed: afterwards the two are indistinguishable,
+    # and only the explicit one is the extension's own choice to record.
+    extension_ant_version = getattr(args, "ant_version", None) if extension else None
     if extension is not None:
         # The extension reuses whatever `clients provision` recorded for the
         # deployment, so the two tiers cannot run different client builds. Done
@@ -598,6 +638,9 @@ def cmd_provision_clients(args):
         console.print(
             f"[yellow]Warning: failed to record ssh_key_path in client state: {e}[/yellow]"
         )
+
+    if extension_ant_version:
+        _record_extension_client_binary(args, console, extension)
 
     has_uploaders = any(is_upload(c.get("role", "upload")) for c in clients)
 

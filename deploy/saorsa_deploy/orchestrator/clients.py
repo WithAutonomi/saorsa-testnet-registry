@@ -10,8 +10,13 @@ redundant:
 
 * **No build steps.** The extension reuses the binaries the deployment recorded
   (``clients provision`` resolves them from deployment state when it is given
-  ``--extension`` and no binary flags), so it cannot run a different client
-  build from the deployment it is measuring.
+  ``--extension`` and no binary flags), so by default it cannot run a different
+  client build from the deployment it is measuring. A manifest ``binaries.ant``
+  overrides that for the one case the default cannot express — a *released*
+  client against branch-built nodes — and is passed straight through as
+  ``--ant-version`` on the provision step. The BRANCH form is refused at the
+  manifest rather than here: it would need a build lane, which is the step this
+  sequence does not have.
 * **No ``deployments webrtc-addresses`` step.** The bootstrap WebRTC multiaddrs
   are a property of the DEPLOYMENT's bootstrap tier, collected once by its own
   ``up``. Re-collecting them here would SSH the deployment's bootstrap VMs and
@@ -44,22 +49,30 @@ def build_clients_deploy_steps(manifest: Manifest) -> list[Step]:
     ssh_key = manifest.ssh_key_path
     spec = manifest.clients
 
+    provision_argv = [
+        "clients",
+        "provision",
+        "--name",
+        deployment,
+        "--extension",
+        extension,
+        "--ssh-key-path",
+        ssh_key,
+    ]
+    if manifest.binaries is not None:
+        # An explicit version is the escape hatch `_apply_recorded_client_binaries`
+        # already honours: one binary flag turns the whole reuse off, which is
+        # why the manifest refuses this alongside a WASM tier. Only the version
+        # form reaches here — the branch form is a manifest-level refusal.
+        provision_argv += ["--ant-version", manifest.binaries.ant.version]
+
     steps: list[Step] = [
         Step(
             _clients_infra_argv(deployment, spec, extension),
             f"Create client VMs for extension '{extension}'",
         ),
         Step(
-            [
-                "clients",
-                "provision",
-                "--name",
-                deployment,
-                "--extension",
-                extension,
-                "--ssh-key-path",
-                ssh_key,
-            ],
+            provision_argv,
             f"Provision client VMs for extension '{extension}'",
         ),
         Step(
