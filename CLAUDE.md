@@ -369,11 +369,21 @@ a second NODE fleet. Example:
 `browser_downloaders` tier (below) is the one most often added this way — a hot
 file only exists once the deployment's uploaders have published one.
 
-- **No binaries, ever.** The extension reuses what the deployment recorded at
-  `clients provision` time (`client_binaries` in its S3 state), so it cannot run
-  a different client build from the deployment it measures. `extends:` is
-  refused too (nothing to inherit), as is `slack_post:` (an extension has no
-  registry row of its own).
+- **Binaries: the version form only, and only without a WASM or browser tier.**
+  By default the extension reuses what the deployment recorded at `clients
+  provision` time (`client_binaries` in its S3 state), so it cannot
+  *accidentally* run a different client build from the deployment it measures.
+  A top-level `binaries: { ant: { version: X } }` overrides that for the one
+  case the default cannot express — a cohort running a RELEASED client against
+  branch-built nodes, the only coverage of an old client against new nodes
+  anything has (INFRA-473). It becomes `--ant-version X` on the `clients
+  provision` step and is recorded on the EXTENSION's own client state, never on
+  the deployment's. The **branch** form is refused (it needs a build lane
+  `clients up` does not have) and so is any override alongside a **WASM or
+  browser tier**, because one explicit binary flag switches the whole reuse off
+  and the recorded bundle source goes with it; `ant_wasm` is not a field.
+  `extends:` is refused too (nothing to inherit), as is `slack_post:` (an
+  extension has no registry row of its own).
 - **No uploader/downloader pairing rule**, unlike a deployment manifest: an
   extension reads the deployment's EXISTING address pool, which is the whole
   point ("add 20 more downloaders at hour 3").

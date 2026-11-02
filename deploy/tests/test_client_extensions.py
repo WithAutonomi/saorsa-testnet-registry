@@ -158,10 +158,58 @@ class TestManifest:
         assert m.clients.uploaders == []
         assert len(m.clients.downloaders) == 2
 
-    def test_no_binaries_block(self, tmp_path):
-        body = EXTENSION + "    binaries:\n      ant: { version: '0.3.1' }\n"
-        with pytest.raises(ManifestError, match="binaries"):
+    def test_binaries_version_form_is_accepted(self, tmp_path):
+        # The one override the default reuse cannot express: a cohort running a
+        # RELEASED client against the deployment's branch-built nodes.
+        body = EXTENSION + "    binaries:\n      ant: { version: '0.3.12' }\n"
+        m = _manifest(tmp_path, body)
+        assert m.binaries.ant.version == "0.3.12"
+        assert m.binaries.ant.is_branch is False
+
+    def test_binaries_branch_form_is_refused(self, tmp_path):
+        # A branch build comes off a build VM, and `clients up` has no build
+        # lane to put that step in.
+        body = EXTENSION + (
+            "    binaries:\n      ant: { branch: main, repo_owner: WithAutonomi }\n"
+        )
+        with pytest.raises(ManifestError, match="version form only"):
             _manifest(tmp_path, body)
+
+    def test_binaries_refused_with_wasm_tier(self, tmp_path):
+        # One explicit binary flag turns off the whole fill in
+        # `_apply_recorded_client_binaries`, so the deployment's recorded WASM
+        # bundle source would go with it.
+        body = """\
+            kind: clients
+            name: wasm-ext
+            deployment: DEV-01
+            purpose: p
+            binaries:
+              ant: { version: "0.3.12" }
+            clients:
+              wasm_downloaders:
+                - { provider: digital_ocean, region: lon1 }
+        """
+        with pytest.raises(ManifestError, match="WASM or browser tier"):
+            _manifest(tmp_path, body, name="wasm-ext.yaml")
+
+    def test_binaries_refused_on_other_kinds(self, tmp_path):
+        # A deployment manifest declares its binaries inside its kind block; a
+        # top-level one there would name something that does not exist.
+        body = """\
+            kind: testnet
+            name: DEV-09
+            purpose: p
+            binaries:
+              ant: { version: "0.3.12" }
+            testnet:
+              binaries: { ant_node: { version: "0.4.0" } }
+              nodes:
+                per_vm: 5
+                providers: { digital_ocean: { vm_count: 1 } }
+        """
+        with pytest.raises(ManifestError, match="only valid on kind 'clients'"):
+            _manifest(tmp_path, body, name="testnet.yaml")
 
     def test_slack_post_is_accepted(self, tmp_path):
         # It no longer appends `deployments slack-post` (which would look up the
@@ -241,6 +289,25 @@ class TestSteps:
         argv0 = [s.argv[0:2] for s in build_deploy_steps(_manifest(tmp_path, body))]
         assert ["build", "ant-wasm"] not in argv0
         assert ["deployments", "webrtc-addresses"] not in argv0
+
+    def test_binaries_pass_the_version_to_provision(self, tmp_path):
+        # `clients plan` prints the step argv, so the flag has to be on it: an
+        # override nobody can see in the plan is one nobody can check.
+        body = EXTENSION + "    binaries:\n      ant: { version: '0.3.12' }\n"
+        steps = build_deploy_steps(_manifest(tmp_path, body))
+        provision = next(s for s in steps if s.argv[0:2] == ["clients", "provision"])
+        assert provision.argv[-2:] == ["--ant-version", "0.3.12"]
+        # Nothing else in the sequence moves.
+        assert [s.argv[0:2] for s in steps] == [
+            ["clients", "infra"],
+            ["clients", "provision"],
+            ["clients", "start"],
+        ]
+
+    def test_no_binaries_means_no_version_flag(self, tmp_path):
+        steps = build_deploy_steps(_manifest(tmp_path))
+        provision = next(s for s in steps if s.argv[0:2] == ["clients", "provision"])
+        assert "--ant-version" not in provision.argv
 
     def test_destroy_sequence(self, tmp_path):
         steps = build_destroy_steps(_manifest(tmp_path))
@@ -1008,6 +1075,62 @@ class TestBinaryReuse:
         # The WASM owner/branch fall back to the native pair, exactly as
         # `_resolve_wasm_bundle` does when only --branch-name is given.
         assert written["client_binaries"]["ant_wasm"]["repo_owner"] == "myorg"
+
+    def test_an_explicit_version_says_so_rather_than_reusing(self, monkeypatch, capsys):
+        self._apply(
+            monkeypatch,
+            {"ant": {"branch": "feature-x", "repo_owner": "myorg", "version": None}},
+            ant_version="0.3.12",
+        )
+        out = capsys.readouterr().out
+        assert "Installing the extension's own client binary: release v0.3.12" in out
+        assert "Reusing the deployment's client binary" not in out
+
+    def test_an_extensions_own_version_is_recorded_on_its_own_state(self, monkeypatch):
+        # Not on the deployment's: the deployment's record says what the
+        # DEPLOYMENT is running, and the extension is the thing that differs
+        # from it.
+        from rich.console import Console
+
+        import saorsa_deploy.state as state
+        from saorsa_deploy.cmd import provision_clients as mod
+
+        client_writes: list = []
+        deployment_writes: list = []
+        monkeypatch.setattr(
+            state,
+            "update_client_state",
+            lambda name, updates, extension=None: client_writes.append((name, updates, extension)),
+        )
+        monkeypatch.setattr(
+            state,
+            "update_deployment_state",
+            lambda name, updates: deployment_writes.append((name, updates)),
+        )
+        mod._record_extension_client_binary(
+            self._args(ant_version="0.3.12"), Console(), "old-client"
+        )
+        assert client_writes == [
+            ("DEV-01", {"client_binaries": {"ant": {"version": "0.3.12"}}}, "old-client")
+        ]
+        assert deployment_writes == []
+
+    def test_a_failed_record_is_a_warning_not_a_failure(self, monkeypatch, capsys):
+        # The cohort is already provisioned by the time this runs.
+        from rich.console import Console
+
+        import saorsa_deploy.state as state
+        from saorsa_deploy.cmd import provision_clients as mod
+
+        monkeypatch.setattr(
+            state,
+            "update_client_state",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no state")),
+        )
+        mod._record_extension_client_binary(
+            self._args(ant_version="0.3.12"), Console(), "old-client"
+        )
+        assert "Warning" in capsys.readouterr().out
 
 
 # --------------------------------------------------------------------------- #

@@ -30,9 +30,17 @@ deployment: EXAMPLE
 purpose: "Example: two more native downloaders against a running testnet"
 ssh_key_path: ~/.ssh/ant_deploy
 
-# No `binaries:` — an extension reuses the client binary the deployment
-# recorded at provision time, so it can never run a different build from the
-# deployment it is measuring.
+# Binaries are normally omitted: an extension reuses the client binary the
+# deployment recorded at provision time, so the two tiers cannot drift apart by
+# accident. The one override is a RELEASED `ant`, for a cohort measuring an old
+# client against the deployment's branch-built nodes:
+#
+#   binaries:
+#     ant: { version: "0.3.12" }
+#
+# Version form only — a branch would need a build step this sequence does not
+# have — and not alongside a WASM or browser tier, since an explicit version
+# stops the deployment's recorded bundle source being reused.
 clients:
   downloaders:
     - { provider: digital_ocean, region: lon1 }

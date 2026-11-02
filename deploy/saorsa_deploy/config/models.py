@@ -839,7 +839,9 @@ class ClientsExtensionSpec(_Base):
       an S3 state object and a teardown guard standing in the way of a
       ``deployments down``, which is strictly worse than not creating it.
 
-    No binaries: see :mod:`saorsa_deploy.client_extension`.
+    Binaries: the version form only, and only without a WASM or browser tier
+    — see :class:`ClientExtensionBinaries` and
+    :mod:`saorsa_deploy.client_extension`.
     """
 
     uploaders: list[Uploader] = []
@@ -892,6 +894,40 @@ class ClientsExtensionSpec(_Base):
     @property
     def has_browser(self) -> bool:
         return bool(self.browser_downloaders)
+
+
+class ClientExtensionBinaries(_Base):
+    """The one binary a ``kind: clients`` manifest may name: a RELEASED ``ant``.
+
+    An extension normally reuses whatever the deployment recorded at
+    ``clients provision`` time, and that remains the default. This exists for
+    the one case the default cannot express: a cohort running a *released*
+    client against nodes built from a branch, which is the only coverage of an
+    old client against new nodes that anything does.
+
+    **The version form only.** A branch build is produced by a ``build ant``
+    step on a build VM, and ``clients up`` has no build lane to put one in —
+    accepting ``branch:`` here would either silently install something else or
+    need an extension to stand up build infrastructure of its own.
+
+    ``ant_wasm`` is deliberately not a field (``extra="forbid"`` refuses it):
+    naming an explicit ``ant`` version switches the whole reuse off in
+    ``_apply_recorded_client_binaries``, so a WASM tier in the same extension
+    would lose the deployment's recorded bundle source. That combination is
+    refused on the manifest instead.
+    """
+
+    ant: Binary
+
+    @model_validator(mode="after")
+    def _version_only(self) -> "ClientExtensionBinaries":
+        if self.ant.is_branch:
+            raise ValueError(
+                "binaries.ant: a client extension accepts the version form only "
+                "({ version: X }); the branch form needs a build lane that "
+                "`clients up` does not have"
+            )
+        return self
 
 
 def _require_client_binaries(clients, binaries, kind: str) -> None:
@@ -1874,6 +1910,10 @@ class Manifest(_Base):
     elasticsearch: Optional[ElasticsearchSpec] = None
     clients: Optional[ClientsExtensionSpec] = None
 
+    #: The `ant` release a `kind: clients` manifest installs instead of reusing
+    #: the deployment's recorded client binary. Valid only on that kind.
+    binaries: Optional[ClientExtensionBinaries] = None
+
     #: The deployment a `kind: clients` manifest extends. Required for that kind
     #: and refused for every other -- a deployment manifest IS the deployment,
     #: so a `deployment:` key on one would name something that does not exist.
@@ -1919,6 +1959,24 @@ class Manifest(_Base):
         if extra:
             raise ValueError(
                 f"kind '{self.kind}' must only carry `{expected}:`; also found: {extra}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _binaries_only_on_clients_kind(self) -> "Manifest":
+        if self.binaries is None:
+            return self
+        if self.kind != "clients":
+            raise ValueError(
+                f"a top-level `binaries:` is only valid on kind 'clients' (got "
+                f"kind '{self.kind}'); a deployment manifest declares its "
+                f"binaries inside its own kind block"
+            )
+        if self.clients is not None and self.clients.has_wasm:
+            raise ValueError(
+                "binaries: a client extension with a WASM or browser tier cannot "
+                "override binaries, because an explicit ant version stops the "
+                "deployment's recorded WASM source being reused"
             )
         return self
 

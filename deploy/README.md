@@ -872,6 +872,8 @@ deployment: DEV-01               # the testnet whose state it reads
 purpose: "V2-NNNN: one line"
 ssh_key_path: ~/.ssh/ant_deploy
 slack_post: true                 # optional: post the extension's up/down into the deployment's Slack thread
+# binaries:                      # optional: a RELEASED ant for this cohort only
+#   ant: { version: "0.3.12" }   # version form only, and not with a WASM/browser tier
 clients:                         # same per-entry grammar as a testnet manifest
   uploaders: []
   downloaders:
@@ -914,11 +916,22 @@ and that path is byte-identical to before.
   `<prefix>-<tf name>-<role>-<region>-<index>.tfstate`, so
   `DEV-01-upload-extra-download-lon1-1` would parse as role `upload` of DEV-01
   and the deployment's own orphan-recovery scan would adopt the extension's VM.
-- **Binaries are not declared here.** The extension reuses the client binary the
-  deployment recorded at `clients provision` time (`client_binaries` in its S3
-  state), so an extension can never run a different client build from the
-  deployment it is measuring. A deployment provisioned before that record existed
-  is reported, with the flags to pass explicitly. The record currently holds
+- **Binaries: the version form only, and only without a WASM or browser tier.**
+  By default the extension reuses the client binary the deployment recorded at
+  `clients provision` time (`client_binaries` in its S3 state), so the two tiers
+  cannot drift apart by accident. A top-level `binaries: { ant: { version: X } }`
+  overrides that for the one case the default cannot express — a cohort running a
+  *released* client against branch-built nodes, which is the only coverage of an
+  old client against new nodes anything has. It becomes `--ant-version X` on the
+  `clients provision` step (so `clients plan` prints it), and what it installed
+  is recorded on the EXTENSION's own client state, never on the deployment's.
+  Two refusals, both exit 2 at manifest-validate time: the **branch** form (it
+  would need a `build ant` step, which `clients up` has no lane for), and any
+  override alongside a **WASM or browser tier** (one explicit binary flag
+  switches the whole reuse off, so the deployment's recorded bundle source would
+  go with it). `ant_wasm` is not a field here at all. A deployment provisioned
+  before the record existed is reported, with the flags to pass explicitly. The
+  record currently holds
   `ant` (`branch`/`repo_owner`/`version`) and `ant_wasm` (`branch`/`repo_owner`)
   only — **a new client-binary option has to be added to it in two places**, the
   write in `_record_client_binaries` and the read in
