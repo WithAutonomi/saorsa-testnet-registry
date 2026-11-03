@@ -32,6 +32,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,9 +55,20 @@ from saorsa_deploy.registry import (
     record_deployment_created,
     record_status,
 )
+from saorsa_deploy.transfer_errors import (
+    classify_transfer_error,
+    clip_reason,
+    failure_reason,
+)
 
 EVM_NETWORK = "arbitrum-one"
 DOWNLOAD_TIMEOUT_SECONDS = 600
+
+#: How much of `ant`'s stderr is kept in memory per download, to classify the
+#: failure from. The same bound the remote service scripts forward to journald,
+#: and for the same reason: `ant -v` can emit tens of thousands of lines and the
+#: whole of it is on disk either way.
+STDERR_TAIL_LINES = 200
 
 _BINARY_CACHE_ROOT = Path("~/.cache/saorsa-deploy/ant-binaries").expanduser()
 _LOG_ROOT = Path("~/.local/state/saorsa-deploy/local-downloads").expanduser()
@@ -231,11 +243,16 @@ def _run_ant(
     output_path: Path,
     stderr_log_path: Path,
     stdout_log_path: Path,
-) -> tuple[int, str]:
+) -> tuple[int, str, str]:
     """Run ``ant file download`` and tee its streams to log files in real time.
 
     stderr is echoed to ``sys.stderr`` so the operator sees progress live.
-    Returns ``(exit_code, stdout_text)``.
+    Returns ``(exit_code, stdout_text, stderr_tail)``.
+
+    The stderr TAIL and not the whole stream: `ant -v` emits tens of thousands
+    of lines per download and the whole of it is already on disk, while the one
+    thing a caller needs from it -- the single `Error: ...` line `ant-cli`
+    prints -- is always last.
     """
     cmd = [
         str(ant_path),
@@ -253,6 +270,7 @@ def _run_ant(
     stderr_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     stdout_chunks: list[str] = []
+    stderr_tail: deque[str] = deque(maxlen=STDERR_TAIL_LINES)
     stderr_err: list[BaseException] = []
     stdout_err: list[BaseException] = []
 
@@ -270,6 +288,7 @@ def _run_ant(
                 assert proc.stderr is not None
                 for line in proc.stderr:
                     fh.write(line)
+                    stderr_tail.append(line)
                     sys.stderr.write(line)
                     sys.stderr.flush()
         except BaseException as e:  # noqa: BLE001
@@ -298,7 +317,7 @@ def _run_ant(
     if stdout_err:
         raise stdout_err[0]
 
-    return exit_code, "".join(stdout_chunks)
+    return exit_code, "".join(stdout_chunks), "".join(stderr_tail)
 
 
 # ---------- input collection --------------------------------------------------
@@ -423,7 +442,7 @@ def cmd_prod_local_downloads(args) -> None:
             started_at = datetime.now(timezone.utc)
             start_ns = time.time_ns()
             try:
-                exit_code, stdout = _run_ant(
+                exit_code, stdout, stderr_text = _run_ant(
                     ant_path=ant_path,
                     bootstrap_args=bootstrap_args,
                     address=address,
@@ -449,7 +468,10 @@ def cmd_prod_local_downloads(args) -> None:
                     download_secs=None,
                     started_at=started_at,
                     finished_at=finished_at,
-                    reason=str(e),
+                    reason=clip_reason(f"failed to spawn ant: {e}"),
+                    # Nothing ran, so there is no `ant` text to classify and
+                    # `other` is the honest kind.
+                    error_kind="other",
                 )
                 continue
 
@@ -470,6 +492,7 @@ def cmd_prod_local_downloads(args) -> None:
             if exit_code == 0 and file_size is not None and file_size > 0:
                 status = ProdDownloadStatus.SUCCESS
                 reason = None
+                error_kind = None
                 console.print(
                     f"  [green]ok[/green]: size={file_size} download_secs={download_secs} "
                     f"total={total_ms}ms log={stderr_log_path}"
@@ -477,12 +500,21 @@ def cmd_prod_local_downloads(args) -> None:
             else:
                 status = ProdDownloadStatus.FAILED
                 failures += 1
-                reason = f"exit_code={exit_code}"
+                # `exit_code=1 (no output file)` was all this recorded, which is
+                # the same empty signal a remote downloader's blank row carried
+                # -- from a command running `ant` on this very machine with its
+                # stderr in hand (INFRA-484). `ant-cli` prints exactly one
+                # `Error: ...` line there and nothing to stdout, even under
+                # `--json`, so that line is the reason and its classification
+                # is the kind.
+                reason = failure_reason(stderr_text) or f"exit_code={exit_code}"
                 if file_size is None or file_size == 0:
-                    reason += " (no output file)"
+                    reason = clip_reason(f"{reason} (no output file)")
+                error_kind = classify_transfer_error(reason)
                 console.print(
-                    f"  [red]FAILED[/red]: exit={exit_code} total={total_ms}ms "
-                    f"size={file_size} log={stderr_log_path}"
+                    f"  [red]FAILED[/red]: exit={exit_code} kind={error_kind} "
+                    f"total={total_ms}ms size={file_size} reason={reason!r} "
+                    f"log={stderr_log_path}"
                 )
 
             if keep_output and status == ProdDownloadStatus.SUCCESS:
@@ -503,6 +535,7 @@ def cmd_prod_local_downloads(args) -> None:
                 started_at=started_at,
                 finished_at=finished_at,
                 reason=reason,
+                error_kind=error_kind,
             )
 
             if not keep_output:

@@ -8,6 +8,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -92,6 +93,21 @@ class _BaseOpRecord:
         DateTime(timezone=True), nullable=True
     )
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Why this operation failed, in two fields that answer two different
+    # questions (INFRA-484). `reason` is `ant`'s own sentence, clipped to 500
+    # characters with hex blobs elided -- what an operator reads. `error_kind`
+    # is its classification from one closed vocabulary
+    # (`saorsa_db.models.transfer_error_kind.TransferErrorKind`) -- what a
+    # failure count can be grouped by.
+    #
+    # NULL means NOT RECORDED and never means "no error". The durable copy of a
+    # failed download used to be `status=failure`, `file_size_bytes=0` and a
+    # duration, and nothing is backfilled: the Influx points those rows came
+    # from never carried either field, and a guessed kind reads as a fact.
+    # Whatever is still inside a deployment's retention window is picked up by
+    # the next archive at no cost, because that pass re-upserts the same rows.
+    error_kind: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -114,6 +130,8 @@ class _BaseOpRecord:
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "duration_ms": self.duration_ms,
+            "error_kind": self.error_kind,
+            "reason": self.reason,
             "recorded_at": self.recorded_at.isoformat(),
         }
 

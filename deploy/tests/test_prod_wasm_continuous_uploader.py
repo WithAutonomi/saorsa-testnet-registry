@@ -779,12 +779,15 @@ class TestOneCycle:
         assert out.claim.status is ClaimStatus.RELEASED
         assert 'error_kind="crash"' in out.posted[0][1]
 
-    def test_the_native_no_document_rule_is_unchanged(
+    def test_the_native_no_document_rule_releases_and_records_failed(
         self, service, registry, monkeypatch, tmp_path
     ):
-        # `rc != 0` with no result document still means ant never started, so the
-        # file goes back in the pool — recorded as a partial upload, exactly as
-        # before the browser path existed.
+        # `rc > 0` with no result document still means `ant` never stored
+        # anything, so the file goes back in the pool — the claim side was
+        # always right. The row status was PARTIAL_UPLOAD, which contradicted
+        # the claim beside it and is now FAILED (INFRA-484): ant-core converts
+        # any error into `PartialUpload` the moment a payment goes out, so an
+        # error with no document means zero spend and zero chunks.
         out = self._run(
             service,
             registry,
@@ -795,15 +798,17 @@ class TestOneCycle:
             wasm=False,
         )
         assert out.claim.status is ClaimStatus.RELEASED
-        assert out.rows[0].status is ProdUploadStatus.PARTIAL_UPLOAD
+        assert out.rows[0].status is ProdUploadStatus.FAILED
         assert out.rows[0].client_kind == "native"
         assert out.spawned[0][0] == "/root/.local/bin/ant"
 
-    def test_a_native_partial_still_has_no_error_kind(
+    def test_a_native_partial_is_classified_and_carries_its_reason(
         self, service, registry, monkeypatch, tmp_path
     ):
-        # Only the browser path reports one, so a native point's field set is
-        # exactly what it was.
+        # The native path reported no `error_kind` at all, so the durable copy
+        # of a failure said nothing about why. It is now classified from `ant`'s
+        # own text (INFRA-484); `store failed` matches no marker, so the kind is
+        # `other` — which is itself the finding when it starts rising.
         out = self._run(
             service,
             registry,
@@ -813,7 +818,27 @@ class TestOneCycle:
             wasm=False,
         )
         assert out.claim.status is ClaimStatus.PARTIAL
-        assert "error_kind" not in out.posted[0][1]
+        assert 'error_kind="other"' in out.posted[0][1]
+        assert out.rows[0].error_kind == "other"
+
+    def test_a_native_quorum_shortfall_is_classified_as_quorum(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        # The shape of a real PROD-WUL-01 row, on the native path.
+        reason = (
+            "partial upload: 3/4 stored, 1 failed: close-group PUT shortfall "
+            "(dial churn): Stored on 2 peers, need 4"
+        )
+        out = self._run(
+            service,
+            registry,
+            monkeypatch,
+            tmp_path,
+            result={"error": reason, "reason": reason, "chunks_stored": 3, "total_chunks": 4},
+            wasm=False,
+        )
+        assert out.rows[0].error_kind == "quorum"
+        assert out.rows[0].reason == reason
 
     def test_the_build_that_ran_reaches_both_tables_and_both_points(
         self, service, registry, monkeypatch, tmp_path

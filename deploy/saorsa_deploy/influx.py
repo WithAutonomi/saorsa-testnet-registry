@@ -73,6 +73,7 @@ PIVOT_FLUX_TEMPLATE = """from(bucket: "{bucket}")
        r._field == "error_kind" or
        r._field == "expected_sha256" or
        r._field == "file_size" or
+       r._field == "reason" or
        r._field == "sha256" or
        r._field == "start_ns" or
        r._field == "status" or
@@ -308,6 +309,15 @@ def _parse_pivoted_csv(body: "str | Iterable[str]") -> list[dict]:
                     # address that was recorded and happened to be empty.
                     "address": record.get("address") or None,
                     "error_kind": record.get("error_kind") or None,
+                    # Why the transfer failed, in `ant`'s own words, clipped to
+                    # 500 characters by the client (INFRA-484). Absent on a
+                    # success and on every point written before the field
+                    # existed. NB the testnet `upload` measurement's
+                    # `error_kind` held the raw error SENTENCE until INFRA-484
+                    # and its existing contents are NOT migrated, so a
+                    # comparison spanning the change reads those rows as
+                    # unclassified prose.
+                    "reason": record.get("reason") or None,
                     # The ant-client commit the transferring binary was built
                     # from. Browser path only, and only from a bundle carrying
                     # build provenance.

@@ -624,5 +624,9 @@ def test_the_migration_drops_the_column_and_leaves_one_head():
 
     forks = {parent: kids for parent, kids in downs.items() if len(kids) > 1}
     assert not forks, f"forked migration head(s): {forks}"
+    # Exactly one head, whichever revision currently holds it. It was pinned by
+    # name here, which made every later migration fail this test for a reason
+    # that has nothing to do with the chain being sound (INFRA-484 was the first
+    # to hit it). The property worth keeping is single-headedness.
     heads = sorted(set(revisions) - set(downs))
-    assert heads == ["d1a6f03b7c58"]
+    assert len(heads) == 1, f"expected one migration head, found {heads}"

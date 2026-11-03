@@ -667,9 +667,40 @@ def _print_op_records_section(
 
     if uploads:
         _print_op_records_for_kind("upload", uploads, name, console)
+        _print_error_kind_counts(uploads, "Uploads", console)
     if downloads:
         _print_op_records_for_kind("download", downloads, name, console)
+        _print_error_kind_counts(downloads, "Downloads", console)
     _print_transport_totals(uploads, downloads, console)
+
+
+def _print_error_kind_counts(rows: list, label: str, console: Console) -> None:
+    """Counts by `error_kind`, most frequent first (INFRA-484).
+
+    The complaint this answers is that a failure was fully diagnosable one row
+    at a time with nothing to aggregate by. A footer on the tables that already
+    exist, and a diagnostic only: turning a kind distribution into a pass or a
+    fail would need calibration nobody has.
+
+    Printed only when something carries a kind, so a clean run -- and every run
+    recorded before the column existed, where each row reads NULL -- renders
+    exactly as it did. NULL means NOT RECORDED, so it is counted as nothing
+    rather than as a tenth kind.
+    """
+    kinds: dict[str, int] = {}
+    for row in rows:
+        kind = getattr(row, "error_kind", None)
+        if kind:
+            kinds[kind] = kinds.get(kind, 0) + 1
+    if not kinds:
+        return
+    console.print()
+    table = Table(title=f"{label} by error_kind")
+    table.add_column("error_kind")
+    table.add_column("rows", justify="right")
+    for kind, count in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0])):
+        table.add_row(kind, f"{count:,}")
+    console.print(table)
 
 
 def _print_transport_totals(uploads: list, downloads: list, console: Console) -> None:
@@ -827,12 +858,20 @@ def _print_op_records_tables(
         # one when its uploader published a hash. Omitted when nothing in the
         # table carries one, so a historical run renders as it did.
         show_verify = any(getattr(r, "verify_status", None) for r in host_rows)
+        # Why each failure failed (INFRA-484). Omitted when nothing in the
+        # table has a kind, which is every run recorded before the columns
+        # existed and every run in which nothing failed -- so those render
+        # exactly as they did. The full `reason` is in `--json-out`; the table
+        # carries the kind, which is what a reader scans a column for.
+        show_kind = any(getattr(r, "error_kind", None) for r in host_rows)
         table.add_column("#", justify="right")
         table.add_column("Region")
         if show_address:
             table.add_column("Address")
         table.add_column("Size (MB)", justify="right")
         table.add_column("Status")
+        if show_kind:
+            table.add_column("Kind")
         if show_verify:
             table.add_column("Verify")
         table.add_column("Duration", justify="right")
@@ -852,6 +891,8 @@ def _print_op_records_tables(
                 size_mb,
                 _OP_STATUS_LABELS.get(row.status, "-"),
             ]
+            if show_kind:
+                cells.append(getattr(row, "error_kind", None) or "-")
             if show_verify:
                 cells.append(_VERIFY_LABELS.get(getattr(row, "verify_status", None), "-"))
             cells += [
@@ -899,6 +940,7 @@ def _print_prod_upload_section(
         else:
             _print_prod_upload_tables(by_host, console)
     _print_prod_upload_transport_totals(rows, console)
+    _print_error_kind_counts(rows, "Prod uploads", console)
 
 
 def _prod_upload_transport(row) -> str:
@@ -1090,6 +1132,7 @@ def _print_prod_download_section(
         _print_prod_download_details(by_host, console)
     else:
         _print_prod_download_tables(by_host, console)
+    _print_error_kind_counts(rows, "Prod downloads", console)
 
 
 def _print_prod_download_tables(

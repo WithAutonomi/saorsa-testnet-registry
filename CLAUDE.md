@@ -463,9 +463,11 @@ override).
 - Client and monitoring VM providers are **independent** (`--provider` across all
   four; `--monitoring-provider` DO/OVH only). Destroy reads both back from state.
 - **Retention is bounded, so archive to Postgres**: `--log-retention-days`
-  (default 7) and `--influx-retention-days` (default 7, first provision only).
+  (default 7) and `--influx-retention-days` (default 7, first provision only —
+  `monitoring set-retention --days 0` makes it infinite on a running stack).
   Run `deployments archive --name <n>` with `DATABASE_URL` at least as often as
-  the Influx window — `deployment_download_records` is the authoritative history.
+  the Influx window — `deployment_download_records` is the authoritative history,
+  and with retention infinite it is still the copy that survives the stack.
 - `destroy` tears down monitoring too; `--keep-monitoring` to preserve it.
 
 Fully declarative (`kind: prod-continuous-downloader`). See `deploy/README.md`
@@ -481,10 +483,14 @@ can be left alone until destroy. Same provisioner and script, toggled by
 
 - Same arguments as the continuous variant **except** `--daily-at` and
   the two retention flags.
-- **`--download-diagnostics` is off by default**: the flag exists only on
-  instrumented `ant` builds, and a stock binary rejects it and fails every
-  download. The path is **per-operation**, because `ant` opens it with
-  `truncate` — one shared path would retain only the last address's records.
+- **`--download-diagnostics` is off by default, but it IS in stock `ant`** from
+  0.3.7 onwards — verified against the pinned 0.3.12 release binary's
+  `file download --help` on 2026-11-03, which lists `--download-diagnostics
+  <PATH>`. It is off because the records are per-chunk-attempt and nothing
+  collects them, NOT because a stock binary would reject it (which was true
+  before 0.3.7 and is what this note used to claim). The path is
+  **per-operation**, because `ant` opens it with `truncate` — one shared path
+  would retain only the last address's records.
 - **Nothing collects the per-op logs, the `.diag.jsonl` or the heaptrack traces;
   they die with the VM.** `up` therefore runs `generate-inventory` automatically
   (inventory schema 7, `client_config.paths`) as a **`best_effort`** final step.
@@ -791,6 +797,154 @@ the common WASM rules above.)
   unchanged.
 
 See `deploy/README.md` §"Upgrading the WASM client in place".
+
+### Redeploying a service script in place (`deployments upgrade-service-script`)
+
+`deployments upgrade-service-script --name <n>` writes the host-side service
+script from this package's resources onto a running
+**`prod-continuous-downloader`** or **`prod-continuous-uploader`** VM and
+restarts the unit. No infrastructure, no bundle, no registry row.
+
+It exists because there was no way to ship a changed `prod_downloader.py` to
+PROD-DL-01 at all: `prod continuous-downloader` has only `deploy` and `destroy`,
+and `deploy` calls `record_deployment_created` unconditionally, so a redeploy
+starts a fresh registry row and breaks the continuous series the deployment
+exists to produce. `upgrade-wasm-client` redeploys the same script but refuses
+`client_kind: native`.
+
+- **Both kinds and both transports**, reusing `SCRIPT_BY_KIND` and
+  `provisioning/service_script.py` so there is no second copy of either. Unlike
+  the WASM bundle, the script is the same file on every role, so a WASM
+  uploader's **native verifier VMs are upgraded too**. The one-shot kinds are
+  rewritten by every `up`; anything else is refused by name.
+- **Hosts are grouped by the unit they actually run** via `prod_client_units.py`,
+  and each group restarts its own — one hard-coded name would restart a service
+  that exists on neither of a continuous uploader's two roles.
+- **Timing is WARNED about, not refused**, naming the deployment's own
+  `daily_at` (PROD-WDL-01 is 02:00, the other three 00:00): a hard refusal would
+  block an operator fixing a deployment that is already broken. A restart
+  mid-cycle on the uploader invokes the claim-resolution handler; on the
+  downloader it abandons the cycle. `--no-restart` leaves the script on disk.
+- One unreachable group does not abandon the others; the run exits non-zero and
+  `service_script_upgrade_failed` names the hosts.
+
+See `deploy/README.md` §"Redeploying a service script in place".
+
+### Why a transfer failed (`error_kind` and `reason`)
+
+Every path that moves bytes records **two** fields for a failure. **`reason`** is
+`ant`'s own sentence, clipped to 500 characters with hex blobs elided and head
+AND tail kept — the same shape and cap the browser path's `describeError` always
+produced, so a native and a browser `reason` are the same kind of thing.
+**`error_kind`** is its classification from one closed vocabulary. The first is
+what an operator reads; the second is what a count can be grouped by, and a
+column holding a classification on some rows and prose on others can be neither.
+
+The durable copy of a failed download used to be `status=failure`,
+`file_size_bytes=0` and a duration — PROD-WDL-01 had eleven such rows and not
+one said why.
+
+- **Nine kinds**, defined once in
+  `db/saorsa_db/models/transfer_error_kind.py` as a `String(32)` column and
+  **not** a Postgres enum type (a kind added to a classifier must be recordable
+  without a migration blocking a run): `payment`, `quorum`, `timeout`,
+  `connection`, `not_found`, `over_cap`, `crash`, `unreachable`, `other`.
+- **`unreachable` is the collapsed NATIVE-DOWNLOAD kind and is named for what is
+  known.** `chunk_get` returns `Ok(None)` on an exhausted peer sweep and its
+  retry predicate swallows timeout, network and protocol failures into that
+  exhaustion, so four classes render as one identical sentence; calling it
+  `not_found` would assert something ant-core does not know. It must **never
+  appear on an upload**, where the prefixes do separate — one that does means
+  the classifier fell through and the client moved the strings, which makes the
+  kind's own distribution a check on the classifier.
+- **The classifier matches ant-core's `#[error(...)]` literals as SUBSTRINGS**
+  (a variant arrives wrapped in context: `Error: Failed to fetch public DataMap:
+  not found: DataMap chunk not found at <hex>`), and **ORDER IS LOAD-BEARING** —
+  the chunk-exhaustion sentence contains "not found" and sits inside
+  `encryption error:`, and `partial upload: N/M …` carries the real reason
+  inside it. One canonical copy in `saorsa_deploy/transfer_errors.py` is
+  mirrored **byte-identically** into `prod_downloader.py`,
+  `prod_continuous_uploader.py`, `prod_uploader.py` and `uploader.sh`'s embedded
+  Python; a test asserts the identity, and another reads every copy of every
+  vocabulary (including the pre-existing `classify.mjs` /
+  `BrowserDownloadErrorKind` pair) and fails on divergence.
+- **`reason` had to be added to `PIVOT_FLUX_TEMPLATE`'s field allowlist**, which
+  is why a new field would otherwise reach no consumer at all.
+- **Postgres**: both columns on `deployment_upload_records` /
+  `deployment_download_records`; `error_kind` beside the existing `reason` on
+  `deployment_prod_upload_results` and `deployment_prod_download_results`.
+  `deployment_prod_upload_verifications` is **deliberately excluded** — its
+  `reason` is composed by us and its four-value status already is the kind.
+- **NULL means NOT RECORDED, never "no error", and nothing is backfilled.** The
+  upserts **COALESCE** both fields, the rule `client_kind` and `client_build`
+  carry: a later pass over a window the Influx points expired out of resolves
+  None for every one of them, and writing that would erase the only durable
+  record of why a transfer failed.
+- **The testnet `upload` measurement's `error_kind` used to hold free text** —
+  `uploader.sh` put `ant --json`'s whole error sentence in it. The text moved to
+  `reason` and the kind is classified. **The existing contents are not
+  migrated**, so a comparison spanning the change reads earlier rows as
+  unclassified prose.
+- **A native upload that never paid is `failed`, not `partial_upload`.** The
+  daily write test computed `startup_failure` and then set `PARTIAL_UPLOAD`
+  unconditionally, which is why PROD-UL-01's 2026-10-23 row reads
+  `partial_upload` with reason `ant exit 1` while its pool claim was correctly
+  RELEASED beside it. ant-core converts any error into `PartialUpload` the
+  moment a payment goes out, so an error with no result document means zero
+  spend and zero chunks. A **signal** exit is still held as partial (the native
+  path has no payment marker). **That one row is deliberately not corrected.**
+- **Counts by kind** in `print-recorded-results` (both paths) and
+  `print-downloads --summary`, plus a conditional `Kind` column on the per-op
+  tables — all only when something carries a kind, so a clean run and every
+  pre-column run render as before. **No new command, no new table, no new
+  gate**: a kind distribution is a diagnostic, and gating it would need
+  calibration nobody has.
+- **Fixtures state their provenance** (`deploy/tests/fixtures/transfer-errors/`):
+  a real `ant file download <random hex>` capture against production, real
+  registry rows, and the strings that can only be **derived from source** —
+  labelled as such, with the ant-client ref pinned so a client upgrade that
+  moves them fails loudly instead of reclassifying every failure as `other`.
+
+See `deploy/README.md` §"Why a transfer failed".
+
+### A short answer says it is short, and retention can be changed
+
+InfluxDB does not refuse a window wider than its retention — it returns what is
+inside it — so `print-downloads --window -30d` against a 7-day bucket looks like
+a complete 30 days. That is how nine days of PROD-WDL-01's download history read
+as present when the bucket no longer had it.
+
+- **`print-downloads` / `print-uploads` emit `oldest_point`, `window_start` and
+  `window_starts_before_data`** in their `--json-out` document, always present
+  (null when unresolvable, so an old tool and an unresolvable window are
+  distinguishable), plus a console warning naming the oldest timestamp and
+  pointing at `print-recorded-results`. **The JSON half matters most** — a
+  warning on a console nobody reads is how this went unnoticed for nine days.
+  The boolean is literally that comparison, so a deployment YOUNGER than its
+  window sets it too; that is the reader's to interpret, not a false positive to
+  suppress.
+- **`print-uploads` now passes `--window` to the prod-upload query**, where it
+  queried from the epoch (hence `"window": null` in a prod-upload JSON). With
+  retention infinite, epoch-to-now grows without bound.
+- **`monitoring set-retention --name <n> --days <n>` (0 = infinite)** is the only
+  way to change retention on a running stack: `--influx-retention-days` applies
+  at first provision only. It **reads each bucket back and prints what it now
+  is**, because the maintenance run needs a step whose success can be checked,
+  and it covers **every bucket the stack creates** (`testnet-metrics`,
+  `client-metrics`, `wasm-client-metrics`) because they expire independently. An
+  absent bucket is reported, not an error. Retention is nearly free —
+  PROD-DL-01's monitoring VM holds 44 MB for 7 days on a 49 GB volume.
+- **The per-operation archive pass no longer depends on the aggregate.**
+  `--window` narrows only the aggregate rollup; the per-op query is full-range
+  and `record-results` used to return before reaching it when the windowed
+  aggregate found nothing, so a deployment whose service was down across the
+  window archived nothing at all — including the operations still in the bucket.
+  **No scheduled archiver, no systemd timer and no VM-side `DATABASE_URL`**: all
+  rejected, because a database credential on a public internet-facing box is
+  real added surface for a problem infinite retention removes.
+
+See `deploy/README.md` §"A short answer says it is short", §"Changing a running
+stack's retention" and §"Archiving results for long-term history".
 
 ### The production upload file pool (`prod pool`)
 
@@ -2146,10 +2300,12 @@ key, no `grafana_ip`) → co-locate Grafana on the InfluxDB VM. Prod client flow
 likewise default Grafana off and pin the InfluxDB VM to `s-2vcpu-4gb` (a single
 client VM forwards little).
 
-Commands: `monitoring infra` / `provision` / `info` / `destroy`, plus
-`deployments provision-telegraf` (see "Telegraf provisioning" below).
-`provision` takes `--retention-days N` (default `0` = infinite, the dev default;
-set e.g. 14 for prod), applied to both buckets at first provision.
+Commands: `monitoring infra` / `provision` / `info` / `set-retention` /
+`destroy`, plus `deployments provision-telegraf` (see "Telegraf provisioning"
+below). `provision` takes `--retention-days N` (default `0` = infinite, the dev
+default; set e.g. 14 for prod), applied to every bucket at **first provision
+only** — `monitoring set-retention --name <n> --days <n>` is the only way to
+change it on a running stack.
 `monitoring info --telegraf-config` emits portable Telegraf TOML. State lives
 under its own S3 key prefix `saorsa-deploy/monitoring/{name}.json`, independent
 of deployment state. Provider selection is in `cmd/obs_provider.py`; OVH is

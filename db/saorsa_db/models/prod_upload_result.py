@@ -98,6 +98,15 @@ class DeploymentProdUploadResult(Base):
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     upload_secs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The classification of `reason` from one closed vocabulary
+    # (`saorsa_db.models.transfer_error_kind.TransferErrorKind`), so a failure
+    # count can be grouped by cause rather than only read one row at a time
+    # (INFRA-484). The write path was already well discriminated -- `ant` emits
+    # its own `reason` for a partial upload and the prefixes separate cleanly --
+    # so this is the aggregation key that text could not be.
+    #
+    # NULL means NOT RECORDED, never "no error", and nothing is backfilled.
+    error_kind: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # On-chain cost of the upload, surfaced by `ant --json file upload`. Stored
     # as NUMERIC (uint256-shaped) so large values keep full precision; both
     # nullable since older `ant` binaries / already-recorded rows omit them.
@@ -145,6 +154,7 @@ class DeploymentProdUploadResult(Base):
             "duration_ms": self.duration_ms,
             "upload_secs": self.upload_secs,
             "reason": self.reason,
+            "error_kind": self.error_kind,
             "storage_cost_atto": (
                 str(self.storage_cost_atto)
                 if self.storage_cost_atto is not None

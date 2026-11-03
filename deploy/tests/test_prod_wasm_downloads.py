@@ -1114,7 +1114,50 @@ class TestTheNativeWalkStillWorks:
             wasm=False,
         )
         assert "status=1i" in posted[0]
+        # A native failure now carries both fields (INFRA-484): it used to carry
+        # neither, which is why PROD-WDL-01's eleven failed downloads say
+        # nothing about why. `boom` matches no marker, so the kind is `other`.
+        assert 'error_kind="other"' in posted[0]
+        assert 'reason="boom"' in posted[0]
+
+    def test_a_native_failure_is_classified_from_ant_s_own_error_line(
+        self, service, tmp_path, monkeypatch
+    ):
+        """The real capture's shape, through the service's own recording path."""
+        fake = (
+            "#!/bin/sh\n"
+            "echo 'Connected to autonomi network (found 5 peers)' 1>&2\n"
+            "echo 'Error: Failed to fetch public DataMap: not found: "
+            "DataMap chunk not found at abcd' 1>&2\n"
+            "exit 1\n"
+        )
+        posted = TestTheServiceWalk()._run(
+            service,
+            tmp_path,
+            monkeypatch,
+            addresses="a\n",
+            fake_cli=fake,
+            wasm=False,
+        )
+        assert 'error_kind="not_found"' in posted[0]
+        assert 'reason="Failed to fetch public DataMap: not found:' in posted[0]
+        # The `-v` trace line before it is not the reason.
+        assert "Connected to autonomi network" not in posted[0]
+
+    def test_a_native_success_carries_neither_field(self, service, tmp_path, monkeypatch):
+        """So a successful point is byte-identical to what it always was."""
+        fake = "#!/bin/sh\necho 'Time: 1.25'\n"
+        posted = TestTheServiceWalk()._run(
+            service,
+            tmp_path,
+            monkeypatch,
+            addresses="a\n",
+            fake_cli=fake,
+            wasm=False,
+        )
+        assert "status=0i" in posted[0]
         assert "error_kind" not in posted[0]
+        assert "reason" not in posted[0]
 
     def test_a_native_run_ignores_a_declared_size(self, service, tmp_path, monkeypatch):
         # MAX_DOWNLOAD_BYTES is ant-core's BROWSER cap; the native client has no

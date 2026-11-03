@@ -300,6 +300,8 @@ class DeploymentRepository(ABC):
         network_profile: str | None = None,
         client_kind: str | None = None,
         sha256: str | None = None,
+        error_kind: str | None = None,
+        reason: str | None = None,
     ) -> DeploymentUploadRecord: ...
 
     @abstractmethod
@@ -322,6 +324,8 @@ class DeploymentRepository(ABC):
         verify_status: str | None = None,
         expected_sha256: str | None = None,
         actual_sha256: str | None = None,
+        error_kind: str | None = None,
+        reason: str | None = None,
     ) -> DeploymentDownloadRecord: ...
 
     @abstractmethod
@@ -604,6 +608,7 @@ class DeploymentRepository(ABC):
         sha256: str | None = None,
         client_kind: str | None = None,
         client_build: str | None = None,
+        error_kind: str | None = None,
     ) -> DeploymentProdUploadResult: ...
 
     @abstractmethod
@@ -666,6 +671,7 @@ class DeploymentRepository(ABC):
         finished_at: datetime,
         reason: str | None = None,
         network_profile: str | None = None,
+        error_kind: str | None = None,
     ) -> DeploymentProdDownloadResult: ...
 
     @abstractmethod
@@ -1058,7 +1064,17 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
     #: `upgrade-wasm-client`; the verification fields come from a client that
     #: may predate content verification altogether. A NULL never overwrites a
     #: known value; a known one still updates.
-    _UPLOAD_RECORD_COALESCE_COLUMNS = ("client_kind", "sha256")
+    #: `error_kind` and `reason` (INFRA-484) are COALESCEd for the same reason
+    #: as the rest: they come off the Influx point, the bucket has a retention
+    #: window, and a later pass over a window the points have expired out of
+    #: resolves None for every one of them. Overwriting would erase the only
+    #: durable record of why a transfer failed with a null.
+    _UPLOAD_RECORD_COALESCE_COLUMNS = (
+        "client_kind",
+        "sha256",
+        "error_kind",
+        "reason",
+    )
     _DOWNLOAD_RECORD_COALESCE_COLUMNS = (
         "client_kind",
         "address",
@@ -1066,6 +1082,8 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         "verify_status",
         "expected_sha256",
         "actual_sha256",
+        "error_kind",
+        "reason",
     )
 
     def _bulk_upsert_op_records(
@@ -1156,6 +1174,8 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         network_profile: str | None = None,
         client_kind: str | None = None,
         sha256: str | None = None,
+        error_kind: str | None = None,
+        reason: str | None = None,
     ) -> DeploymentUploadRecord:
         self.upsert_upload_records(
             [
@@ -1173,6 +1193,8 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                     "network_profile": network_profile,
                     "client_kind": client_kind,
                     "sha256": sha256,
+                    "error_kind": error_kind,
+                    "reason": reason,
                 }
             ]
         )
@@ -1199,6 +1221,8 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         verify_status: str | None = None,
         expected_sha256: str | None = None,
         actual_sha256: str | None = None,
+        error_kind: str | None = None,
+        reason: str | None = None,
     ) -> DeploymentDownloadRecord:
         self.upsert_download_records(
             [
@@ -1220,6 +1244,8 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                     "verify_status": verify_status,
                     "expected_sha256": expected_sha256,
                     "actual_sha256": actual_sha256,
+                    "error_kind": error_kind,
+                    "reason": reason,
                 }
             ]
         )
@@ -2317,6 +2343,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         sha256: str | None = None,
         client_kind: str | None = None,
         client_build: str | None = None,
+        error_kind: str | None = None,
     ) -> DeploymentProdUploadResult:
         existing = (
             self.session.query(DeploymentProdUploadResult)
@@ -2351,6 +2378,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 sha256=sha256,
                 client_kind=client_kind,
                 client_build=client_build,
+                error_kind=error_kind,
             )
             self.session.add(existing)
         else:
@@ -2393,6 +2421,12 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             # one must not erase it.
             if client_build is not None:
                 existing.client_build = client_build
+            # Same rule again (INFRA-484): a pass whose Influx points have aged
+            # out of the retention window carries no kind, and writing that
+            # null would erase the classification of a failure nothing else
+            # records.
+            if error_kind is not None:
+                existing.error_kind = error_kind
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
@@ -2604,6 +2638,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         finished_at: datetime,
         reason: str | None = None,
         network_profile: str | None = None,
+        error_kind: str | None = None,
     ) -> DeploymentProdDownloadResult:
         existing = (
             self.session.query(DeploymentProdDownloadResult)
@@ -2629,6 +2664,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 finished_at=finished_at,
                 reason=reason,
                 network_profile=network_profile,
+                error_kind=error_kind,
             )
             self.session.add(existing)
         else:
@@ -2642,6 +2678,10 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.started_at = started_at
             existing.finished_at = finished_at
             existing.reason = reason
+            # Assigned, not COALESCEd: this row's only writer is the command
+            # that performed the download and it always has both fields, so
+            # there is no pass that could carry a null over a known value.
+            existing.error_kind = error_kind
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing

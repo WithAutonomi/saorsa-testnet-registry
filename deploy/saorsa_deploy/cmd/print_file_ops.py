@@ -43,6 +43,92 @@ from saorsa_deploy.state import load_client_state, load_monitoring_state
 
 _TESTNET_KIND = "testnet"
 
+#: Flux relative-duration units this command's `--window` can carry, in
+#: seconds. `mo` and `y` are deliberately absent: they are CALENDAR units in
+#: Flux and have no fixed length, so resolving them here would be a guess.
+_WINDOW_UNIT_SECONDS = {
+    "s": 1,
+    "m": 60,
+    "h": 3600,
+    "d": 86400,
+    "w": 604800,
+}
+
+
+def _resolve_window_start(window, now=None) -> datetime | None:
+    """The absolute instant a Flux ``start`` argument names, or None.
+
+    Only the forms `--window` can take: a negative relative duration (`-30d`),
+    `0` for the epoch, or an RFC3339 timestamp. Anything else yields None and
+    the truncation signal below is simply not emitted -- claiming a run's
+    history is short when it is not would be worse than saying nothing.
+    """
+    if window is None:
+        return None
+    text = str(window).strip()
+    if not text:
+        return None
+    if text in ("0", "-0"):
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if text.startswith("-"):
+        body = text[1:]
+        for unit, seconds in _WINDOW_UNIT_SECONDS.items():
+            if body.endswith(unit) and body[: -len(unit)].replace(".", "", 1).isdigit():
+                now = now or datetime.now(timezone.utc)
+                return now - timedelta(seconds=float(body[: -len(unit)]) * seconds)
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _window_coverage(points: list[dict], window) -> dict:
+    """How far back the data actually goes, against how far back it was asked for.
+
+    A short answer has to SAY it is short. InfluxDB does not refuse a window
+    wider than its retention -- it returns whatever is inside it -- so a `-30d`
+    query against a 7-day bucket comes back looking like a complete 30 days and
+    nothing in the output says otherwise. That is how nine days of PROD-WDL-01's
+    download history read as present when it was not (INFRA-484).
+
+    ``window_starts_before_data`` is literally that comparison and nothing
+    cleverer, so a deployment YOUNGER than its window sets it too. That is not a
+    false positive to suppress: the requested window does reach further back
+    than the data, and whether the reason is retention or a recent deploy is the
+    reader's to know.
+    """
+    times = [p["_time"] for p in points if p.get("_time") is not None]
+    oldest = min(times) if times else None
+    start = _resolve_window_start(window)
+    return {
+        "oldest_point": oldest.isoformat() if oldest is not None else None,
+        "window_start": start.isoformat() if start is not None else None,
+        "window_starts_before_data": (
+            None if (oldest is None or start is None) else start < oldest
+        ),
+    }
+
+
+def _warn_if_truncated(coverage: dict, name: str, console) -> None:
+    """Say on the console what the JSON already says.
+
+    The JSON half matters more -- a warning on a console nobody reads is how
+    this went unnoticed for nine days -- but the operator running the command by
+    hand is also the one who can act on it.
+    """
+    if not coverage.get("window_starts_before_data"):
+        return
+    console.print(
+        f"[yellow]Warning:[/yellow] the oldest point returned is "
+        f"{coverage['oldest_point']}, which is later than the start of the "
+        f"requested window ({coverage['window_start']}). InfluxDB has a "
+        f"retention window and does not say when a query outruns it, so this "
+        f"answer may be short. The durable history is in Postgres: "
+        f"`saorsa-deploy deployments print-recorded-results --name {name}`."
+    )
+
 
 def cmd_print_uploads(args):
     _dispatch(args, op_type="upload")
@@ -142,6 +228,7 @@ def _emit_ops_json(
     source: str,
     points: list[dict],
     window=None,
+    coverage: dict | None = None,
 ) -> None:
     """Write the per-operation records as JSON when `--json-out` was given.
 
@@ -168,6 +255,11 @@ def _emit_ops_json(
             "window": window,
             "queried_at": datetime.now(timezone.utc).isoformat(),
             "count": len(points),
+            # How far back the answer actually reaches (INFRA-484). Emitted
+            # even when it cannot be worked out, with nulls, so a consumer can
+            # tell "the window was not resolvable" from "the key is missing
+            # because this tool predates it".
+            **(coverage or _window_coverage(points, window)),
             "ops": [_json_point(p) for p in points],
         },
         json_out,
@@ -279,6 +371,7 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         sys.exit(1)
 
     filtered = [p for p in points if p.get("_measurement") == op_type]
+    coverage = _window_coverage(filtered, args.window)
     _emit_ops_json(
         args,
         console,
@@ -288,7 +381,9 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         source="influx",
         points=filtered,
         window=args.window,
+        coverage=coverage,
     )
+    _warn_if_truncated(coverage, args.name, console)
     if not filtered:
         console.print(
             f"[yellow]No {op_type} operations recorded yet for '{args.name}' "
@@ -592,6 +687,15 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
     # browser-path transfer too large for the box looks like. Counted separately
     # from a plain failure because the fix is a bigger VM, not the network.
     crashes = sum(1 for o in ops if o.get("error_kind") == "crash")
+    # The distribution of WHY, which is what makes a failure count actionable
+    # (INFRA-484). Every row with a kind, skips included: a skip carries
+    # `over_cap` and leaving it out would make the table disagree with the
+    # counts beside it. A diagnostic and nothing more -- no gate reads it.
+    error_kinds: dict[str, int] = {}
+    for o in ops:
+        kind = o.get("error_kind")
+        if kind:
+            error_kinds[kind] = error_kinds.get(kind, 0) + 1
 
     success_durations = [
         o["total_ms"] for o in ops if o.get("status") == 0 and o.get("total_ms") is not None
@@ -606,6 +710,7 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
         "failures": failures,
         "skipped": skipped,
         "crashes": crashes,
+        "error_kinds": error_kinds,
         "overall_avg_ms": overall_avg_ms,
     }
 
@@ -647,6 +752,24 @@ def _print_summary(op_type: str, by_host: dict, console: Console) -> None:
             table.add_row("Crashes (killed by signal)", str(summary["crashes"]))
         table.add_row("Avg duration", _fmt_duration(summary["overall_avg_ms"]))
         console.print(table)
+        _print_error_kinds(summary["error_kinds"], console)
+
+
+def _print_error_kinds(kinds: dict, console: Console) -> None:
+    """Counts by `error_kind`, most frequent first.
+
+    Printed only when something has a kind, so a clean run and every run
+    recorded before the field existed render exactly as they did. The per-record
+    `reason` behind each of these is in the `--details` view.
+    """
+    if not kinds:
+        return
+    table = Table(title="By error_kind")
+    table.add_column("error_kind")
+    table.add_column("ops", justify="right")
+    for kind, count in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0])):
+        table.add_row(kind, f"{count:,}")
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------
@@ -864,17 +987,27 @@ def _run_prod_uploads(args, console: Console) -> None:
         return
     influx_url, influx_token, influx_org, influx_bucket = creds
 
-    console.print(f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]")
+    console.print(
+        f"[bold]Querying {influx_url} (bucket={influx_bucket}, window={args.window})...[/bold]"
+    )
     # Both buckets: a browser-path uploader writes the same `prod_upload`
     # measurement into its own, so a single-bucket read would make a WASM tier
     # that failed every upload look like one that was never configured.
+    #
+    # `--window` is PASSED, where this used to call with no `start` and so
+    # query from the epoch -- which is why a prod-upload JSON recorded
+    # `"window": null` (INFRA-484). With a deployment's retention set to
+    # infinite, epoch-to-now grows without bound, so this stopped being
+    # tidiness.
     points = fetch_all_prod_upload_points(
         url=influx_url,
         token=influx_token,
         org=influx_org,
         bucket=influx_bucket,
         wasm_bucket=INFLUXDB_WASM_BUCKET,
+        start=args.window,
     )
+    coverage = _window_coverage(points, args.window)
     _emit_ops_json(
         args,
         console,
@@ -883,7 +1016,10 @@ def _run_prod_uploads(args, console: Console) -> None:
         op_type="upload",
         source="influx:prod_upload",
         points=points,
+        window=args.window,
+        coverage=coverage,
     )
+    _warn_if_truncated(coverage, args.name, console)
     if not points:
         console.print(f"[yellow]No prod_upload records yet for '{args.name}'.[/yellow]")
         return

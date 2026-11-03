@@ -353,12 +353,29 @@ def _record_file_ops(
 
     aggregates = aggregate_file_results(points)
     if not aggregates:
+        # The aggregate is the only thing `--window` narrows. The per-operation
+        # pass below queries the full range on its own and does not need the
+        # window at all, so returning here archived NOTHING for a deployment
+        # whose service was down across the whole window -- including the
+        # operations still sitting in the bucket, which is the copy that
+        # expires (INFRA-484). The aggregate's absence is reported exactly as
+        # it was; what changes is that the records are still written.
         console.print(
             f"[yellow]No upload/download points found for deployment "
             f"'{args.name}' in window {args.window}. "
-            f"Nothing to record.[/yellow]"
+            f"No aggregate rows to record.[/yellow]"
         )
-        return None
+        op_records = _record_file_op_records(
+            repo,
+            deployment,
+            args,
+            console,
+            influx_url,
+            influx_token,
+            influx_org,
+            influx_bucket,
+        )
+        return file_ops_result_blocks([], op_records=op_records) if op_records else None
 
     for agg in aggregates:
         repo.upsert_file_result(
@@ -896,6 +913,13 @@ def _record_file_op_records(
             duration_ms=duration_ms,
             network_profile=network_profile_for_host(p["host"]),
             client_kind=client_kind_for_host(p["host"]),
+            # Why the operation failed, and its classification (INFRA-484).
+            # Both come straight off the Influx point, and both are COALESCEd
+            # by the upsert: the bucket has a retention window, so a later
+            # pass resolves None for a point that has aged out and must not
+            # write that over what an earlier pass recorded.
+            error_kind=p.get("error_kind"),
+            reason=p.get("reason"),
         )
         if measurement == "upload":
             # The hash of the bytes this operation uploaded, which is what a
@@ -942,6 +966,7 @@ def _record_file_op_records(
                 "address": p.get("address"),
                 "client_build": p.get("client_build"),
                 "error_kind": p.get("error_kind"),
+                "reason": p.get("reason"),
             }
         )
 
@@ -1075,6 +1100,7 @@ def _record_prod_upload(
             storage_cost_atto=_cost_to_decimal(p.get("storage_cost_atto")),
             gas_cost_wei=_cost_to_decimal(p.get("gas_cost_wei")),
             client_kind=p["client_kind"],
+            error_kind=p.get("error_kind") or None,
         )
         recorded += 1
 
