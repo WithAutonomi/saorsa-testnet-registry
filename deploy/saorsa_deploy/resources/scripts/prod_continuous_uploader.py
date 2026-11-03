@@ -1461,14 +1461,27 @@ def main() -> int:
                 # that used to be recorded instead -- the same empty signal a
                 # failed download's blank row carried, from a command whose
                 # stderr this process was already holding (INFRA-484).
+                #
+                # EVERY source goes through `clip_reason`, not just the stderr
+                # fallback. `ant`'s own `reason` is ant-core's raw text: a
+                # payment failure carries viem's multi-line message with
+                # hundreds of hex characters of calldata in it, and storing it
+                # verbatim both breaks the 500-character single-line contract
+                # this field shares with the browser path AND emits literal
+                # newlines into the Influx payload, where the field escape
+                # handles only backslashes and quotes -- so one failure would
+                # split its own point into three unparseable lines and take the
+                # whole write batch with it.
                 if status is ProdUploadStatus.SUCCESS:
                     reason = None
                 else:
-                    reason = (
-                        killed_reason
-                        or parsed.get("reason")
-                        or failure_reason(stderr)
-                        or f"ant exit {rc}"
+                    reason = clip_reason(
+                        str(
+                            killed_reason
+                            or parsed.get("reason")
+                            or failure_reason(stderr)
+                            or f"ant exit {rc}"
+                        )
                     )
                 # The browser path classifies inside the bundle and reports its
                 # own kind, so only the native path is classified here -- and

@@ -989,7 +989,13 @@ def main() -> int:
         total_chunks = int((parsed or {}).get("total_chunks") or 0)
         upload_secs = float((parsed or {}).get("elapsed_secs") or 0.0)
         address = str((parsed or {}).get("address") or "")
-        reason = str((parsed or {}).get("reason") or "")
+        # Clipped whichever source it came from (INFRA-484): `ant`'s own
+        # `reason` is ant-core's raw text, which on a payment failure is
+        # multi-line and carries hundreds of hex characters of calldata. Stored
+        # verbatim it breaks both the 500-character single-line contract this
+        # field shares with the browser path and the Influx line protocol,
+        # whose field escape handles only backslashes and quotes.
+        reason = clip_reason(str((parsed or {}).get("reason") or ""))
         # `ant` emits a result document for exactly one error variant
         # (`PartialUpload`); every other failure prints one `Error: ...` line to
         # stderr and nothing to stdout. So a failure with no document gets its

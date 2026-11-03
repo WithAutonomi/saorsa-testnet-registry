@@ -5,16 +5,22 @@ There was no way to ship a changed ``prod_downloader.py`` to PROD-DL-01.
 ``deploy`` calls ``record_deployment_created`` unconditionally -- so a redeploy
 starts a fresh registry row and breaks the continuous series the deployment
 exists to produce. ``deployments upgrade-wasm-client`` does redeploy the same
-script, and already maps both continuous kinds, but it refuses
-``client_kind: native`` because its real job is to replace a WASM bundle.
+script, but refuses ``client_kind: native``, because its real job is to replace
+a WASM bundle.
 
-So this command does the one half of that which every transport needs: write
-the script from this package's resources and restart the unit the kind runs. No
-Terraform, no registry row, no bundle (INFRA-484).
+So this command does the one half of that which every transport needs: write the
+script from this package's resources and restart the unit. No Terraform, no
+registry row, no bundle (INFRA-484).
 
 Scoped to the two *continuous* kinds, exactly as ``upgrade-wasm-client`` is: the
 one-shot kinds are rewritten by every ``up``, and a testnet's client tier dies
 with its testnet.
+
+**The script is not the only thing a kind's VM needs to run it.** A
+``prod-continuous-uploader`` executes under ``/opt/ant-registry-client`` and
+writes Postgres directly, so a script that calls a new repository argument needs
+that venv's ``saorsa-db`` wheel and the registry's own schema to have moved
+first. Both are checked or delivered here -- see ``KINDS_WITH_REGISTRY_CLIENT``.
 """
 
 from __future__ import annotations
@@ -27,9 +33,14 @@ from pyinfra.api.operation import add_op
 from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
+from sqlalchemy import inspect as sa_inspect
 
 from saorsa_deploy.cmd.upgrade_wasm_client import SCRIPT_BY_KIND
 from saorsa_deploy.prod_client_units import group_clients_by_unit
+from saorsa_deploy.provisioning.saorsa_db_install import (
+    SaorsaDbInstaller,
+    build_saorsa_db_wheel,
+)
 from saorsa_deploy.provisioning.service_script import (
     build_service_script_commands,
 )
@@ -40,6 +51,32 @@ from saorsa_deploy.state import load_client_state
 #: The kinds this command covers, and the set is also its scope: a kind absent
 #: from `SCRIPT_BY_KIND` has no script to push and is refused by name.
 SUPPORTED_KINDS = tuple(sorted(SCRIPT_BY_KIND))
+
+#: Kinds whose service runs under the `/opt/ant-registry-client` venv and talks
+#: to Postgres itself, rather than under `/usr/bin/python3` with no imports of
+#: ours. For these, replacing the script alone is not an upgrade:
+#:
+#: * the venv's `saorsa-db` wheel was installed at provision time, so a script
+#:   calling a repository argument that wheel does not accept raises
+#:   `TypeError` on its FIRST operation -- before recording the result and
+#:   before resolving the pool claim it is holding;
+#: * the columns that argument writes have to exist in the registry already,
+#:   or the same operation dies in the INSERT instead.
+#:
+#: So the wheel is rebuilt from this working tree and installed ahead of the
+#: script, and the schema is checked before any host is touched. The download
+#: kinds need neither and get neither.
+KINDS_WITH_REGISTRY_CLIENT = frozenset({"prod-continuous-uploader"})
+
+#: Columns the upgraded uploader script writes that an older registry does not
+#: have, as ``(table, column)``. Checked, never created: a migration is the
+#: operator's step, and `alembic upgrade head` is a different command with a
+#: different blast radius.
+REQUIRED_REGISTRY_COLUMNS = (
+    ("deployment_prod_upload_results", "error_kind"),
+    ("deployment_upload_records", "error_kind"),
+    ("deployment_upload_records", "reason"),
+)
 
 
 def _deploy_args(deployment) -> dict:
@@ -60,6 +97,54 @@ def _daily_at(deployment) -> str | None:
     """
     value = _deploy_args(deployment).get("daily_at")
     return str(value) if value else None
+
+
+def missing_registry_columns(repo) -> list[str]:
+    """Which of ``REQUIRED_REGISTRY_COLUMNS`` the connected registry lacks.
+
+    Separate and pure-ish so it is testable against a SQLite schema. A table
+    that is missing entirely is reported the same way a column is -- the
+    distinction does not change what the operator has to run.
+    """
+    inspector = sa_inspect(repo.session.get_bind())
+    tables = set(inspector.get_table_names())
+    missing: list[str] = []
+    for table, column in REQUIRED_REGISTRY_COLUMNS:
+        if table not in tables:
+            missing.append(f"{table} (table absent)")
+            continue
+        if column not in {c["name"] for c in inspector.get_columns(table)}:
+            missing.append(f"{table}.{column}")
+    return missing
+
+
+def _target_groups(kind: str, clients: list[dict]):
+    """``(unit, ips)`` for the hosts that run the script this kind ships.
+
+    `prod-continuous-uploader` is the multi-role kind and its two roles run
+    DIFFERENT scripts from DIFFERENT directories: the uploader VM runs
+    `prod_continuous_uploader.py` under `/root/ant-prod-continuous-uploader`,
+    each verifier runs `prod_upload_verifier.py` under
+    `/root/ant-prod-upload-verifier`. Grouping by unit and then writing one
+    script per kind sent the uploader's script to a verifier and restarted
+    `ant-prod-upload-verifier`: the target directory does not exist there, so
+    the write failed and the run reported a partly-upgraded deployment -- and
+    had the directory existed, the verifier's own script would have been left
+    untouched while the command claimed to have replaced it.
+
+    The unit carries its own script, so the match is derived rather than
+    hand-written: a unit whose script is not the one being deployed is not a
+    host for this upgrade. INFRA-485 states the same rule from the other side --
+    a verifier host appearing in this command's output is a bug in it.
+
+    Returns ``(targets, skipped)``, because a host left alone on purpose still
+    has to be reported as left alone.
+    """
+    wanted = SCRIPT_BY_KIND[kind]
+    targets, skipped = [], []
+    for unit, ips in group_clients_by_unit(kind, clients):
+        (targets if unit.script == wanted else skipped).append((unit, ips))
+    return targets, skipped
 
 
 def cmd_upgrade_service_script(args) -> None:
@@ -99,18 +184,45 @@ def cmd_upgrade_service_script(args) -> None:
         console.print(f"[bold red]Error:[/bold red] {args.name}: {exc}")
         sys.exit(1)
 
-    # Every VM of every role, grouped by the unit it actually runs, and each
-    # group restarts its own. `prod-continuous-uploader` is the multi-role kind:
-    # its uploader VM runs `ant-prod-continuous-uploader` and its verifiers run
-    # `ant-prod-upload-verifier`. One hard-coded unit name would restart a
-    # service that exists on neither.
-    groups = group_clients_by_unit(kind, clients)
+    groups, skipped = _target_groups(kind, clients)
     if not groups:
         console.print(
-            f"[bold red]Error:[/bold red] '{args.name}' has no client VM with "
-            "an IP in its S3 client state."
+            f"[bold red]Error:[/bold red] '{args.name}' has no client VM "
+            f"running {SCRIPT_BY_KIND[kind][1]} with an IP in its S3 client "
+            "state."
         )
         sys.exit(1)
+
+    # Everything that can refuse, refuses before a single host is touched: a
+    # half-upgraded forever-running deployment is worse than one still running
+    # the old script, and both of these are the operator's step, not ours.
+    needs_registry_client = kind in KINDS_WITH_REGISTRY_CLIENT
+    wheel = None
+    if needs_registry_client:
+        missing = missing_registry_columns(repo)
+        if missing:
+            console.print(
+                "[bold red]Error:[/bold red] the registry this is pointed at "
+                f"is missing {', '.join(missing)}. A '{kind}' VM writes "
+                "Postgres itself, so the new script's first upload would fail "
+                "in the INSERT -- while holding a pool claim. Run "
+                "`cd db && uv run alembic upgrade head` against this registry "
+                "first."
+            )
+            sys.exit(1)
+        try:
+            wheel = build_saorsa_db_wheel()
+        except (FileNotFoundError, ValueError) as exc:
+            console.print(
+                f"[bold red]Error:[/bold red] {exc}\n"
+                f"A '{kind}' VM runs its service under "
+                "/opt/ant-registry-client, whose `saorsa-db` wheel has to be "
+                "replaced alongside the script, and that wheel is built from "
+                "this workspace. Run this command from the "
+                "saorsa-testnet-registry checkout."
+            )
+            sys.exit(1)
+        console.print(f"  Built the VM's saorsa-db wheel: {wheel.name}")
 
     scripts_dir, script_name = SCRIPT_BY_KIND[kind]
     total_hosts = sum(len(ips) for _, ips in groups)
@@ -118,6 +230,14 @@ def cmd_upgrade_service_script(args) -> None:
         f"[bold]{args.name}[/bold] ({kind}): installing {script_name} on "
         f"{total_hosts} host(s) across {len(groups)} unit(s)"
     )
+    for unit, ips in skipped:
+        # Said out loud: these hosts run a different script, so leaving them
+        # alone is the correct outcome and not a host that went missing.
+        console.print(
+            f"  [dim]leaving {len(ips)} {unit.label} host(s) alone — they run "
+            f"{unit.script[1] if unit.script else 'another script'} under "
+            f"{unit.service}, which this upgrade does not replace[/dim]"
+        )
 
     if args.restart:
         anchor = _daily_at(deployment)
@@ -146,6 +266,11 @@ def cmd_upgrade_service_script(args) -> None:
             commands.append(f"systemctl restart {unit.service}")
         try:
             connect_all(state)
+            if wheel is not None:
+                # BEFORE the script, in the same pass: the script is what calls
+                # the new repository argument, so a restart that beat the wheel
+                # would raise on the service's first operation.
+                SaorsaDbInstaller(wheel_path=wheel, console=console).add_ops(state)
             add_op(
                 state,
                 server.shell,
@@ -182,6 +307,7 @@ def cmd_upgrade_service_script(args) -> None:
                 "kind": kind,
                 "failed_hosts": sorted(set(failures)),
                 "restarted": bool(args.restart),
+                "saorsa_db_wheel": wheel.name if wheel else None,
             },
         )
         sys.exit(1)
@@ -200,6 +326,9 @@ def cmd_upgrade_service_script(args) -> None:
             "hosts": total_hosts,
             "units": [unit.service for unit, _ in groups],
             "restarted": bool(args.restart),
+            # Which VM-side package went with it, so a deployment whose script
+            # and wheel came from different releases is visible afterwards.
+            "saorsa_db_wheel": wheel.name if wheel else None,
         },
     )
     if not args.restart:

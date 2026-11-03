@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from saorsa_deploy.cmd.upgrade_service_script import (
+    KINDS_WITH_REGISTRY_CLIENT,
     SUPPORTED_KINDS,
     cmd_upgrade_service_script,
 )
@@ -58,8 +59,28 @@ class _RunRecorder:
     def __init__(self, failing_ips=()):
         self.groups: list[tuple[list[str], list[str]]] = []
         self.failing_ips = set(failing_ips)
+        #: Hosts the saorsa-db installer was folded in for, and whether it was
+        #: added BEFORE that group's script op.
+        self.wheel_installed_for: list[list[str]] = []
+        self.wheel_before_script = True
 
     def install(self, stack):
+        recorder = self
+
+        class _Installer:
+            """Stands in for SaorsaDbInstaller, recording where it ran."""
+
+            def __init__(self, wheel_path=None, console=None):
+                self.wheel_path = wheel_path
+
+            def add_ops(self, state, install=True):
+                recorder.wheel_installed_for.append(list(state._ips))
+                # The script op has not been added for this group yet, which is
+                # the ordering that matters: the script calls the repository
+                # argument only the new wheel accepts.
+                if any(ips == list(state._ips) for ips, _ in recorder.groups):
+                    recorder.wheel_before_script = False
+
         def _inventory(spec):
             # `((hosts_data, {}))` -- the IPs are the first element of each
             # tuple. Stood in for rather than constructed, because a real
@@ -78,6 +99,7 @@ class _RunRecorder:
                     SimpleNamespace(name=ip) for ip in state._ips if ip in self.failing_ips
                 }
 
+        stack.enter_context(patch(f"{MODULE}.SaorsaDbInstaller", _Installer))
         stack.enter_context(patch(f"{MODULE}.Inventory", _inventory))
         stack.enter_context(patch(f"{MODULE}.State", _state))
         stack.enter_context(patch(f"{MODULE}.connect_all", lambda _state: None))
@@ -88,13 +110,24 @@ class _RunRecorder:
         stack.enter_context(patch(f"{MODULE}.record_event", lambda *_a, **_k: None))
 
 
-def _run(args, repo, clients, failing_ips=()):
+def _run(args, repo, clients, failing_ips=(), missing_columns=(), wheel_error=None):
     import contextlib
+    from pathlib import Path as _Path
 
     recorder = _RunRecorder(failing_ips)
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch(f"{MODULE}.get_repository", return_value=repo))
         stack.enter_context(patch(f"{MODULE}.load_client_state", return_value={"clients": clients}))
+        stack.enter_context(
+            patch(f"{MODULE}.missing_registry_columns", return_value=list(missing_columns))
+        )
+        stack.enter_context(
+            patch(
+                f"{MODULE}.build_saorsa_db_wheel",
+                side_effect=wheel_error,
+                return_value=_Path("/tmp/saorsa_db-1.14.0-py3-none-any.whl"),
+            )
+        )
         recorder.install(stack)
         try:
             cmd_upgrade_service_script(args)
@@ -156,9 +189,19 @@ class TestBothTransportsAreCovered:
         assert any("prod_downloader.py" in c for c in commands)
 
 
-class TestUnitGrouping:
-    def test_a_continuous_uploader_restarts_both_of_its_units(self):
-        """One hard-coded unit name would restart a service on neither role."""
+class TestOnlyTheHostsThatRunTheScript:
+    def test_a_continuous_uploader_touches_only_its_uploader_vm(self):
+        """The two roles run DIFFERENT scripts from DIFFERENT directories.
+
+        Writing one script per KIND sent `prod_continuous_uploader.py` to a
+        verifier host, whose `/root/ant-prod-continuous-uploader` does not
+        exist, and then restarted `ant-prod-upload-verifier` -- so the write
+        failed and the run reported a partly-upgraded deployment, and had that
+        directory existed the verifier's own `prod_upload_verifier.py` would
+        have been left in place under a claim of success. INFRA-485 states the
+        rule from the other side: a verifier host in this command's output is a
+        bug in the command.
+        """
         recorder, code = _run(
             _args(name="PROD-UL-01"),
             _repo("prod-continuous-uploader", name="PROD-UL-01"),
@@ -169,17 +212,18 @@ class TestUnitGrouping:
             ],
         )
         assert code == 0
-        restarts = {
-            ip: [c for c in commands if c.startswith("systemctl restart")]
-            for ips, commands in recorder.groups
-            for ip in ips
-        }
-        assert restarts["10.0.0.1"] == [f"systemctl restart {UPLOADER_SERVICE}"]
-        assert restarts["10.0.0.2"] == [f"systemctl restart {VERIFIER_SERVICE}"]
-        assert restarts["10.0.0.3"] == [f"systemctl restart {VERIFIER_SERVICE}"]
+        assert {ip for ips, _ in recorder.groups for ip in ips} == {"10.0.0.1"}
+        restarts = [
+            c
+            for _ips, commands in recorder.groups
+            for c in commands
+            if c.startswith("systemctl restart")
+        ]
+        assert restarts == [f"systemctl restart {UPLOADER_SERVICE}"]
+        assert not any(VERIFIER_SERVICE in c for _ips, cs in recorder.groups for c in cs)
 
-    def test_a_wasm_uploader_s_native_verifiers_are_upgraded_too(self):
-        """Unlike the bundle, the script is the same file on every role."""
+    def test_a_wasm_uploader_s_verifiers_are_left_alone_too(self):
+        """The transport changes nothing here: the verifier's script differs."""
         recorder, code = _run(
             _args(name="PROD-WUL-01"),
             _repo("prod-continuous-uploader", client_kind="wasm", name="PROD-WUL-01"),
@@ -189,8 +233,44 @@ class TestUnitGrouping:
             ],
         )
         assert code == 0
-        upgraded = {ip for ips, _ in recorder.groups for ip in ips}
-        assert upgraded == {"10.0.0.1", "10.0.0.2"}
+        assert {ip for ips, _ in recorder.groups for ip in ips} == {"10.0.0.1"}
+
+    def test_the_skipped_verifiers_are_reported_not_silently_dropped(self):
+        printed: list[str] = []
+        with patch(f"{MODULE}.Console") as console_cls:
+            console_cls.return_value = SimpleNamespace(
+                print=lambda *a, **_k: printed.append(" ".join(map(str, a))),
+                rule=lambda *_a, **_k: None,
+            )
+            _run(
+                _args(name="PROD-UL-01"),
+                _repo("prod-continuous-uploader", name="PROD-UL-01"),
+                [
+                    {"ip": "10.0.0.1", "role": "upload"},
+                    {"ip": "10.0.0.2", "role": "verify"},
+                ],
+            )
+        left_alone = [line for line in printed if "leaving" in line]
+        assert left_alone and "prod_upload_verifier.py" in left_alone[0]
+
+    def test_a_deployment_with_only_verifiers_is_refused(self):
+        """Nothing to upgrade is a refusal, not a silent success."""
+        recorder, code = _run(
+            _args(name="PROD-UL-01"),
+            _repo("prod-continuous-uploader", name="PROD-UL-01"),
+            [{"ip": "10.0.0.2", "role": "verify"}],
+        )
+        assert code == 1
+        assert recorder.groups == []
+
+    def test_every_unit_this_command_can_target_names_its_own_script(self):
+        """The targeting is derived from the unit, so the data must be there."""
+        from saorsa_deploy.prod_client_units import units_for_kind
+
+        for kind in SUPPORTED_KINDS:
+            scripts = {unit.script for unit in units_for_kind(kind)}
+            assert None not in scripts, kind
+            assert SCRIPT_BY_KIND[kind] in scripts, kind
 
     def test_a_spec_with_no_ip_is_dropped(self):
         recorder, code = _run(
@@ -246,17 +326,152 @@ class TestRestartFlag:
 
 
 class TestOneFailureDoesNotStopTheRest:
-    def test_a_failed_group_is_reported_and_the_other_still_runs(self):
+    def test_a_failing_host_is_reported_and_the_run_exits_non_zero(self):
+        recorder, code = _run(
+            _args(),
+            _repo("prod-continuous-downloader"),
+            [{"ip": "10.0.0.1", "role": "download"}],
+            failing_ips=["10.0.0.1"],
+        )
+        assert {ip for ips, _ in recorder.groups for ip in ips} == {"10.0.0.1"}
+        assert code == 1
+
+
+class TestTheVmSidePackageGoesWithTheScript:
+    """The script is not the only thing the uploader VM needs to run it.
+
+    A `prod-continuous-uploader` executes under `/opt/ant-registry-client` and
+    writes Postgres itself. Its `saorsa-db` wheel was installed at provision
+    time, so the upgraded script's unconditional `error_kind=` keyword raises
+    `TypeError` on the service's FIRST upload -- including a successful one --
+    before the result is recorded and before the pool claim it is holding is
+    resolved. Neither the operator's CLI nor a Postgres migration updates that
+    remote wheel (INFRA-484 review, finding 1).
+    """
+
+    def test_the_uploader_kind_is_the_one_that_needs_it(self):
+        assert KINDS_WITH_REGISTRY_CLIENT == {"prod-continuous-uploader"}
+
+    def test_the_wheel_is_installed_before_the_script_on_the_uploader(self):
         recorder, code = _run(
             _args(name="PROD-UL-01"),
             _repo("prod-continuous-uploader", name="PROD-UL-01"),
-            [
-                {"ip": "10.0.0.1", "role": "upload"},
-                {"ip": "10.0.0.2", "role": "verify"},
-            ],
-            failing_ips=["10.0.0.1"],
+            [{"ip": "10.0.0.1", "role": "upload"}],
         )
-        # Both groups were attempted...
-        assert {ip for ips, _ in recorder.groups for ip in ips} == {"10.0.0.1", "10.0.0.2"}
-        # ...and the run still exits non-zero.
+        assert code == 0
+        assert recorder.wheel_installed_for == [["10.0.0.1"]]
+        assert recorder.wheel_before_script
+
+    def test_a_downloader_gets_no_wheel(self):
+        """It runs /usr/bin/python3 and imports nothing of ours."""
+        recorder, code = _run(
+            _args(),
+            _repo("prod-continuous-downloader"),
+            [{"ip": "10.0.0.1", "role": "download"}],
+        )
+        assert code == 0
+        assert recorder.wheel_installed_for == []
+
+    def test_a_missing_registry_column_refuses_before_any_host(self):
+        """The VM writes Postgres itself, so the schema has to have moved."""
+        recorder, code = _run(
+            _args(name="PROD-UL-01"),
+            _repo("prod-continuous-uploader", name="PROD-UL-01"),
+            [{"ip": "10.0.0.1", "role": "upload"}],
+            missing_columns=["deployment_prod_upload_results.error_kind"],
+        )
         assert code == 1
+        assert recorder.groups == []
+        assert recorder.wheel_installed_for == []
+
+    def test_the_refusal_names_the_migration_command(self):
+        printed: list[str] = []
+        with patch(f"{MODULE}.Console") as console_cls:
+            console_cls.return_value = SimpleNamespace(
+                print=lambda *a, **_k: printed.append(" ".join(map(str, a))),
+                rule=lambda *_a, **_k: None,
+            )
+            _run(
+                _args(name="PROD-UL-01"),
+                _repo("prod-continuous-uploader", name="PROD-UL-01"),
+                [{"ip": "10.0.0.1", "role": "upload"}],
+                missing_columns=["deployment_prod_upload_results.error_kind"],
+            )
+        assert any("alembic upgrade head" in line for line in printed)
+
+    def test_the_schema_is_not_checked_for_a_downloader(self):
+        """It would refuse an upgrade that does not depend on those columns."""
+        recorder, code = _run(
+            _args(),
+            _repo("prod-continuous-downloader"),
+            [{"ip": "10.0.0.1", "role": "download"}],
+            missing_columns=["deployment_prod_upload_results.error_kind"],
+        )
+        assert code == 0
+        assert recorder.groups
+
+    def test_a_wheel_that_cannot_be_built_refuses_before_any_host(self):
+        """Running from an installed wheel instead of from the checkout."""
+        recorder, code = _run(
+            _args(name="PROD-UL-01"),
+            _repo("prod-continuous-uploader", name="PROD-UL-01"),
+            [{"ip": "10.0.0.1", "role": "upload"}],
+            wheel_error=FileNotFoundError("no db/pyproject.toml under /usr/lib"),
+        )
+        assert code == 1
+        assert recorder.groups == []
+
+
+class TestTheSchemaCheckItself:
+    """`missing_registry_columns` against a real schema, both ways."""
+
+    def _repo_for(self, metadata):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        metadata.create_all(engine)
+        return SimpleNamespace(session=sessionmaker(bind=engine, future=True)())
+
+    def test_a_current_schema_is_clean(self):
+        from saorsa_db.db import Base
+
+        from saorsa_deploy.cmd.upgrade_service_script import missing_registry_columns
+
+        assert missing_registry_columns(self._repo_for(Base.metadata)) == []
+
+    def test_an_empty_schema_reports_every_table(self):
+        from sqlalchemy import MetaData
+
+        from saorsa_deploy.cmd.upgrade_service_script import (
+            REQUIRED_REGISTRY_COLUMNS,
+            missing_registry_columns,
+        )
+
+        missing = missing_registry_columns(self._repo_for(MetaData()))
+        assert len(missing) == len(REQUIRED_REGISTRY_COLUMNS)
+        assert all("table absent" in entry for entry in missing)
+
+    def test_a_pre_migration_schema_names_the_missing_column(self):
+        """The table is there; only the column this change adds is not."""
+        from sqlalchemy import Column, Integer, MetaData, String, Table
+
+        from saorsa_deploy.cmd.upgrade_service_script import missing_registry_columns
+
+        metadata = MetaData()
+        Table(
+            "deployment_prod_upload_results",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("reason", String),
+        )
+        Table(
+            "deployment_upload_records",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("error_kind", String(32)),
+            Column("reason", String),
+        )
+        assert missing_registry_columns(self._repo_for(metadata)) == [
+            "deployment_prod_upload_results.error_kind"
+        ]

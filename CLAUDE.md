@@ -813,13 +813,33 @@ exists to produce. `upgrade-wasm-client` redeploys the same script but refuses
 `client_kind: native`.
 
 - **Both kinds and both transports**, reusing `SCRIPT_BY_KIND` and
-  `provisioning/service_script.py` so there is no second copy of either. Unlike
-  the WASM bundle, the script is the same file on every role, so a WASM
-  uploader's **native verifier VMs are upgraded too**. The one-shot kinds are
-  rewritten by every `up`; anything else is refused by name.
-- **Hosts are grouped by the unit they actually run** via `prod_client_units.py`,
-  and each group restarts its own — one hard-coded name would restart a service
-  that exists on neither of a continuous uploader's two roles.
+  `provisioning/service_script.py` so there is no second copy of either. The
+  one-shot kinds are rewritten by every `up`; anything else is refused by name.
+- **ONLY the hosts that run the script**, and each restarts its own unit.
+  `prod-continuous-uploader`'s two roles run **different scripts from different
+  directories** — `prod_continuous_uploader.py` under
+  `/root/ant-prod-continuous-uploader` on the uploader VM,
+  `prod_upload_verifier.py` under `/root/ant-prod-upload-verifier` on each
+  verifier — so a **verifier is left alone** and said to be, whatever the
+  transport. The unit carries its own script (`ProdClientUnit.script`), so the
+  match is derived rather than hand-written: one script per KIND wrote the
+  uploader's into a directory that does not exist on a verifier and then
+  restarted `ant-prod-upload-verifier`, and had the directory existed the
+  verifier's own script would have been left behind under a claim of success.
+  No host running the script is a refusal, not a silent success.
+- **The VM's `saorsa-db` wheel goes with the script, and the schema is checked
+  first** — `KINDS_WITH_REGISTRY_CLIENT`, which is the uploader kind alone. It
+  runs under `/opt/ant-registry-client` and writes Postgres itself, so the
+  script is half of what it needs: the venv's wheel was installed at provision
+  time and nothing else updates it, so a new repository argument raises
+  `TypeError` on the service's FIRST operation — a successful one included —
+  before the row is written and before the pool claim in hand is resolved; and
+  the columns it writes must already exist or the same operation dies in the
+  INSERT. So the wheel is rebuilt from this workspace and installed **before**
+  the script in the same pass (recorded on the event), and a missing column
+  refuses the run naming `alembic upgrade head`, **before any host is touched**.
+  Checked, never created. The uploader kind therefore has to be upgraded from
+  the checkout; the download kinds need neither and get neither.
 - **Timing is WARNED about, not refused**, naming the deployment's own
   `daily_at` (PROD-WDL-01 is 02:00, the other three 00:00): a hard refusal would
   block an operator fixing a deployment that is already broken. A restart
@@ -868,6 +888,21 @@ one said why.
   Python; a test asserts the identity, and another reads every copy of every
   vocabulary (including the pre-existing `classify.mjs` /
   `BrowserDownloadErrorKind` pair) and fails on divergence.
+- **EVERY source of a `reason` goes through the clip**, not just the stderr
+  fallback. `ant`'s own `reason` is ant-core's raw text — on a payment failure,
+  viem's multi-line message with hundreds of hex characters of calldata — and
+  verbatim it breaks both the bounded single-line contract and the **Influx
+  line protocol**, whose string-field escape handles only backslashes and
+  quotes, so one failure splits its own point across three physical lines and
+  takes the write batch with it. Collapsing whitespace is what makes a newline
+  impossible, so one clip fixes both.
+- **A reason is derived ONLY for an operation that failed.** `uploader.sh` is
+  the one where that is not obvious: it always runs `ant -v`, so stderr is
+  never empty on a healthy upload, and an ungated fallback to its last line
+  gave every SUCCESSFUL upload `error_kind="other"`. It is keyed on the exit
+  code AND on the document's `error` *value* — the pair
+  `prod_uploader._classify` uses, because `ant --json` omits the key on success
+  while `ant-wasm` always emits it set to null.
 - **`reason` had to be added to `PIVOT_FLUX_TEMPLATE`'s field allowlist**, which
   is why a new field would otherwise reach no consumer at all.
 - **Postgres**: both columns on `deployment_upload_records` /

@@ -321,7 +321,7 @@ PY
     # a sentence cannot travel through that channel at all. Line 1 of the
     # output is the kind (a bare token, for the log line); line 2 is the
     # ready-escaped Influx fragment, empty on success.
-    error_parsed=$(python3 - "$output_file" "$stderr_file" <<'ERRPY'
+    error_parsed=$(python3 - "$output_file" "$stderr_file" "$exit_code" <<'ERRPY'
 import json
 import sys
 
@@ -535,7 +535,23 @@ def _field(value):
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-reason = clip_reason(_json_error(_read(sys.argv[1]))) or failure_reason(_read(sys.argv[2]))
+# A reason is derived ONLY for an operation that actually failed. `ant` is always
+# invoked with `-v` here, so stderr is never empty -- it carries the connection
+# and trace lines of a perfectly good upload -- and an ungated fallback to its
+# last line gave every SUCCESSFUL upload `error_kind="other"` and a reason of
+# "Connected to autonomi network (found 5 peers)", which then reached Postgres
+# and the kind counts as a failure that never happened.
+#
+# Keyed on the exit code AND on the result document's `error` VALUE, which is
+# the same pair `prod_uploader._classify` uses: `ant --json` omits the key on
+# success while `ant-wasm` always emits it and sets it to null, so a presence
+# check would report every healthy browser-path upload as a failure.
+json_error = _json_error(_read(sys.argv[1]))
+exit_code = sys.argv[3] if len(sys.argv) > 3 else ""
+failed = bool(json_error) or exit_code not in ("0", "")
+reason = ""
+if failed:
+    reason = clip_reason(json_error) or failure_reason(_read(sys.argv[2]))
 kind = classify_transfer_error(reason) if reason else ""
 print(kind)
 print(',error_kind="%s",reason="%s"' % (_field(kind), _field(reason)) if reason else "")

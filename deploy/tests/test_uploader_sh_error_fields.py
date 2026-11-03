@@ -26,7 +26,7 @@ DEPLOY = Path(__file__).resolve().parents[1]
 UPLOADER_SH = DEPLOY / "saorsa_deploy/resources/scripts/uploader.sh"
 FIXTURES = DEPLOY / "tests/fixtures/transfer-errors"
 
-HEREDOC_OPEN = 'error_parsed=$(python3 - "$output_file" "$stderr_file" <<\'ERRPY\'\n'
+HEREDOC_OPEN = 'error_parsed=$(python3 - "$output_file" "$stderr_file" "$exit_code" <<\'ERRPY\'\n'
 HEREDOC_CLOSE = "\nERRPY\n"
 
 
@@ -41,13 +41,18 @@ def embedded(tmp_path_factory) -> Path:
     return path
 
 
-def _run(embedded: Path, tmp_path: Path, stdout_text: str, stderr_text: str):
+#: The `-v` stderr of a perfectly good upload. `uploader.sh` always passes `-v`,
+#: so this is what an ungated stderr fallback classified as a failure.
+HEALTHY_STDERR = "Connected to autonomi network (found 5 peers)\n"
+
+
+def _run(embedded: Path, tmp_path: Path, stdout_text: str, stderr_text: str, exit_code="1"):
     out = tmp_path / "out.json"
     err = tmp_path / "err.txt"
     out.write_text(stdout_text)
     err.write_text(stderr_text)
     result = subprocess.run(
-        [sys.executable, "-I", str(embedded), str(out), str(err)],
+        [sys.executable, "-I", str(embedded), str(out), str(err), exit_code],
         capture_output=True,
         text=True,
     )
@@ -83,9 +88,63 @@ class TestTheEmbeddedClassifier:
     def test_a_success_emits_nothing_at_all(self, embedded, tmp_path):
         """So a successful point is byte-identical to what it always was."""
         document = {"address": "ab" * 32, "chunks_stored": 4, "error": None}
-        kind, fields = _run(embedded, tmp_path, json.dumps(document) + "\n", "")
+        kind, fields = _run(embedded, tmp_path, json.dumps(document) + "\n", "", exit_code="0")
         assert kind == ""
         assert fields == ""
+
+    def test_a_success_with_ordinary_trace_on_stderr_emits_nothing(self, embedded, tmp_path):
+        """The regression the review caught (INFRA-484 finding 3).
+
+        `uploader.sh` always runs `ant -v`, so stderr is NEVER empty on a
+        healthy upload. The fallback to its last line was ungated, which gave
+        every successful upload `error_kind="other"` and a reason of
+        "Connected to autonomi network (found 5 peers)" -- archived into
+        Postgres and counted in the kind distribution as a failure that never
+        happened. The old success test passed only because it used empty
+        stderr.
+        """
+        document = {"address": "ab" * 32, "chunks_stored": 4, "elapsed_secs": 1.2}
+        kind, fields = _run(
+            embedded, tmp_path, json.dumps(document) + "\n", HEALTHY_STDERR, exit_code="0"
+        )
+        assert kind == ""
+        assert fields == ""
+
+    def test_a_non_zero_exit_with_the_same_stderr_does_classify(self, embedded, tmp_path):
+        """The gate is the outcome, not the presence of stderr."""
+        stderr = HEALTHY_STDERR + "Error: Upload failed: payment error: nonce too low\n"
+        kind, fields = _run(embedded, tmp_path, "", stderr, exit_code="1")
+        assert kind == "payment"
+        assert 'reason="Upload failed: payment error: nonce too low"' in fields
+        assert "Connected to autonomi network" not in fields
+
+    def test_a_result_document_error_classifies_whatever_the_exit_code(self, embedded, tmp_path):
+        """`ant --json` omits `error` on success and `ant-wasm` sets it null.
+
+        So the VALUE of `error` is evidence of a failure in its own right --
+        the same rule `prod_uploader._classify` applies.
+        """
+        document = {"error": "timeout: Timeout waiting for store response after 60s"}
+        for exit_code in ("0", "1"):
+            kind, fields = _run(
+                embedded, tmp_path, json.dumps(document) + "\n", HEALTHY_STDERR, exit_code
+            )
+            assert kind == "timeout", exit_code
+            assert "Timeout waiting for store response" in fields, exit_code
+
+    def test_a_missing_exit_code_argument_does_not_crash(self, embedded, tmp_path):
+        """Defensive: the block is run by a shell that could be mid-edit."""
+        out = tmp_path / "o.json"
+        err = tmp_path / "e.txt"
+        out.write_text("")
+        err.write_text(HEALTHY_STDERR)
+        result = subprocess.run(
+            [sys.executable, "-I", str(embedded), str(out), str(err)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n\n"
 
     def test_the_fields_are_escaped_for_line_protocol(self, embedded, tmp_path):
         document = {"error": 'timeout: he said "stop" \\ now'}
@@ -117,6 +176,11 @@ class TestTheEmbeddedClassifier:
 
 
 class TestTheScriptWiring:
+    def test_the_block_is_given_the_exit_code(self):
+        """It cannot gate on the outcome without being told what it was."""
+        text = UPLOADER_SH.read_text()
+        assert '"$output_file" "$stderr_file" "$exit_code" <<' in text
+
     def test_error_kind_is_no_longer_the_last_read_r_field(self):
         """It used to absorb the remainder of the line, prose and all."""
         text = UPLOADER_SH.read_text()
