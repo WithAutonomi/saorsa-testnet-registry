@@ -424,3 +424,134 @@ class TestTheRenderersShowTheKind:
 
         without = render([self._row(OpRecordStatus.SUCCESS, None)])
         assert "Kind" not in without
+
+
+class TestLegacyProseNeverReachesTheKindColumn:
+    """`error_kind` held `ant`'s whole SENTENCE until INFRA-484.
+
+    `uploader.sh` wrote `data.get("error")` into the field it called
+    `error_kind`, and those points are still in every bucket that has not aged
+    out. The column is a `String(32)` and a real legacy sentence measures 103
+    characters, so feeding one to the archive makes Postgres reject the row --
+    and with it the whole bulk batch, which would make `deployments archive`
+    fail outright on any pre-change testnet run (INFRA-484 review, finding 2).
+
+    Normalised at the PARSE boundary, so every consumer is right at once: the
+    archive's rows, the kind counts, and the `--json-out` document. Nothing in
+    Influx is rewritten and no kind is guessed for a past operation -- an old
+    point reads as unclassified, which is what "not migrated" means.
+    """
+
+    #: The exact value the review fed the archive, from a real run.
+    LEGACY = (
+        "partial upload: 3/4 stored, 1 failed: close-group PUT shortfall "
+        "(dial churn): Stored on 2 peers, need 4"
+    )
+
+    def _point(self, **fields):
+        from saorsa_deploy.influx import _parse_pivoted_csv
+
+        names = ["status", "start_ns", "file_size", *fields]
+        values = ["1", "100", "1024", *(f'"{v}"' for v in fields.values())]
+        body = (
+            "#datatype,string,long,dateTime:RFC3339,string,string,string"
+            + ",long" * 3
+            + ",string" * len(fields)
+            + "\n"
+            + ",result,table,_time,_measurement,host,region,"
+            + ",".join(names)
+            + "\n"
+            + ",_result,0,2026-06-01T00:00:00Z,upload,hostA,lon1,"
+            + ",".join(values)
+            + "\n"
+        )
+        return _parse_pivoted_csv(body)[0]
+
+    def test_the_legacy_sentence_would_not_fit_the_column(self):
+        from saorsa_db.models.op_record import DeploymentUploadRecord
+
+        width = DeploymentUploadRecord.__table__.c.error_kind.type.length
+        assert width == 32
+        assert len(self.LEGACY) > width
+
+    def test_prose_is_not_returned_as_a_kind(self):
+        point = self._point(error_kind=self.LEGACY)
+        assert point["error_kind"] is None
+
+    def test_prose_is_kept_as_the_reason_it_always_was(self):
+        """Not a guess: that field held `ant`'s own sentence by construction."""
+        point = self._point(error_kind=self.LEGACY)
+        assert point["reason"] == self.LEGACY
+
+    def test_a_long_legacy_sentence_is_clipped_like_any_other_reason(self):
+        point = self._point(error_kind="partial upload: " + "x" * 2000)
+        assert point["error_kind"] is None
+        assert len(point["reason"]) == 500
+
+    def test_a_real_kind_passes_through_untouched(self):
+        point = self._point(error_kind="quorum", reason="insufficient peers: x")
+        assert point["error_kind"] == "quorum"
+        assert point["reason"] == "insufficient peers: x"
+
+    def test_every_vocabulary_value_survives_the_normaliser(self):
+        from saorsa_db.models import TRANSFER_ERROR_KIND_VALUES
+
+        for kind in TRANSFER_ERROR_KIND_VALUES:
+            assert self._point(error_kind=kind)["error_kind"] == kind
+
+    def test_a_reason_already_on_the_point_is_not_overwritten(self):
+        """A new-style point with both fields keeps the one it was given."""
+        point = self._point(error_kind=self.LEGACY, reason="timeout: the real one")
+        assert point["error_kind"] is None
+        assert point["reason"] == "timeout: the real one"
+
+    def test_the_archive_row_carries_a_kind_the_column_accepts(self):
+        """End to end: the row dicts `record-results` would upsert."""
+        from saorsa_deploy.cmd.record_results import _record_file_op_records
+
+        repo = _CollectingRepo()
+        # Through the CSV parse, because that is the boundary the normalisation
+        # lives at -- a hand-built dict would bypass the very thing under test.
+        points = [self._point(error_kind=self.LEGACY)]
+        with (
+            patch(
+                "saorsa_deploy.cmd.record_results._fetch_all_op_points",
+                return_value=points,
+            ),
+            patch(
+                "saorsa_deploy.cmd.record_results._network_map_from_client_state",
+                return_value={},
+            ),
+            patch(
+                "saorsa_deploy.cmd.record_results._build_client_kind_lookup",
+                return_value=lambda host: None,
+            ),
+        ):
+            _record_file_op_records(
+                repo,
+                SimpleNamespace(id=1, name="DEV-OLD", deploy_args={}),
+                SimpleNamespace(name="DEV-OLD"),
+                _silent_console(),
+                "http://influx",
+                "token",
+                "ant",
+                "testnet-metrics",
+            )
+        row = repo.upload_rows[0]
+        assert row["error_kind"] is None
+        assert row["reason"] == self.LEGACY
+
+    def test_an_actual_insert_of_such_a_point_succeeds(self, repo):
+        """The failure was a rejected INSERT, so insert one."""
+        deployment = repo.create(name="DEV-OLD", deploy_args={})
+        point = self._point(error_kind=self.LEGACY)
+        row = repo.upsert_upload_record(
+            **_op(
+                deployment.id,
+                status=OpRecordStatus.FAILURE,
+                error_kind=point["error_kind"],
+                reason=point["reason"],
+            )
+        )
+        assert row.error_kind is None
+        assert row.reason == self.LEGACY

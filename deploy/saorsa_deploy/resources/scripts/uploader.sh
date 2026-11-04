@@ -488,19 +488,29 @@ def classify_transfer_error(text):
     return "other"
 
 
-def failure_reason(stderr, limit=REASON_LIMIT):
+def failure_reason(stderr, limit=REASON_LIMIT, require_error_line=False):
     """The clipped one-line reason out of `ant`'s stderr.
 
     `ant-cli` prints exactly one `Error: ...` line, last, on every failure
     path; everything before it is `-v` trace, which on a download runs to tens
     of thousands of lines. The last such line is therefore the reason, and the
-    fallback to the last non-empty line covers a kill that left no `Error:`
+    fallback to the last non-empty line covers a failure that left no `Error:`
     line at all.
+
+    ``require_error_line`` turns that fallback OFF, and is for a child the OS
+    KILLED. Its last stderr line is then whatever trace it had happened to
+    reach -- "Connected to autonomi network (found 5 peers)" is a real example
+    -- which is not a reason for anything, and classifying it reports a
+    connection message as the cause of an OOM kill. A caller that has
+    something true to say instead (which signal it was) asks for the `Error:`
+    line alone and gets "" when the child printed none.
     """
     lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
     for line in reversed(lines):
         if line.startswith("Error: "):
             return clip_reason(line[len("Error: ") :], limit)
+    if require_error_line:
+        return ""
     return clip_reason(lines[-1], limit) if lines else ""
 
 
@@ -535,6 +545,24 @@ def _field(value):
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+#: `$?` for a child killed by a signal, as the SHELL reports it. Python's
+#: `subprocess` hands the other service scripts a negative returncode, but bash
+#: has no negative exit status and reports 128+N instead, so the sibling
+#: scripts' `rc < 0` test has no meaning here. `> 128` and not `>=`: 128 itself
+#: would be signal 0, which kills nothing. `ant` exits 0 or 1 on its own, so a
+#: status in this range is a kill rather than a program that chose it.
+SIGNAL_EXIT_BASE = 128
+
+
+def _signal_number(raw):
+    """The signal that killed the child, or None if it exited on its own."""
+    try:
+        code = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return code - SIGNAL_EXIT_BASE if code > SIGNAL_EXIT_BASE else None
+
+
 # A reason is derived ONLY for an operation that actually failed. `ant` is always
 # invoked with `-v` here, so stderr is never empty -- it carries the connection
 # and trace lines of a perfectly good upload -- and an ungated fallback to its
@@ -548,11 +576,26 @@ def _field(value):
 # check would report every healthy browser-path upload as a failure.
 json_error = _json_error(_read(sys.argv[1]))
 exit_code = sys.argv[3] if len(sys.argv) > 3 else ""
+signal_number = _signal_number(exit_code)
 failed = bool(json_error) or exit_code not in ("0", "")
 reason = ""
-if failed:
+kind = ""
+if signal_number is not None:
+    # A signal takes precedence over any text, because the vocabulary reserves
+    # `crash` for exactly this and `ant -v`'s last stderr line is whatever
+    # trace the child had reached -- classifying that reported "Connected to
+    # autonomi network (found 5 peers)" as the cause of an OOM kill. The
+    # child's own `Error:` line still wins over naming the signal, when it
+    # managed to print one.
+    kind = "crash"
+    reason = (
+        clip_reason(json_error)
+        or failure_reason(_read(sys.argv[2]), require_error_line=True)
+        or "ant killed by signal %d" % signal_number
+    )
+elif failed:
     reason = clip_reason(json_error) or failure_reason(_read(sys.argv[2]))
-kind = classify_transfer_error(reason) if reason else ""
+    kind = classify_transfer_error(reason) if reason else ""
 print(kind)
 print(',error_kind="%s",reason="%s"' % (_field(kind), _field(reason)) if reason else "")
 ERRPY

@@ -19,7 +19,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from saorsa_deploy.cmd.upgrade_service_script import (
-    KINDS_WITH_REGISTRY_CLIENT,
     SUPPORTED_KINDS,
     cmd_upgrade_service_script,
 )
@@ -31,6 +30,7 @@ from saorsa_deploy.provisioning.prod_continuous_uploader import (
 from saorsa_deploy.provisioning.prod_downloader import (
     SERVICE_NAME as DOWNLOADER_SERVICE,
 )
+from saorsa_deploy.registry_client_upgrade import KINDS_WITH_REGISTRY_CLIENT
 
 MODULE = "saorsa_deploy.cmd.upgrade_service_script"
 
@@ -67,19 +67,14 @@ class _RunRecorder:
     def install(self, stack):
         recorder = self
 
-        class _Installer:
-            """Stands in for SaorsaDbInstaller, recording where it ran."""
-
-            def __init__(self, wheel_path=None, console=None):
-                self.wheel_path = wheel_path
-
-            def add_ops(self, state, install=True):
-                recorder.wheel_installed_for.append(list(state._ips))
-                # The script op has not been added for this group yet, which is
-                # the ordering that matters: the script calls the repository
-                # argument only the new wheel accepts.
-                if any(ips == list(state._ips) for ips, _ in recorder.groups):
-                    recorder.wheel_before_script = False
+        def _add_install_ops(state, wheel, console=None):
+            """Stands in for the saorsa-db install, recording where it ran."""
+            recorder.wheel_installed_for.append(list(state._ips))
+            # The script op has not been added for this group yet, which is the
+            # ordering that matters: the script calls the repository argument
+            # only the new wheel accepts.
+            if any(ips == list(state._ips) for ips, _ in recorder.groups):
+                recorder.wheel_before_script = False
 
         def _inventory(spec):
             # `((hosts_data, {}))` -- the IPs are the first element of each
@@ -99,7 +94,7 @@ class _RunRecorder:
                     SimpleNamespace(name=ip) for ip in state._ips if ip in self.failing_ips
                 }
 
-        stack.enter_context(patch(f"{MODULE}.SaorsaDbInstaller", _Installer))
+        stack.enter_context(patch(f"{MODULE}.add_install_ops", _add_install_ops))
         stack.enter_context(patch(f"{MODULE}.Inventory", _inventory))
         stack.enter_context(patch(f"{MODULE}.State", _state))
         stack.enter_context(patch(f"{MODULE}.connect_all", lambda _state: None))
@@ -110,24 +105,39 @@ class _RunRecorder:
         stack.enter_context(patch(f"{MODULE}.record_event", lambda *_a, **_k: None))
 
 
+#: Stands in for the built wheel; nothing reads its contents.
+FAKE_WHEEL = "saorsa_db-1.14.0-py3-none-any.whl"
+
+
 def _run(args, repo, clients, failing_ips=(), missing_columns=(), wheel_error=None):
+    """Drive the command with the registry, S3 state, wheel build and SSH stood in for.
+
+    `schema_problem` and `wheel_for_kinds` are patched rather than their
+    innards, but kind-dependently: the real pair returns nothing at all for a
+    kind that does not run under the registry-client venv, and a stand-in that
+    ignored the kind would hide exactly the distinction these tests pin.
+    """
     import contextlib
     from pathlib import Path as _Path
+
+    def _schema_problem(_repo, kind):
+        if kind in KINDS_WITH_REGISTRY_CLIENT and missing_columns:
+            return f"missing {', '.join(missing_columns)}; run alembic upgrade head"
+        return None
+
+    def _wheel_for_kinds(kinds):
+        if not any(kind in KINDS_WITH_REGISTRY_CLIENT for kind in kinds):
+            return None, None
+        if wheel_error is not None:
+            return None, str(wheel_error)
+        return _Path("/tmp") / FAKE_WHEEL, None
 
     recorder = _RunRecorder(failing_ips)
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch(f"{MODULE}.get_repository", return_value=repo))
         stack.enter_context(patch(f"{MODULE}.load_client_state", return_value={"clients": clients}))
-        stack.enter_context(
-            patch(f"{MODULE}.missing_registry_columns", return_value=list(missing_columns))
-        )
-        stack.enter_context(
-            patch(
-                f"{MODULE}.build_saorsa_db_wheel",
-                side_effect=wheel_error,
-                return_value=_Path("/tmp/saorsa_db-1.14.0-py3-none-any.whl"),
-            )
-        )
+        stack.enter_context(patch(f"{MODULE}.schema_problem", _schema_problem))
+        stack.enter_context(patch(f"{MODULE}.wheel_for_kinds", _wheel_for_kinds))
         recorder.install(stack)
         try:
             cmd_upgrade_service_script(args)
@@ -384,7 +394,7 @@ class TestTheVmSidePackageGoesWithTheScript:
         assert recorder.groups == []
         assert recorder.wheel_installed_for == []
 
-    def test_the_refusal_names_the_migration_command(self):
+    def test_the_refusal_names_what_is_missing(self):
         printed: list[str] = []
         with patch(f"{MODULE}.Console") as console_cls:
             console_cls.return_value = SimpleNamespace(
@@ -398,6 +408,7 @@ class TestTheVmSidePackageGoesWithTheScript:
                 missing_columns=["deployment_prod_upload_results.error_kind"],
             )
         assert any("alembic upgrade head" in line for line in printed)
+        assert any("deployment_prod_upload_results.error_kind" in line for line in printed)
 
     def test_the_schema_is_not_checked_for_a_downloader(self):
         """It would refuse an upgrade that does not depend on those columns."""
@@ -420,58 +431,3 @@ class TestTheVmSidePackageGoesWithTheScript:
         )
         assert code == 1
         assert recorder.groups == []
-
-
-class TestTheSchemaCheckItself:
-    """`missing_registry_columns` against a real schema, both ways."""
-
-    def _repo_for(self, metadata):
-        from sqlalchemy import create_engine
-        from sqlalchemy.orm import sessionmaker
-
-        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-        metadata.create_all(engine)
-        return SimpleNamespace(session=sessionmaker(bind=engine, future=True)())
-
-    def test_a_current_schema_is_clean(self):
-        from saorsa_db.db import Base
-
-        from saorsa_deploy.cmd.upgrade_service_script import missing_registry_columns
-
-        assert missing_registry_columns(self._repo_for(Base.metadata)) == []
-
-    def test_an_empty_schema_reports_every_table(self):
-        from sqlalchemy import MetaData
-
-        from saorsa_deploy.cmd.upgrade_service_script import (
-            REQUIRED_REGISTRY_COLUMNS,
-            missing_registry_columns,
-        )
-
-        missing = missing_registry_columns(self._repo_for(MetaData()))
-        assert len(missing) == len(REQUIRED_REGISTRY_COLUMNS)
-        assert all("table absent" in entry for entry in missing)
-
-    def test_a_pre_migration_schema_names_the_missing_column(self):
-        """The table is there; only the column this change adds is not."""
-        from sqlalchemy import Column, Integer, MetaData, String, Table
-
-        from saorsa_deploy.cmd.upgrade_service_script import missing_registry_columns
-
-        metadata = MetaData()
-        Table(
-            "deployment_prod_upload_results",
-            metadata,
-            Column("id", Integer, primary_key=True),
-            Column("reason", String),
-        )
-        Table(
-            "deployment_upload_records",
-            metadata,
-            Column("id", Integer, primary_key=True),
-            Column("error_kind", String(32)),
-            Column("reason", String),
-        )
-        assert missing_registry_columns(self._repo_for(metadata)) == [
-            "deployment_prod_upload_results.error_kind"
-        ]

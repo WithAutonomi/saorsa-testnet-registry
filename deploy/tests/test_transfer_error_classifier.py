@@ -227,3 +227,45 @@ class TestTheMarkersStillExistAtThePinnedRef:
         expected_file = _MARKER_SOURCES.get(marker)
         if expected_file:
             assert expected_file in hits, f"{marker!r} moved: now in {hits!r}"
+
+
+class TestASignalIsCrashNotWhateverTheTraceSaid:
+    """A killed child's last stderr line is not a reason (review finding 3).
+
+    `ant -v` writes continuously, so a child the OS kills leaves whatever trace
+    it had reached as the last line. Classifying that recorded
+    `error_kind="other"` with reason "Connected to autonomi network (found 5
+    peers)" for an OOM kill -- while the vocabulary reserves `crash` for
+    exactly this case and the exit status says so outright.
+
+    `require_error_line` is what lets a caller that knows it was a signal take
+    the child's own `Error:` line and nothing else.
+    """
+
+    TRACE = "Connected to autonomi network (found 5 peers)\n"
+
+    def test_an_incidental_trace_line_is_not_taken_as_the_reason(self):
+        assert MODULE.failure_reason(self.TRACE) == (
+            "Connected to autonomi network (found 5 peers)"
+        )
+        assert MODULE.failure_reason(self.TRACE, require_error_line=True) == ""
+
+    def test_the_child_s_own_error_line_still_wins(self):
+        stderr = self.TRACE + "Error: Upload failed: timeout: whatever\n"
+        assert (
+            MODULE.failure_reason(stderr, require_error_line=True)
+            == "Upload failed: timeout: whatever"
+        )
+
+    def test_empty_stderr_yields_nothing_to_fall_back_on(self):
+        assert MODULE.failure_reason("", require_error_line=True) == ""
+
+    def test_the_default_is_unchanged(self):
+        """Every non-signal caller keeps the last-line fallback."""
+        assert MODULE.failure_reason("trace one\ntrace two\n") == "trace two"
+
+    def test_crash_is_in_the_vocabulary_and_no_marker_produces_it(self):
+        """So it can only ever come from an exit status, never from text."""
+        assert "crash" in MODULE.TRANSFER_ERROR_KINDS
+        assert "crash" not in {kind for _, kind in MODULE.TRANSFER_ERROR_MARKERS}
+        assert MODULE.classify_transfer_error("killed by signal 9") == "other"

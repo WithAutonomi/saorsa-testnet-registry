@@ -73,9 +73,8 @@ class TestTheNativeBranchUsesIt:
 
     def test_the_branch_derives_its_status_from_startup_failure(self, service):
         source = (SCRIPTS / "prod_continuous_uploader.py").read_text()
-        native = source[source.index("                else:\n                    killed = rc") :]
+        native = source[source.index("_native_failure_outcome(parsed, rc)") :]
         native = native[: native.index("parsed = parsed or {}")]
-        assert "_native_failure_outcome(parsed, rc)" in native
         assert "startup_failure = influx_status == STATUS_FAILED" in native
         # The unconditional assignment that caused this must not come back.
         assert "status = ProdUploadStatus.PARTIAL_UPLOAD\n" not in native
@@ -134,7 +133,9 @@ class TestEveryReasonSourceIsNormalized:
         # The three sources it chooses between are all inside the one call.
         assert "killed_reason" in block
         assert 'parsed.get("reason")' in block
-        assert "failure_reason(stderr)" in block
+        # `require_error_line` on the stderr fallback, because a killed child's
+        # last trace line is not a reason (review finding 3).
+        assert "failure_reason(stderr, require_error_line=killed)" in block
 
     def test_the_one_shot_uploader_clips_its_document_reason(self):
         source = (SCRIPTS / "prod_uploader.py").read_text()

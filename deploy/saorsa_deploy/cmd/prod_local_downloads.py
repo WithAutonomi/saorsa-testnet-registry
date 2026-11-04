@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
-from saorsa_db.models import DeploymentStatus, ProdDownloadStatus
+from saorsa_db.models import DeploymentStatus, ProdDownloadStatus, TransferErrorKind
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.binary_source import (
@@ -323,6 +323,39 @@ def _run_ant(
 # ---------- input collection --------------------------------------------------
 
 
+def classify_download_failure(
+    *, exit_code: int, stderr_text: str, file_size: int | None
+) -> tuple[str, str]:
+    """``(error_kind, reason)`` for a local download that did not succeed.
+
+    `exit_code=1 (no output file)` was all this used to record -- the same
+    empty signal a remote downloader's blank row carried, from a command
+    running `ant` on this very machine with its stderr in hand (INFRA-484).
+    `ant-cli` prints exactly one `Error: ...` line and nothing to stdout, even
+    under `--json`, so that line is the reason and its classification the kind.
+
+    **A signal decides before any text.** The vocabulary reserves `crash` for a
+    killed child, and on this machine that is an OOM kill or the operator's
+    Ctrl-C -- a different finding from a transfer the network refused. The last
+    stderr line of a killed `ant -v` is whatever trace it had reached, so
+    classifying it reported a connection message as the cause of the kill
+    (review finding 3). Its own `Error:` line still wins over naming the
+    signal, when it managed to print one.
+
+    Pure, so the ordering is testable without running `ant`.
+    """
+    if exit_code < 0:
+        return (
+            TransferErrorKind.CRASH.value,
+            failure_reason(stderr_text, require_error_line=True)
+            or f"ant killed by signal {-exit_code}",
+        )
+    reason = failure_reason(stderr_text) or f"exit_code={exit_code}"
+    if file_size is None or file_size == 0:
+        reason = clip_reason(f"{reason} (no output file)")
+    return classify_transfer_error(reason), reason
+
+
 def _read_address_list(path: Path) -> list[str]:
     addresses: list[str] = []
     with path.open("r", encoding="utf-8") as fh:
@@ -471,7 +504,7 @@ def cmd_prod_local_downloads(args) -> None:
                     reason=clip_reason(f"failed to spawn ant: {e}"),
                     # Nothing ran, so there is no `ant` text to classify and
                     # `other` is the honest kind.
-                    error_kind="other",
+                    error_kind=TransferErrorKind.OTHER.value,
                 )
                 continue
 
@@ -500,17 +533,11 @@ def cmd_prod_local_downloads(args) -> None:
             else:
                 status = ProdDownloadStatus.FAILED
                 failures += 1
-                # `exit_code=1 (no output file)` was all this recorded, which is
-                # the same empty signal a remote downloader's blank row carried
-                # -- from a command running `ant` on this very machine with its
-                # stderr in hand (INFRA-484). `ant-cli` prints exactly one
-                # `Error: ...` line there and nothing to stdout, even under
-                # `--json`, so that line is the reason and its classification
-                # is the kind.
-                reason = failure_reason(stderr_text) or f"exit_code={exit_code}"
-                if file_size is None or file_size == 0:
-                    reason = clip_reason(f"{reason} (no output file)")
-                error_kind = classify_transfer_error(reason)
+                error_kind, reason = classify_download_failure(
+                    exit_code=exit_code,
+                    stderr_text=stderr_text,
+                    file_size=file_size,
+                )
                 console.print(
                     f"  [red]FAILED[/red]: exit={exit_code} kind={error_kind} "
                     f"total={total_ms}ms size={file_size} reason={reason!r} "

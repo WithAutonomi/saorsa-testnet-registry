@@ -253,19 +253,29 @@ def classify_transfer_error(text):
     return "other"
 
 
-def failure_reason(stderr, limit=REASON_LIMIT):
+def failure_reason(stderr, limit=REASON_LIMIT, require_error_line=False):
     """The clipped one-line reason out of `ant`'s stderr.
 
     `ant-cli` prints exactly one `Error: ...` line, last, on every failure
     path; everything before it is `-v` trace, which on a download runs to tens
     of thousands of lines. The last such line is therefore the reason, and the
-    fallback to the last non-empty line covers a kill that left no `Error:`
+    fallback to the last non-empty line covers a failure that left no `Error:`
     line at all.
+
+    ``require_error_line`` turns that fallback OFF, and is for a child the OS
+    KILLED. Its last stderr line is then whatever trace it had happened to
+    reach -- "Connected to autonomi network (found 5 peers)" is a real example
+    -- which is not a reason for anything, and classifying it reports a
+    connection message as the cause of an OOM kill. A caller that has
+    something true to say instead (which signal it was) asks for the `Error:`
+    line alone and gets "" when the child printed none.
     """
     lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
     for line in reversed(lines):
         if line.startswith("Error: "):
             return clip_reason(line[len("Error: ") :], limit)
+    if require_error_line:
+        return ""
     return clip_reason(lines[-1], limit) if lines else ""
 
 
@@ -1003,7 +1013,17 @@ def main() -> int:
         # path's kind is classified from whichever of the two it ended up with
         # (INFRA-484). Never over a `crash`, which the text cannot carry.
         if status != STATUS_SUCCESS and not reason:
-            reason = failure_reason(stderr_text)
+            # A signal exit gets its own statement rather than the last trace
+            # line the killed child happened to reach; `error_kind` is already
+            # `crash` by then.
+            reason = (
+                (
+                    failure_reason(stderr_text, require_error_line=True)
+                    or f"ant killed by signal {-exit_code}"
+                )
+                if exit_code < 0
+                else failure_reason(stderr_text)
+            )
         if not is_wasm and not error_kind and reason:
             error_kind = classify_transfer_error(reason)
         # Per-upload on-chain cost (ant emits these on both success and

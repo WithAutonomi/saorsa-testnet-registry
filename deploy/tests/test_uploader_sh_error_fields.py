@@ -203,3 +203,77 @@ class TestTheScriptWiring:
     def test_the_script_is_still_valid_bash(self):
         result = subprocess.run(["bash", "-n", str(UPLOADER_SH)], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
+
+
+class TestASignalExitIsCrash:
+    """bash reports a killed child as 128+N, and that outranks any text.
+
+    The sibling service scripts get a negative returncode from `subprocess` and
+    test `rc < 0`; the shell has no negative exit status, so that test is
+    meaningless here and a SIGKILL arrived as `137`. It was classified from
+    whatever `ant -v` had last written -- `other` from a connection message --
+    or recorded nothing at all when stderr was empty (INFRA-484 review,
+    finding 3).
+    """
+
+    def test_sigkill_with_an_incidental_trace_line_is_crash(self, embedded, tmp_path):
+        kind, fields = _run(embedded, tmp_path, "", HEALTHY_STDERR, exit_code="137")
+        assert kind == "crash"
+        assert 'error_kind="crash"' in fields
+        assert 'reason="ant killed by signal 9"' in fields
+        assert "Connected to autonomi network" not in fields
+
+    def test_sigkill_with_empty_stderr_still_records_the_signal(self, embedded, tmp_path):
+        """It used to emit neither field, so the kill left no trace at all."""
+        kind, fields = _run(embedded, tmp_path, "", "", exit_code="137")
+        assert kind == "crash"
+        assert 'reason="ant killed by signal 9"' in fields
+
+    def test_sigterm_is_named_by_its_own_number(self, embedded, tmp_path):
+        _kind, fields = _run(embedded, tmp_path, "", "", exit_code="143")
+        assert 'reason="ant killed by signal 15"' in fields
+
+    def test_the_child_s_own_error_line_wins_over_the_signal(self, embedded, tmp_path):
+        stderr = HEALTHY_STDERR + "Error: Upload failed: timeout: whatever\n"
+        kind, fields = _run(embedded, tmp_path, "", stderr, exit_code="137")
+        assert kind == "crash"
+        assert 'reason="Upload failed: timeout: whatever"' in fields
+
+    def test_a_result_document_error_wins_over_the_signal_text(self, embedded, tmp_path):
+        """A child killed after printing its document: the document is better."""
+        document = {"error": "partial upload: 3/4 stored, 1 failed: x"}
+        kind, fields = _run(embedded, tmp_path, json.dumps(document) + "\n", "", exit_code="137")
+        assert kind == "crash"
+        assert "partial upload: 3/4 stored" in fields
+
+    def test_exit_128_is_not_a_signal(self, embedded, tmp_path):
+        """128 would be signal 0, which kills nothing."""
+        stderr = "Error: Upload failed: timeout: whatever\n"
+        kind, _fields = _run(embedded, tmp_path, "", stderr, exit_code="128")
+        assert kind == "timeout"
+
+    def test_an_ordinary_failure_is_still_classified_from_its_text(self, embedded, tmp_path):
+        stderr = "Error: Upload failed: payment error: nonce too low\n"
+        kind, _fields = _run(embedded, tmp_path, "", stderr, exit_code="1")
+        assert kind == "payment"
+
+    def test_a_success_is_untouched_by_any_of_this(self, embedded, tmp_path):
+        document = {"address": "ab" * 32, "chunks_stored": 4}
+        kind, fields = _run(
+            embedded, tmp_path, json.dumps(document) + "\n", HEALTHY_STDERR, exit_code="0"
+        )
+        assert (kind, fields) == ("", "")
+
+    def test_a_non_numeric_exit_code_is_not_read_as_a_signal(self, embedded, tmp_path):
+        """Defensive: the shell could hand it anything mid-edit."""
+        out = tmp_path / "o.json"
+        err = tmp_path / "e.txt"
+        out.write_text("")
+        err.write_text(HEALTHY_STDERR)
+        result = subprocess.run(
+            [sys.executable, "-I", str(embedded), str(out), str(err), "not-a-number"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "crash" not in result.stdout

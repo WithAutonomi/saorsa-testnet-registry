@@ -773,6 +773,12 @@ the common WASM rules above.)
 - **The continuous uploader's verifier VMs are deliberately untouched** (they are
   native, so a `digest_mismatch` stays attributable to the upload rather than to
   a browser read path). Their `ant` binary is `upgrade-ant-binary`'s job.
+- **The VM's `saorsa-db` wheel is redeployed with it too, on the uploader
+  kind** — that script writes Postgres through `/opt/ant-registry-client`,
+  whose wheel is from provision time, so a new repository argument raises
+  `TypeError` on the service's first upload. The schema is preflighted with
+  every other refusal, i.e. **before the ~10-minute build**. One module with
+  `upgrade-service-script`; see its bullet above.
 - **The host-side service script is redeployed with the bundle.** The bundle is
   the half that *performs* a transfer; `prod_downloader.py` /
   `prod_continuous_uploader.py` is the half that *records* it, so upgrading one
@@ -828,7 +834,12 @@ exists to produce. `upgrade-wasm-client` redeploys the same script but refuses
   verifier's own script would have been left behind under a claim of success.
   No host running the script is a refusal, not a silent success.
 - **The VM's `saorsa-db` wheel goes with the script, and the schema is checked
-  first** — `KINDS_WITH_REGISTRY_CLIENT`, which is the uploader kind alone. It
+  first** — `KINDS_WITH_REGISTRY_CLIENT`, which is the uploader kind alone.
+  **`deployments upgrade-wasm-client` applies the same rule**, since it
+  redeploys the same file alongside a bundle; both read
+  `saorsa_deploy/registry_client_upgrade.py`, because a coupling this sharp
+  held in one of two commands that install the same script is a trap for
+  whoever uses the other. It
   runs under `/opt/ant-registry-client` and writes Postgres itself, so the
   script is half of what it needs: the venv's wheel was installed at provision
   time and nothing else updates it, so a new repository argument raises
@@ -896,6 +907,23 @@ one said why.
   quotes, so one failure splits its own point across three physical lines and
   takes the write batch with it. Collapsing whitespace is what makes a newline
   impossible, so one clip fixes both.
+- **A legacy point's `error_kind` is read as a REASON, not as a kind.** That
+  field held `ant`'s whole sentence until this change and those points are
+  still in every live bucket, so a value outside the nine kinds is routed to
+  `reason` while `error_kind` reads NULL — "not migrated", stated as data.
+  Load-bearing: the column is `String(32)` and a real legacy sentence measures
+  **103 characters**, so Postgres rejects the row and the whole bulk batch,
+  which would make `deployments archive` fail outright on any pre-change
+  testnet run. Done at the parse boundary (`_split_op_error`), so the archive,
+  the kind counts and the JSON are right at once.
+- **A SIGNAL outranks any text**: `crash` comes from the exit status before
+  anything is classified, because a killed `ant -v`'s last stderr line is
+  whatever trace it reached — classifying it blamed an OOM kill on "Connected
+  to autonomi network". The child's own `Error:` line still wins over naming
+  the signal (`require_error_line=True` turns the last-line fallback off). The
+  shell is the odd one out: bash has no negative exit status and reports
+  **128+N**, so `uploader.sh` tests `> 128` where the Python services test
+  `rc < 0`.
 - **A reason is derived ONLY for an operation that failed.** `uploader.sh` is
   the one where that is not obvious: it always runs `ant -v`, so stderr is
   never empty on a healthy upload, and an ungated fallback to its last line

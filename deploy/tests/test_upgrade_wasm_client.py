@@ -84,6 +84,12 @@ def upgrade_patches():
             side_effect=lambda name: client_state[name],
         ),
         patch(f"{MODULE}._manifest_ref", return_value=None) as p_manifest,
+        # The registry here is a MagicMock, so the schema preflight has nothing
+        # real to inspect; it is covered on its own in
+        # `test_registry_client_upgrade.py`, including the refusal path through
+        # this command. These tests are about the SSH sequence.
+        patch(f"{MODULE}.schema_problem", return_value=None),
+        patch(f"{MODULE}.wheel_for_kinds", return_value=(None, None)),
         patch("saorsa_deploy.cmd.build_ant_wasm.cmd_build_ant_wasm") as p_build,
         patch(
             f"{MODULE}.get_ant_wasm_build_url",
