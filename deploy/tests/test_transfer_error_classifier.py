@@ -163,6 +163,61 @@ class TestFailureReason:
         stderr = "Error: first\ntrace\nError: second\n"
         assert MODULE.failure_reason(stderr) == "second"
 
+    def test_the_whole_error_BLOCK_is_kept_not_just_its_first_line(self):
+        """`eprintln!("Error: {e:#}")` does not promise one physical line.
+
+        An error whose Display carries newlines prints several, and taking the
+        first threw away the actual cause — "payment error: RPC Request failed"
+        kept, "nonce too low" lost, which is the whole reason the field exists
+        (review finding 1).
+        """
+        stderr = (
+            "Connected to autonomi network (found 5 peers)\n"
+            "Error: payment error: RPC Request failed\n"
+            "URL: https://rpc.example.invalid\n"
+            "Details: nonce too low\n"
+        )
+        reason = MODULE.failure_reason(stderr)
+        assert reason == (
+            "payment error: RPC Request failed URL: https://rpc.example.invalid "
+            "Details: nonce too low"
+        )
+        # The trace BEFORE the block is still not part of it.
+        assert "Connected to autonomi network" not in reason
+        assert MODULE.classify_transfer_error(reason) == "payment"
+
+    def test_a_long_block_keeps_the_cause_at_its_tail(self):
+        """Which is what the head-and-tail clip is for."""
+        stderr = (
+            "Error: payment error: RPC failed\n"
+            + "\n".join(f"frame {i}" for i in range(200))
+            + "\nDetails: nonce too low\n"
+        )
+        reason = MODULE.failure_reason(stderr)
+        assert len(reason) == MODULE.REASON_LIMIT
+        assert reason.startswith("payment error: RPC failed")
+        assert reason.endswith("Details: nonce too low")
+
+    def test_a_single_line_error_is_unchanged(self):
+        """The committed capture's shape, which is the common case."""
+        stderr = (FIXTURES / "native-download-not-found.stderr").read_text()
+        assert MODULE.failure_reason(stderr) == (
+            "Failed to fetch public DataMap: not found: DataMap chunk not found "
+            "at d3da53369b9d08264405cccd5f3f6284be26a041787f535f570761ff7ef790d4"
+        )
+
+    def test_blank_lines_inside_a_block_do_not_split_it(self):
+        stderr = "Error: timeout: waiting\n\nDetails: 60s elapsed\n"
+        assert MODULE.failure_reason(stderr) == "timeout: waiting Details: 60s elapsed"
+
+    def test_a_block_is_still_refused_when_only_the_error_line_counts(self):
+        """`require_error_line` is about a KILL, and is unaffected by this."""
+        assert MODULE.failure_reason("trace\nmore trace\n", require_error_line=True) == ""
+        assert (
+            MODULE.failure_reason("Error: timeout: x\nDetails: y\n", require_error_line=True)
+            == "timeout: x Details: y"
+        )
+
     def test_a_stream_with_no_error_line_falls_back_to_the_last_line(self):
         """Covers a kill that ended the process before it could print one."""
         assert MODULE.failure_reason("trace one\ntrace two\n") == "trace two"

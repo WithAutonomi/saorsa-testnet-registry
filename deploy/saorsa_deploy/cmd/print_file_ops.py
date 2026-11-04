@@ -987,6 +987,16 @@ def _run_browser_rounds(args, console: Console) -> None:
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
         sys.exit(1)
 
+    # Bound to a name, not inlined into the call: the warning needs it too, and
+    # computing it only as an argument meant the console half of the signal
+    # never fired here and the coverage was discarded outright without
+    # `--json-out`. Rounds expire exactly as file operations do.
+    coverage = _window_coverage(
+        points,
+        args.window,
+        _resolve_retention(creds, (INFLUXDB_WASM_BUCKET,), console),
+        deployment_started_at=_resolve_deployment_start(args.name),
+    )
     _emit_ops_json(
         args,
         console,
@@ -996,13 +1006,11 @@ def _run_browser_rounds(args, console: Console) -> None:
         source="influx:browser_download",
         points=points,
         window=args.window,
-        coverage=_window_coverage(
-            points,
-            args.window,
-            _resolve_retention(creds, (INFLUXDB_WASM_BUCKET,), console),
-            deployment_started_at=_resolve_deployment_start(args.name),
-        ),
+        coverage=coverage,
     )
+    # BEFORE the empty-result return: "no rounds recorded yet" over a window
+    # whose rounds have expired is the one reading this must not give.
+    _warn_if_truncated(coverage, args.name, console)
     if not points:
         console.print(
             f"[yellow]No browser-download rounds recorded yet for "

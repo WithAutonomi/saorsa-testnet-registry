@@ -4940,7 +4940,7 @@ No past row can be backfilled: the Influx points never held the field.
 
 Every path that moves bytes records **two** fields for a failure, and they answer two different questions.
 
-* **`reason`** is `ant`'s own sentence, clipped to **500 characters** with long `0x` hex blobs elided and whitespace collapsed, keeping the **head and the tail** — the same shape and cap the browser path's `describeError` has always produced, so a native `reason` and a browser `reason` are the same size and kind of thing. This is what an operator reads.
+* **`reason`** is `ant`'s own sentence, clipped to **500 characters** with long `0x` hex blobs elided and whitespace collapsed, keeping the **head and the tail** — the same shape and cap the browser path's `describeError` has always produced, so a native `reason` and a browser `reason` are the same size and kind of thing. This is what an operator reads. It is the whole error **block**, not its first line: `eprintln!("Error: {e:#}")` does not promise one physical line, and an error whose `Display` carries newlines prints several — taking only the first kept `payment error: RPC Request failed` and threw away the `Details: nonce too low` underneath it, which is the entire point of the field. Everything from the last `Error: ` line to the end of stderr is the message, joined and then clipped, so a cause sitting at the end survives a long block.
 * **`error_kind`** is its classification from one closed vocabulary. This is what a failure count can be grouped by.
 
 Before INFRA-484 the durable copy of a failed download was `status=failure`, `file_size_bytes=0` and a duration: PROD-WDL-01 had eleven such rows and not one said anything about why. The write path was the opposite — fully diagnosable one row at a time, with nothing to aggregate by.
@@ -5034,7 +5034,9 @@ The JSON written by `--json-out` therefore carries three more keys, always prese
 | `retention_limits_window` | `true` when the window starts before `history_starts_at` — a property of the request and the bucket |
 | `window_starts_before_data` | `true` when the answer is **actually** short: the window outruns the bucket **and** the deployment was already running before `history_starts_at`, so operations that existed have expired |
 
-A console warning names the oldest timestamp and points at `deployments print-recorded-results`, which reads the durable Postgres copy. **The JSON half matters most**: a warning on a console nobody reads is how this went unnoticed for nine days.
+A console warning names the retention, the gap and both commands that answer it, and points at `deployments print-recorded-results`, which reads the durable Postgres copy. **The JSON half matters most**: a warning on a console nobody reads is how this went unnoticed for nine days.
+
+Every Influx-backed reporting branch emits both halves — the file-op tables, the prod-upload tables and the **browser rounds**, where the coverage was computed only as an argument to the JSON writer, so the console never warned and without `--json-out` the coverage was dropped on the floor. The warning comes **before** the "no rounds recorded yet" note, because that note over a window whose rounds have expired is the one reading this must not give.
 
 **The verdict comes from the bucket's retention, not from the points returned.** Every query is already `range(start: <window>)`, so the earliest point it can return is at or after the window start: comparing the two made the flag `true` on almost every non-empty answer, **complete ones included**, which left the signal firing when nothing was missing. Retention is the fact that actually bounds the history, it costs one metadata read rather than a second query, and it gets the case above right by construction — a bucket set to infinite can never truncate, so the four permanent deployments stop triggering the signal once their retention is `0`.
 

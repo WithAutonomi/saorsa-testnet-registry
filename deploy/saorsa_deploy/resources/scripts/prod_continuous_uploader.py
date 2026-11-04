@@ -263,27 +263,44 @@ def classify_transfer_error(text):
 def failure_reason(stderr, limit=REASON_LIMIT, require_error_line=False):
     """The clipped one-line reason out of `ant`'s stderr.
 
-    `ant-cli` prints exactly one `Error: ...` line, last, on every failure
-    path; everything before it is `-v` trace, which on a download runs to tens
-    of thousands of lines. The last such line is therefore the reason, and the
-    fallback to the last non-empty line covers a failure that left no `Error:`
-    line at all.
+    `ant-cli` prints exactly one error BLOCK, last, on every failure path;
+    everything before it is `-v` trace, which on a download runs to tens of
+    thousands of lines. The fallback to the last non-empty line covers a
+    failure that left no `Error:` line at all.
 
-    ``require_error_line`` turns that fallback OFF, and is for a child the OS
+    **The block, not the line.** `eprintln!("Error: {e:#}")` does not promise
+    one physical line: an error whose Display carries newlines prints several,
+    and taking only the first threw away the actual cause --
+
+        Error: payment error: RPC Request failed
+        URL: https://rpc.example.invalid
+        Details: nonce too low
+
+    kept "payment error: RPC Request failed" and dropped "nonce too low",
+    which is the whole reason the field exists. So everything from the last
+    `Error: ` line to the end of stderr is the message, joined and handed to
+    `clip_reason` -- which collapses the whitespace and keeps the head AND the
+    tail, so a cause at the end survives even when the block is long. A
+    trailing trace line would be swallowed into a bounded reason, which is a
+    far better trade than losing the cause.
+
+    ``require_error_line`` turns the fallback OFF, and is for a child the OS
     KILLED. Its last stderr line is then whatever trace it had happened to
     reach -- "Connected to autonomi network (found 5 peers)" is a real example
     -- which is not a reason for anything, and classifying it reports a
     connection message as the cause of an OOM kill. A caller that has
     something true to say instead (which signal it was) asks for the `Error:`
-    line alone and gets "" when the child printed none.
+    block alone and gets "" when the child printed none.
     """
-    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
-    for line in reversed(lines):
-        if line.startswith("Error: "):
-            return clip_reason(line[len("Error: ") :], limit)
+    lines = [line.strip() for line in (stderr or "").splitlines()]
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].startswith("Error: "):
+            block = [lines[index][len("Error: ") :], *lines[index + 1 :]]
+            return clip_reason(" ".join(part for part in block if part), limit)
     if require_error_line:
         return ""
-    return clip_reason(lines[-1], limit) if lines else ""
+    nonempty = [line for line in lines if line]
+    return clip_reason(nonempty[-1], limit) if nonempty else ""
 
 
 # --- end transfer error classification ---

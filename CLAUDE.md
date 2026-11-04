@@ -899,6 +899,12 @@ one said why.
   Python; a test asserts the identity, and another reads every copy of every
   vocabulary (including the pre-existing `classify.mjs` /
   `BrowserDownloadErrorKind` pair) and fails on divergence.
+- **The stderr reason is the whole error BLOCK, not its first line.**
+  `eprintln!("Error: {e:#}")` does not promise one physical line, and an error
+  whose Display carries newlines prints several -- taking the first kept
+  `payment error: RPC Request failed` and dropped the `Details: nonce too low`
+  beneath it. Everything from the last `Error: ` line to the end of stderr is
+  the message, joined then clipped, so a cause at the tail survives.
 - **EVERY source of a `reason` goes through the clip**, not just the stderr
   fallback. `ant`'s own `reason` is ant-core's raw text — on a payment failure,
   viem's multi-line message with hundreds of hex characters of calldata — and
@@ -997,7 +1003,11 @@ as present when the bucket no longer had it.
   tool and an unreadable retention are distinguishable), plus a console warning
   naming the retention, the gap and both commands that answer it. **The JSON
   half matters most** — a warning on a console nobody reads is how this went
-  unnoticed for nine days.
+  unnoticed for nine days. **Every** Influx-backed branch emits both halves,
+  the browser rounds included: there the coverage was computed only as an
+  argument to the JSON writer, so the console never warned and without
+  `--json-out` it was discarded. The warning precedes the "no rounds recorded
+  yet" note, which over an expired window is the one reading to avoid.
 - **The verdict comes from the bucket's RETENTION, never from the points.**
   Every query is `range(start: <window>)`, so the earliest point it can return
   is at or after the window start — comparing the two made the flag true on

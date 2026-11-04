@@ -617,3 +617,78 @@ class TestTheSummaryCountsByKind:
         lines: list[str] = []
         _print_error_kinds({}, SimpleNamespace(print=lambda *a, **_k: lines.append(a)))
         assert lines == []
+
+
+class TestTheBrowserRoundsBranchWarnsToo:
+    """Rounds expire exactly as file operations do (review finding 2).
+
+    `_run_browser_rounds` computed the coverage only as an argument to
+    `_emit_ops_json`, so the console half of the signal never fired here and
+    without `--json-out` the coverage was discarded outright. "No
+    browser-download rounds recorded yet" over a window whose rounds have
+    expired is the one reading this must not give.
+    """
+
+    MODULE = "saorsa_deploy.cmd.print_file_ops"
+
+    def _run(self, points, retention, age_days, json_out=None):
+        from saorsa_deploy.cmd.print_file_ops import _run_browser_rounds
+
+        lines: list[str] = []
+        console = SimpleNamespace(print=lambda *a, **_k: lines.append(" ".join(str(x) for x in a)))
+        args = SimpleNamespace(
+            name="DEV-01",
+            monitoring_name=None,
+            influx_url="http://influx",
+            influx_token="t",
+            influx_org="ant",
+            influx_bucket="testnet-metrics",
+            window="-30d",
+            json_out=json_out,
+            recent=False,
+            summary=False,
+            browser=True,
+        )
+        base = datetime.now(timezone.utc)
+        started = None if age_days is None else base - timedelta(days=age_days)
+        emitted: dict = {}
+        with (
+            patch(f"{self.MODULE}.fetch_browser_download_points", return_value=points),
+            patch(f"{self.MODULE}._resolve_retention", return_value=retention),
+            patch(f"{self.MODULE}._resolve_deployment_start", return_value=started),
+            patch(
+                f"{self.MODULE}.emit_json",
+                lambda doc, dest, console: emitted.update(doc),
+            ),
+        ):
+            _run_browser_rounds(args, console)
+        return lines, emitted
+
+    def test_it_warns_when_the_rounds_have_expired(self):
+        """The reviewer's case: 18-day deployment, 7-day bucket, -30d, no points."""
+        lines, _ = self._run([], 7 * 86400, age_days=18)
+        warnings = [line for line in lines if "Warning" in line]
+        assert warnings
+        assert "7 day(s)" in warnings[0]
+        assert "print-recorded-results" in warnings[0]
+
+    def test_it_warns_before_the_empty_result_note_not_instead_of_it(self):
+        lines, _ = self._run([], 7 * 86400, age_days=18)
+        assert any("Warning" in line for line in lines)
+        assert any("No browser-download rounds" in line for line in lines)
+        warn_at = next(i for i, line in enumerate(lines) if "Warning" in line)
+        note_at = next(i for i, line in enumerate(lines) if "No browser-download" in line)
+        assert warn_at < note_at
+
+    def test_it_is_silent_on_a_complete_answer(self):
+        lines, _ = self._run([], 0, age_days=18)
+        assert not [line for line in lines if "Warning" in line]
+
+    def test_it_is_silent_for_a_young_deployment(self):
+        lines, _ = self._run([], 7 * 86400, age_days=0)
+        assert not [line for line in lines if "Warning" in line]
+
+    def test_the_coverage_still_reaches_the_json(self):
+        _lines, emitted = self._run([], 7 * 86400, age_days=18, json_out="-")
+        assert emitted["window_starts_before_data"] is True
+        assert emitted["retention_secs"] == 7 * 86400
