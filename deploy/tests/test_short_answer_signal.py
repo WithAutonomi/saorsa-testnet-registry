@@ -551,6 +551,15 @@ class TestProdUploadsHonourTheWindow:
         with (
             patch("saorsa_deploy.cmd.print_file_ops.fetch_all_prod_upload_points", _fetch),
             patch("saorsa_deploy.cmd.print_file_ops._resolve_kind", return_value="prod-uploaders"),
+            # Mocked for isolation, not for the assertion: `_run_prod_uploads`
+            # resolves the retention and the deployment's age for the coverage
+            # signal, so without these a unit test about the WINDOW dials the
+            # bucket API and -- with DATABASE_URL set -- the real registry.
+            patch("saorsa_deploy.cmd.print_file_ops._resolve_retention", return_value=None),
+            patch(
+                "saorsa_deploy.cmd.print_file_ops._resolve_deployment_start",
+                return_value=None,
+            ),
         ):
             _run_prod_uploads(args, SimpleNamespace(print=lambda *_, **__: None))
 
@@ -580,6 +589,15 @@ class TestProdUploadsHonourTheWindow:
                 lambda **_kwargs: [],
             ),
             patch("saorsa_deploy.cmd.print_file_ops._resolve_kind", return_value="prod-uploaders"),
+            # Mocked for isolation, not for the assertion: `_run_prod_uploads`
+            # resolves the retention and the deployment's age for the coverage
+            # signal, so without these a unit test about the WINDOW dials the
+            # bucket API and -- with DATABASE_URL set -- the real registry.
+            patch("saorsa_deploy.cmd.print_file_ops._resolve_retention", return_value=None),
+            patch(
+                "saorsa_deploy.cmd.print_file_ops._resolve_deployment_start",
+                return_value=None,
+            ),
             patch(
                 "saorsa_deploy.cmd.print_file_ops.emit_json",
                 lambda document, dest, console: doc.update(document),
