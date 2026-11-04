@@ -2421,11 +2421,24 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             # one must not erase it.
             if client_build is not None:
                 existing.client_build = client_build
-            # Same rule again (INFRA-484): a pass whose Influx points have aged
-            # out of the retention window carries no kind, and writing that
-            # null would erase the classification of a failure nothing else
-            # records.
-            if error_kind is not None:
+            # Same rule again (INFRA-484), with one exception: a pass whose
+            # Influx points have aged out of the retention window carries no
+            # kind, and writing that null would erase the classification of a
+            # failure nothing else records -- but a row that has just been
+            # recorded as a SUCCESS has no failure to classify, so the old kind
+            # is cleared rather than coalesced.
+            #
+            # The key here is (deployment, host, source_url), and a continuous
+            # upload that failed BEFORE paying releases its pool claim, so the
+            # same source legitimately comes round again on the same
+            # deployment. Keeping the previous attempt's kind left a
+            # `status=success` row reading `error_kind='quorum'`, which the new
+            # kind summaries then counted as a quorum failure that did not
+            # happen. `reason` was already assigned unconditionally, so the two
+            # fields now agree.
+            if status is ProdUploadStatus.SUCCESS:
+                existing.error_kind = None
+            elif error_kind is not None:
                 existing.error_kind = error_kind
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()

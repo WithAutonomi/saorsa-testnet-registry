@@ -39,7 +39,20 @@ STATE = {
 
 
 class _FakeInflux:
-    """Every bucket the stack creates, with its retention, in memory."""
+    """Stands in for the InfluxDB the provisioner installs — **version 2.7.10**.
+
+    Two of its behaviours are load-bearing and the previous fake modelled
+    neither, which is how a `--days 0` that could never work passed its tests
+    (review findings 1 and 4). Both were confirmed against 2.7.10 in a
+    container:
+
+    * ``PATCH {"retentionRules": []}`` returns 200 and changes NOTHING. An
+      empty list means "no retention update" on update, where at create time it
+      means "no retention" — so infinite has to be an explicit
+      ``everySeconds: 0`` rule.
+    * a ``name`` filter matching nothing returns **404** with
+      ``bucket "<name>" not found``, not 200 and an empty list.
+    """
 
     def __init__(self, buckets=None, patch_error=None, missing=()):
         rules = [{"type": "expire", "everySeconds": 604800}]
@@ -53,18 +66,39 @@ class _FakeInflux:
 
     def get(self, url, params=None, headers=None, timeout=None):
         name = (params or {}).get("name")
-        found = [self.buckets[name]] if name in self.buckets else []
-        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"buckets": found})
+        if name not in self.buckets:
+            # 2.7.10's real answer, not an empty list.
+            return SimpleNamespace(
+                status_code=404,
+                ok=False,
+                text=f'{{"code":"not found","message":"bucket "{name}" not found"}}',
+                json=lambda: {"code": "not found"},
+                raise_for_status=lambda: (_ for _ in ()).throw(
+                    requests.HTTPError("404 Client Error")
+                ),
+            )
+        return SimpleNamespace(
+            status_code=200,
+            ok=True,
+            raise_for_status=lambda: None,
+            json=lambda: {"buckets": [self.buckets[name]]},
+        )
 
     def patch(self, url, json=None, headers=None, timeout=None):
         if self.patch_error is not None:
             raise self.patch_error
         bucket_id = url.rsplit("/", 1)[-1]
         for bucket in self.buckets.values():
-            if bucket["id"] == bucket_id:
-                bucket["retentionRules"] = list(json["retentionRules"])
-                self.patches.append((bucket["name"], bucket["retentionRules"]))
-                return SimpleNamespace(raise_for_status=lambda: None, json=lambda: bucket)
+            if bucket["id"] != bucket_id:
+                continue
+            rules = list(json["retentionRules"])
+            # The behaviour that hid the P1: an empty list is not an update.
+            if rules:
+                bucket["retentionRules"] = rules
+            self.patches.append((bucket["name"], rules))
+            return SimpleNamespace(
+                status_code=200, raise_for_status=lambda: None, json=lambda: bucket
+            )
         raise AssertionError(f"unknown bucket id {bucket_id}")
 
 
@@ -95,13 +129,32 @@ class TestEveryBucketTheStackCreates:
         assert _run(0, influx) == 0
         assert {name for name, _ in influx.patches} == set(STACK_BUCKETS)
 
-    def test_zero_days_clears_the_expire_rule(self):
-        """An empty `retentionRules` IS infinite -- what the setup script writes."""
+    def test_zero_days_sends_an_explicit_zero_duration_rule(self):
+        """Infinite is `everySeconds: 0`, NOT an empty list (finding 1).
+
+        On InfluxDB 2.7.10 an empty `retentionRules` is "no retention update"
+        on PATCH -- it returns 200 and changes nothing -- although at create
+        time it means "no retention", which is why `influxdb_setub.py` can send
+        it. Confirmed against 2.7.10 in a container: the PATCH succeeded, the
+        read-back still said seven days, and `--days 0` could never complete.
+        """
         influx = _FakeInflux()
         assert _run(0, influx) == 0
         for name in STACK_BUCKETS:
-            assert influx.buckets[name]["retentionRules"] == []
+            assert influx.buckets[name]["retentionRules"] == [{"type": "expire", "everySeconds": 0}]
+            # And that is what the reader calls infinite.
             assert _retention_seconds(influx.buckets[name]) == 0
+
+    def test_an_empty_rule_list_is_never_sent(self):
+        """The shape that silently did nothing must not come back."""
+        influx = _FakeInflux()
+        _run(0, influx)
+        assert influx.patches
+        assert all(rules for _name, rules in influx.patches)
+
+    def test_an_absent_rule_list_also_reads_as_infinite(self):
+        """What `influxdb_setup.py` leaves behind at create time."""
+        assert _retention_seconds({"retentionRules": []}) == 0
 
     def test_a_positive_day_count_installs_one(self):
         influx = _FakeInflux()

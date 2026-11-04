@@ -36,13 +36,29 @@ def _headers(token: str) -> dict:
 
 
 def find_bucket(url: str, token: str, org: str, name: str) -> dict | None:
-    """The named bucket, or None when the org has no such bucket."""
+    """The named bucket, or None when the org has no such bucket.
+
+    **A 404 is absence, not an error.** InfluxDB 2.7.10 -- the version
+    `provisioning/monitoring.py` installs -- answers a `name` filter that
+    matches nothing with `404` and `bucket "<name>" not found`, NOT with `200`
+    and an empty list. Verified against 2.7.10 in a container. Letting that
+    raise made the absent-bucket path unreachable: on a stack provisioned
+    before the WASM tier existed, `monitoring set-retention` reported failure
+    although it had changed every bucket that does exist, and
+    `binding_retention_seconds` returned "unknown" and so suppressed a
+    perfectly definite truncation warning.
+
+    Every other status still raises. Authorization and connectivity failures
+    are exactly what a caller must not mistake for "there is no such bucket".
+    """
     resp = requests.get(
         f"{url.rstrip('/')}/api/v2/buckets",
         params={"org": org, "name": name},
         headers=_headers(token),
         timeout=_TIMEOUT,
     )
+    if resp.status_code == 404:
+        return None
     resp.raise_for_status()
     for bucket in resp.json().get("buckets", []):
         if bucket.get("name") == name:

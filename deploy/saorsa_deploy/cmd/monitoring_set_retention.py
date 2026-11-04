@@ -52,7 +52,22 @@ _TIMEOUT = 30
 
 
 def _set_retention(url: str, token: str, bucket_id: str, seconds: int) -> dict:
-    rules = [] if seconds == 0 else [{"type": "expire", "everySeconds": seconds}]
+    """PATCH one bucket's retention. ``seconds == 0`` disables expiry.
+
+    **Infinite is an explicit `everySeconds: 0` rule, not an empty list.** At
+    CREATE time an empty `retentionRules` means "no retention", which is what
+    `influxdb_setup.py` sends and why it works there. On UPDATE it means
+    something else entirely: InfluxDB 2.7.10's decoder only touches retention
+    when a rule is supplied, so `PATCH {"retentionRules": []}` returns `200`
+    and changes nothing. Verified against 2.7.10 in a container -- the PATCH
+    succeeded, the read-back still said seven days, and `--days 0` could
+    therefore never complete. `[{"type": "expire", "everySeconds": 0}]` clears
+    it on the same instance.
+
+    The read-back is what caught this rather than a silent no-op, which is the
+    reason it exists.
+    """
+    rules = [{"type": "expire", "everySeconds": max(0, seconds)}]
     resp = requests.patch(
         f"{url.rstrip('/')}/api/v2/buckets/{bucket_id}",
         json={"retentionRules": rules},

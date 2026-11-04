@@ -86,25 +86,120 @@ class TestWindowCoverage:
         than the 30-day boundary.
         """
         points = [_point(NOW - timedelta(days=d)) for d in range(30)]
-        coverage = _window_coverage(points, "-30d", 0, now=NOW)
+        coverage = _window_coverage(
+            points, "-30d", 0, now=NOW, deployment_started_at=NOW - timedelta(days=60)
+        )
         assert coverage["window_starts_before_data"] is False
 
-    def test_a_window_wider_than_the_retention_is_flagged(self):
-        """The real case: 30 days asked of a 7-day bucket."""
+    def test_a_window_wider_than_the_retention_on_an_OLD_deployment_is_flagged(self):
+        """The real case: PROD-DL-01, 30 days asked of a 7-day bucket."""
         points = [_point(NOW - timedelta(days=d)) for d in (1, 4, 7)]
-        coverage = _window_coverage(points, "-30d", 7 * 86400, now=NOW)
+        coverage = _window_coverage(
+            points,
+            "-30d",
+            7 * 86400,
+            now=NOW,
+            deployment_started_at=NOW - timedelta(days=18),
+        )
         assert coverage["window_starts_before_data"] is True
+        assert coverage["retention_limits_window"] is True
         assert coverage["oldest_point"] == (NOW - timedelta(days=7)).isoformat()
         assert coverage["history_starts_at"] == (NOW - timedelta(days=7)).isoformat()
         assert coverage["retention_secs"] == 7 * 86400
 
     def test_a_window_inside_the_retention_is_not_flagged(self):
         points = [_point(NOW - timedelta(days=d)) for d in (1, 4, 7)]
-        assert (
-            _window_coverage(points, "-7d", 7 * 86400, now=NOW)["window_starts_before_data"]
-            is False
+        coverage = _window_coverage(
+            points, "-7d", 7 * 86400, now=NOW, deployment_started_at=NOW - timedelta(days=18)
         )
+        assert coverage["window_starts_before_data"] is False
+        assert coverage["retention_limits_window"] is False
 
+
+class TestTheDeploymentsAgeDecidesWhetherAnythingWasLost:
+    """Retention bounds what the bucket CAN hold; age says whether it did.
+
+    A deployment created this morning, queried with the default `-30d` against
+    a 7-day bucket, has its entire history present — and was reported as
+    truncated purely because the requested start precedes `now - 7d`, which
+    turned a machine-readable diagnostic into a false report of missing
+    operations (review finding 3).
+    """
+
+    def _cov(self, age_days, window="-30d", retention=7 * 86400, points=3):
+        pts = [_point(NOW - timedelta(hours=h)) for h in range(1, points + 1)]
+        started = None if age_days is None else NOW - timedelta(days=age_days)
+        return _window_coverage(pts, window, retention, now=NOW, deployment_started_at=started)
+
+    def test_a_deployment_created_today_is_not_flagged(self):
+        coverage = self._cov(age_days=0)
+        assert coverage["window_starts_before_data"] is False
+        # ...while the request/bucket fact is still reported.
+        assert coverage["retention_limits_window"] is True
+
+    def test_a_deployment_younger_than_the_retention_is_not_flagged(self):
+        assert self._cov(age_days=5)["window_starts_before_data"] is False
+
+    def test_a_deployment_older_than_the_retention_is_flagged(self):
+        assert self._cov(age_days=18)["window_starts_before_data"] is True
+
+    def test_exactly_at_the_horizon_is_not_flagged(self):
+        """Nothing before it ever existed, so nothing before it was lost."""
+        assert self._cov(age_days=7)["window_starts_before_data"] is False
+
+    def test_an_unknown_age_is_unknown_not_short(self):
+        """No registry row: there is no telling what existed to expire."""
+        coverage = self._cov(age_days=None)
+        assert coverage["window_starts_before_data"] is None
+        assert coverage["retention_limits_window"] is True
+        assert coverage["deployment_started_at"] is None
+
+    def test_an_unknown_age_under_infinite_retention_is_still_complete(self):
+        """Nothing can have expired, so the age does not matter."""
+        coverage = self._cov(age_days=None, retention=0)
+        assert coverage["window_starts_before_data"] is False
+        assert coverage["retention_limits_window"] is False
+
+    def test_the_age_is_reported_so_the_verdict_is_auditable(self):
+        coverage = self._cov(age_days=18)
+        assert coverage["deployment_started_at"] == (NOW - timedelta(days=18)).isoformat()
+
+
+class TestResolvingTheDeploymentStart:
+    def test_it_reads_created_at_from_the_registry(self):
+        from saorsa_deploy.cmd.print_file_ops import _resolve_deployment_start
+
+        row = SimpleNamespace(created_at=NOW - timedelta(days=18))
+        repo = SimpleNamespace(get_active_by_name=lambda _n: row, get_by_name=lambda _n: row)
+        with patch("saorsa_deploy.cmd.print_file_ops.get_repository", return_value=repo):
+            assert _resolve_deployment_start("PROD-DL-01") == NOW - timedelta(days=18)
+
+    def test_a_naive_timestamp_is_read_as_utc(self):
+        """SQLite hands naive datetimes back on some paths."""
+        from saorsa_deploy.cmd.print_file_ops import _resolve_deployment_start
+
+        row = SimpleNamespace(created_at=datetime(2026, 10, 17, 9, 0))
+        repo = SimpleNamespace(get_active_by_name=lambda _n: row, get_by_name=lambda _n: row)
+        with patch("saorsa_deploy.cmd.print_file_ops.get_repository", return_value=repo):
+            assert _resolve_deployment_start("X") == datetime(
+                2026, 10, 17, 9, 0, tzinfo=timezone.utc
+            )
+
+    def test_no_registry_is_unknown(self):
+        from saorsa_deploy.cmd.print_file_ops import _resolve_deployment_start
+
+        with patch("saorsa_deploy.cmd.print_file_ops.get_repository", return_value=None):
+            assert _resolve_deployment_start("X") is None
+
+    def test_an_unknown_deployment_is_unknown(self):
+        from saorsa_deploy.cmd.print_file_ops import _resolve_deployment_start
+
+        repo = SimpleNamespace(get_active_by_name=lambda _n: None, get_by_name=lambda _n: None)
+        with patch("saorsa_deploy.cmd.print_file_ops.get_repository", return_value=repo):
+            assert _resolve_deployment_start("X") is None
+
+
+class TestWindowCoverageRemainder:
     def test_infinite_retention_can_never_be_flagged(self):
         """Item 8: the permanent deployments stop triggering it at `--days 0`."""
         for window in ("-7d", "-30d", "0"):
@@ -113,9 +208,12 @@ class TestWindowCoverage:
             assert coverage["history_starts_at"] is None
 
     def test_an_empty_answer_still_knows_whether_it_is_short(self):
-        """It no longer needs a point to say so — retention is enough."""
-        assert _window_coverage([], "-30d", 7 * 86400, now=NOW)["window_starts_before_data"] is True
-        assert _window_coverage([], "-30d", 0, now=NOW)["window_starts_before_data"] is False
+        """It needs no point to say so — retention and the age are enough."""
+        old = NOW - timedelta(days=18)
+        short = _window_coverage([], "-30d", 7 * 86400, now=NOW, deployment_started_at=old)
+        assert short["window_starts_before_data"] is True
+        complete = _window_coverage([], "-30d", 0, now=NOW, deployment_started_at=old)
+        assert complete["window_starts_before_data"] is False
 
     def test_an_unreadable_retention_leaves_it_unknown(self):
         """ "Could not look" is not "nothing there"."""
@@ -144,6 +242,8 @@ class TestWindowCoverage:
                 "window_start",
                 "retention_secs",
                 "history_starts_at",
+                "deployment_started_at",
+                "retention_limits_window",
                 "window_starts_before_data",
             }
 
@@ -195,6 +295,64 @@ class TestTheBindingRetention:
             ),
         ):
             assert binding_retention_seconds("u", "t", "o", ["a", "missing"]) == 86400
+
+    def test_the_servers_real_missing_bucket_response_reads_as_absence(self):
+        """InfluxDB 2.7.10 answers an unmatched name filter with 404.
+
+        Not 200 and an empty list, which is what the fakes assumed. Letting
+        that raise made the absent-bucket path unreachable and turned a
+        definite retention into "unknown", suppressing a real warning (review
+        finding 4). Confirmed against 2.7.10 in a container.
+        """
+        import requests
+
+        from saorsa_deploy.influx_retention import binding_retention_seconds, find_bucket
+
+        def _get(url, params=None, headers=None, timeout=None):
+            name = (params or {}).get("name")
+            if name == "present":
+                return SimpleNamespace(
+                    status_code=200,
+                    raise_for_status=lambda: None,
+                    json=lambda: {
+                        "buckets": [
+                            {
+                                "name": name,
+                                "retentionRules": [{"type": "expire", "everySeconds": 604800}],
+                            }
+                        ]
+                    },
+                )
+            return SimpleNamespace(
+                status_code=404,
+                raise_for_status=lambda: (_ for _ in ()).throw(
+                    requests.HTTPError("404 Client Error")
+                ),
+                json=lambda: {"code": "not found"},
+            )
+
+        with patch("saorsa_deploy.influx_retention.requests.get", _get):
+            assert find_bucket("u", "t", "o", "absent") is None
+            assert binding_retention_seconds("u", "t", "o", ["present", "absent"]) == 604800
+
+    def test_an_authorization_failure_is_still_an_error(self):
+        """A 403 must never be mistaken for "there is no such bucket"."""
+        import requests
+
+        from saorsa_deploy.influx_retention import find_bucket
+
+        def _get(*_a, **_k):
+            return SimpleNamespace(
+                status_code=403,
+                raise_for_status=lambda: (_ for _ in ()).throw(
+                    requests.HTTPError("403 Client Error")
+                ),
+                json=lambda: {},
+            )
+
+        with patch("saorsa_deploy.influx_retention.requests.get", _get):
+            with pytest.raises(requests.HTTPError):
+                find_bucket("u", "t", "o", "anything")
 
     def test_no_bucket_at_all_is_unknown_not_infinite(self):
         from saorsa_deploy.influx_retention import binding_retention_seconds
@@ -254,7 +412,13 @@ class TestTheJsonCarriesIt:
 
     def test_a_caller_supplied_coverage_is_what_is_emitted(self):
         """The callers resolve the retention and pass the coverage in."""
-        coverage = _window_coverage([_point(NOW - timedelta(days=7))], "-30d", 7 * 86400, now=NOW)
+        coverage = _window_coverage(
+            [_point(NOW - timedelta(days=7))],
+            "-30d",
+            7 * 86400,
+            now=NOW,
+            deployment_started_at=NOW - timedelta(days=18),
+        )
         captured = {}
         with patch(
             "saorsa_deploy.cmd.print_file_ops.emit_json",
@@ -289,7 +453,13 @@ class TestTheConsoleWarning:
         return lines
 
     def test_it_names_the_retention_the_gap_and_both_ways_out(self):
-        coverage = _window_coverage([_point(NOW - timedelta(days=7))], "-30d", 7 * 86400, now=NOW)
+        coverage = _window_coverage(
+            [_point(NOW - timedelta(days=7))],
+            "-30d",
+            7 * 86400,
+            now=NOW,
+            deployment_started_at=NOW - timedelta(days=18),
+        )
         lines = self._warn(coverage)
         assert len(lines) == 1
         # The retention is the explanation, so it is named...
@@ -305,7 +475,24 @@ class TestTheConsoleWarning:
     def test_it_is_silent_on_a_complete_answer(self):
         """The regression: this used to fire on almost every answer."""
         points = [_point(NOW - timedelta(days=d)) for d in range(30)]
-        assert self._warn(_window_coverage(points, "-30d", 0, now=NOW)) == []
+        assert (
+            self._warn(
+                _window_coverage(
+                    points, "-30d", 0, now=NOW, deployment_started_at=NOW - timedelta(days=60)
+                )
+            )
+            == []
+        )
+
+    def test_it_is_silent_for_a_young_deployment(self):
+        """The finding-3 case: a complete history, falsely reported short."""
+        points = [_point(NOW - timedelta(hours=h)) for h in (1, 2, 3)]
+        assert (
+            self._warn(
+                _window_coverage(points, "-30d", 7 * 86400, now=NOW, deployment_started_at=NOW)
+            )
+            == []
+        )
 
     def test_it_is_silent_when_the_retention_is_unknown(self):
         assert self._warn(_window_coverage([_point(NOW)], "-30d", None, now=NOW)) == []

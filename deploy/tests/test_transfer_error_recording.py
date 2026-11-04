@@ -555,3 +555,81 @@ class TestLegacyProseNeverReachesTheKindColumn:
         )
         assert row.error_kind is None
         assert row.reason == self.LEGACY
+
+
+class TestASuccessfulRetryClearsThePreviousKind:
+    """`prod_upload` rows are keyed on (deployment, host, source_url).
+
+    A continuous upload that fails BEFORE paying releases its pool claim, so
+    the very same source legitimately comes round again on the same deployment
+    and host. `error_kind` was COALESCEd unconditionally, so a later SUCCESS
+    left the row reading `status=success` with the previous attempt's
+    `error_kind='quorum'` — and the new kind summaries counted that success as
+    a quorum failure that did not happen (review finding 2). `reason` was
+    already assigned unconditionally, so the two fields disagreed.
+    """
+
+    def _upload(self, repo, deployment_id, **over):
+        kwargs = dict(
+            deployment_id=deployment_id,
+            client_hostname="PROD-UL-01-ant-client-upload-LON1-1",
+            region="LON1",
+            source_url="https://example.invalid/a.bin",
+            file_name="a.bin",
+            file_size_bytes=1024,
+            status=ProdUploadStatus.FAILED,
+            address=None,
+            chunks_stored=0,
+            chunks_failed=0,
+            total_chunks=0,
+            duration_ms=100,
+            upload_secs=0.1,
+            started_at=T0,
+            finished_at=T0,
+            reason=None,
+            error_kind=None,
+        )
+        kwargs.update(over)
+        return repo.upsert_prod_upload_result(**kwargs)
+
+    def test_a_success_after_a_failure_clears_the_kind(self, repo):
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(
+            repo,
+            d.id,
+            status=ProdUploadStatus.FAILED,
+            reason="insufficient peers: Got 0 quotes, need 1",
+            error_kind="quorum",
+        )
+        row = self._upload(repo, d.id, status=ProdUploadStatus.SUCCESS)
+        assert row.status is ProdUploadStatus.SUCCESS
+        assert row.error_kind is None
+        assert row.reason is None
+
+    def test_a_re_record_of_the_same_failure_still_preserves_the_kind(self, repo):
+        """The COALESCE's actual purpose: an expired Influx window."""
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(repo, d.id, reason="timeout: x", error_kind="timeout")
+        row = self._upload(repo, d.id)
+        assert row.status is ProdUploadStatus.FAILED
+        assert row.error_kind == "timeout"
+
+    def test_a_later_failure_with_a_new_kind_replaces_the_old(self, repo):
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(repo, d.id, reason="timeout: x", error_kind="timeout")
+        row = self._upload(repo, d.id, reason="payment error: y", error_kind="payment")
+        assert row.error_kind == "payment"
+
+    def test_a_success_recorded_first_never_gains_a_kind(self, repo):
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        row = self._upload(repo, d.id, status=ProdUploadStatus.SUCCESS)
+        assert row.error_kind is None
+
+    def test_a_kind_summary_over_the_retried_row_counts_no_failure(self, repo):
+        """What the defect actually cost: a contaminated diagnostic."""
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(repo, d.id, reason="insufficient peers: x", error_kind="quorum")
+        self._upload(repo, d.id, status=ProdUploadStatus.SUCCESS)
+        rows = repo.list_prod_upload_results_for_deployment(d.id)
+        kinds = [r.error_kind for r in rows if r.error_kind]
+        assert kinds == []

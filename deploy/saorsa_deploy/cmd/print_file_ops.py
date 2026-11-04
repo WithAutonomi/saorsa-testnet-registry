@@ -85,7 +85,31 @@ def _resolve_window_start(window, now=None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def _window_coverage(points: list[dict], window, retention_secs=None, now=None) -> dict:
+def _resolve_deployment_start(name: str):
+    """When the deployment's registry row was created, or None.
+
+    The start of the SERIES, which is what this is for: `prod
+    continuous-uploader deploy` deliberately reuses its row, so a redeploy does
+    not move it.
+    """
+    repo = get_repository()
+    if repo is None:
+        return None
+    deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+    created = getattr(deployment, "created_at", None) if deployment else None
+    if created is None:
+        return None
+    # SQLite hands back naive datetimes on some paths; everything stored is UTC.
+    return created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+
+
+def _window_coverage(
+    points: list[dict],
+    window,
+    retention_secs=None,
+    now=None,
+    deployment_started_at=None,
+) -> dict:
     """How far back the stored history goes, against how far back it was asked for.
 
     A short answer has to SAY it is short. InfluxDB does not refuse a window
@@ -106,10 +130,26 @@ def _window_coverage(points: list[dict], window, retention_secs=None, now=None) 
     infinite can never truncate, so the four permanent deployments stop
     triggering the signal once their retention is `0`.
 
+    **And the DEPLOYMENT'S AGE decides whether anything was actually lost.**
+    Retention bounds what the bucket *can* hold; it says nothing about whether
+    there was ever anything there to expire. A deployment created this morning,
+    queried with the default `-30d` against a 7-day bucket, has its entire
+    history present -- and was reported as truncated purely because the
+    requested start precedes `now - 7d` (review finding 3). So the two facts
+    are reported separately:
+
+    * ``retention_limits_window`` -- the window asks for data the bucket cannot
+      hold. A property of the request and the bucket, always computable.
+    * ``window_starts_before_data`` -- the answer is ACTUALLY short, i.e. the
+      deployment was already running before the retention horizon, so data that
+      existed has since expired. This is the one the warning fires on and the
+      one the issue asks for.
+
     ``retention_secs`` is 0 for infinite, a positive number of seconds, or None
-    when it could not be read -- which yields a verdict of None, because "could
-    not look" is not "nothing there". ``oldest_point`` is still reported: it is
-    what the warning names and what a reader compares against by eye.
+    when it could not be read; an unknown retention or an unknown deployment
+    start yields a verdict of None, because "could not look" is not "nothing
+    there". ``oldest_point`` is still reported: it is what the warning names
+    and what a reader compares against by eye.
     """
     now = now or datetime.now(timezone.utc)
     times = [p["_time"] for p in points if p.get("_time") is not None]
@@ -118,18 +158,37 @@ def _window_coverage(points: list[dict], window, retention_secs=None, now=None) 
     history_start = None
     if retention_secs is not None and retention_secs > 0:
         history_start = now - timedelta(seconds=retention_secs)
+
     if start is None or retention_secs is None:
-        truncated = None
+        limited = None
     elif history_start is None:
-        # Infinite retention: nothing has ever expired, whatever was asked for.
-        truncated = False
+        # Infinite retention: nothing can ever have expired.
+        limited = False
     else:
-        truncated = start < history_start
+        limited = start < history_start
+
+    if limited is None:
+        truncated = None
+    elif not limited:
+        # The bucket can hold everything that was asked for.
+        truncated = False
+    elif deployment_started_at is None:
+        # The window outruns the bucket, but without knowing when the
+        # deployment began there is no telling whether anything existed to be
+        # lost. Unknown, not "short".
+        truncated = None
+    else:
+        truncated = deployment_started_at < history_start
+
     return {
         "oldest_point": oldest.isoformat() if oldest is not None else None,
         "window_start": start.isoformat() if start is not None else None,
         "retention_secs": retention_secs,
         "history_starts_at": history_start.isoformat() if history_start else None,
+        "deployment_started_at": (
+            deployment_started_at.isoformat() if deployment_started_at else None
+        ),
+        "retention_limits_window": limited,
         "window_starts_before_data": truncated,
     }
 
@@ -162,8 +221,10 @@ def _warn_if_truncated(coverage: dict, name: str, console) -> None:
     console.print(
         f"[yellow]Warning:[/yellow] this answer is short. The bucket keeps "
         f"{days:g} day(s), so it holds nothing before "
-        f"{coverage['history_starts_at']} while the requested window starts at "
-        f"{coverage['window_start']}; the oldest point returned is "
+        f"{coverage['history_starts_at']}, and this deployment has been "
+        f"running since {coverage['deployment_started_at']} — so operations "
+        f"it performed before then have expired. The requested window starts "
+        f"at {coverage['window_start']} and the oldest point returned is "
         f"{coverage['oldest_point']}. The durable history is in Postgres: "
         f"`saorsa-deploy deployments print-recorded-results --name {name}`. "
         f"`saorsa-deploy monitoring set-retention --name {name} --days 0` "
@@ -416,6 +477,7 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         filtered,
         args.window,
         _resolve_retention(creds, (influx_bucket, INFLUXDB_WASM_BUCKET), console),
+        deployment_started_at=_resolve_deployment_start(args.name),
     )
     _emit_ops_json(
         args,
@@ -926,6 +988,7 @@ def _run_browser_rounds(args, console: Console) -> None:
             points,
             args.window,
             _resolve_retention(creds, (INFLUXDB_WASM_BUCKET,), console),
+            deployment_started_at=_resolve_deployment_start(args.name),
         ),
     )
     if not points:
@@ -1061,6 +1124,7 @@ def _run_prod_uploads(args, console: Console) -> None:
         points,
         args.window,
         _resolve_retention(creds, (influx_bucket, INFLUXDB_WASM_BUCKET), console),
+        deployment_started_at=_resolve_deployment_start(args.name),
     )
     _emit_ops_json(
         args,

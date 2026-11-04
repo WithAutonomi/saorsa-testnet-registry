@@ -945,6 +945,13 @@ one said why.
   `deployment_prod_upload_results` and `deployment_prod_download_results`.
   `deployment_prod_upload_verifications` is **deliberately excluded** — its
   `reason` is composed by us and its four-value status already is the kind.
+- **A successful retry CLEARS the previous attempt's kind.**
+  `deployment_prod_upload_results` keys on `(deployment, host, source_url)` and
+  an upload that fails before paying releases its claim, so the same source
+  comes round again. The kind is COALESCEd while the row stays a failure, but a
+  row recorded as a SUCCESS has no failure to classify — keeping it left
+  `status=success` reading `error_kind='quorum'`, counted by the kind summaries
+  as a failure that never happened.
 - **NULL means NOT RECORDED, never "no error", and nothing is backfilled.** The
   upserts **COALESCE** both fields, the rule `client_kind` and `client_build`
   carry: a later pass over a window the Influx points expired out of resolves
@@ -998,14 +1005,32 @@ as present when the bucket no longer had it.
   when nothing was missing. Retention is what actually bounds the history, is
   one metadata read, and settles item 8 by construction: an infinite bucket can
   never truncate. Unreadable retention is `null`, not `false`; the **shortest
-  finite** retention across the queried buckets binds; a younger deployment is
-  not flagged, because nothing expired. Nothing here may fail the command.
+  finite** retention across the queried buckets binds. Nothing here may fail
+  the command.
+- **And the DEPLOYMENT'S AGE decides whether anything was lost**, which is why
+  there are two booleans. Retention bounds what the bucket *can* hold, not
+  whether anything was ever there to expire: a deployment created this morning,
+  queried `-30d` against a 7-day bucket, has its whole history present and was
+  reported as truncated. `retention_limits_window` is the request-and-bucket
+  fact; `window_starts_before_data` also requires the deployment to have been
+  running before the horizon, and is what the warning fires on. An unknown age
+  is `null`, not `false`. `created_at` is the start of the SERIES, which is
+  right: `prod continuous-uploader deploy` reuses its row.
+- **A missing bucket is a 404, not an empty list**, on InfluxDB 2.7.10. Letting
+  that raise made the absent-bucket path unreachable — `set-retention` reported
+  failure on a pre-WASM-tier stack it had actually changed, and the retention
+  read returned "unknown", suppressing a definite warning. Every other status
+  still raises: a 401/403 must never read as absence.
 - **`print-uploads` now passes `--window` to the prod-upload query**, where it
   queried from the epoch (hence `"window": null` in a prod-upload JSON). With
   retention infinite, epoch-to-now grows without bound.
 - **`monitoring set-retention --name <n> --days <n>` (0 = infinite)** is the only
   way to change retention on a running stack: `--influx-retention-days` applies
-  at first provision only. It **reads each bucket back and prints what it now
+  at first provision only. **Infinite is an explicit `everySeconds: 0` rule,
+  never an empty list** — at create time `[]` means "no retention" (what
+  `influxdb_setup.py` sends), but on UPDATE 2.7.10 only touches retention when
+  a rule is supplied, so `PATCH {"retentionRules": []}` returns 200 and changes
+  nothing. It **reads each bucket back and prints what it now
   is**, because the maintenance run needs a step whose success can be checked,
   and it covers **every bucket the stack creates** (`testnet-metrics`,
   `client-metrics`, `wasm-client-metrics`) because they expire independently. An
