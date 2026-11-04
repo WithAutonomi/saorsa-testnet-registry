@@ -1026,9 +1026,11 @@ def main() -> int:
         # `ant` emits a result document for exactly one error variant
         # (`PartialUpload`); every other failure prints one `Error: ...` line to
         # stderr and nothing to stdout. So a failure with no document gets its
-        # reason from the stderr this process is already holding, and the native
-        # path's kind is classified from whichever of the two it ended up with
-        # (INFRA-484). Never over a `crash`, which the text cannot carry.
+        # reason from the stderr this process is already holding, and its kind
+        # is classified from whichever of the two it ended up with (INFRA-484).
+        # Never over a kind already reported or decided from the exit code: the
+        # browser path classifies inside the bundle, and `crash` is evidence no
+        # text can carry.
         if status != STATUS_SUCCESS and not reason:
             # A signal exit gets its own statement rather than the last trace
             # line the killed child happened to reach; `error_kind` is already
@@ -1041,7 +1043,11 @@ def main() -> int:
                 if exit_code < 0
                 else failure_reason(stderr_text)
             )
-        if not is_wasm and not error_kind and reason:
+        # The condition is "no kind was reported", not "native": a browser-path
+        # child that died before the bundle's own error handler ran reports
+        # none, and gating this on the transport left that failure with a
+        # reason nothing could group it by.
+        if not error_kind and reason:
             error_kind = classify_transfer_error(reason)
         # Per-upload on-chain cost (ant emits these on both success and
         # partial-failure JSON). uint256-shaped strings — kept verbatim.

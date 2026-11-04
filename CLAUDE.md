@@ -930,6 +930,21 @@ one said why.
   shell is the odd one out: bash has no negative exit status and reports
   **128+N**, so `uploader.sh` tests `> 128` where the Python services test
   `rc < 0`.
+- **The fallback is keyed on the EVIDENCE, never on the transport.** The
+  browser path catches its own errors and reports `reason` and `error_kind`
+  from inside the bundle, so each service used to read the document on that
+  path and fall back to stderr only on the native one — and classify only on
+  the native one. But a browser-path child that died **before** that handler
+  ran (a missing Node module, a bad bundle) or was OOM-killed mid-transfer
+  writes no document at all, which is the likeliest end a browser-path
+  transfer comes to on a VM where it is the largest RSS. So the arrangement
+  blanked exactly the failures the issue was opened over: PROD-WDL-01 is
+  wholly WASM, and a `Cannot find module` exit recorded neither field while a
+  SIGKILL recorded `crash` with no reason. The rule in all three services is
+  now: a failed operation with no reason takes the stderr (or names the signal
+  or the exit), and a failure carrying no kind has one classified from
+  whichever reason it ended up with. **Never over a kind already decided** —
+  the bundle's own, `over_cap`, or `crash`.
 - **`ant --json`'s `error` is a DISCRIMINATOR, not a reason.**
   `UploadFailureJson` sets it to the fixed string `"partial_upload"` and puts
   the explanation in a separate `reason`, so reading `error` as the reason

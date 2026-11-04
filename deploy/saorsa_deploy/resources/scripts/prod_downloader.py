@@ -1044,10 +1044,26 @@ def main() -> int:
                     file_size = int(result.get("file_size") or 0)
             else:
                 download_secs = _parse_download_secs(stdout)
-                # The native path has no result document to read: a failed
-                # download prints nothing to stdout even under `--json`. The
-                # one `Error: ...` line on stderr is all there is, so the
-                # reason comes from there and the kind from classifying it.
+
+            # The fallback is shared by both transports, because the case that
+            # needs it is the one where the transport makes no difference: the
+            # child exited without writing a result document at all, so there
+            # is nothing to read a reason out of.
+            #
+            # The native path has never had one -- a failed `ant` download
+            # prints nothing to stdout even under `--json`, and its single
+            # `Error: ...` line on stderr is the whole diagnostic. The browser
+            # path usually does, since the bundle catches its own errors and
+            # reports `reason`/`error_kind` -- but it cannot when the child
+            # died BEFORE that handler ran (a missing Node module, a bad
+            # bundle) or was killed mid-transfer by the OOM killer, which on
+            # this VM is the likeliest end a browser-path download comes to.
+            # Keeping the fallback inside the native branch left exactly those
+            # failures with a blank row, which is the thing INFRA-484 exists to
+            # stop: PROD-WDL-01 is the all-WASM deployment whose eleven
+            # unexplained failures opened the issue.
+            binary = "ant-wasm" if is_wasm else "ant"
+            if exit_code != 0 and not reason:
                 if exit_code < 0:
                     # A signal: the kind is decided below, but the REASON has
                     # to be decided here, because a killed child's last stderr
@@ -1056,18 +1072,28 @@ def main() -> int:
                     # signal.
                     reason = (
                         failure_reason(stderr_text, require_error_line=True)
-                        or f"ant killed by signal {-exit_code}"
+                        or f"{binary} killed by signal {-exit_code}"
                     )
-                elif exit_code != 0:
-                    reason = failure_reason(stderr_text)
-                    error_kind = classify_transfer_error(reason)
+                else:
+                    reason = failure_reason(stderr_text) or f"{binary} exit {exit_code}"
 
             # A negative return code is a signal: on a client VM that is almost
             # always the OOM killer, which reaches the transfer process long
             # before this parent. Recorded as a crash and the walk continues —
             # no checkpoint, no restart-policy change, no inflight journal.
+            # Decided before the classification below, so `crash` -- which is
+            # evidence no text can carry -- is never classified over.
             if exit_code < 0:
                 error_kind = ERROR_KIND_CRASH
+
+            # Only when the failure reported no kind of its own. The browser
+            # path classifies inside the bundle and so normally arrives with
+            # one (`over_cap` among them, which decides the status below); a
+            # child that never reached that handler arrives with none, and a
+            # kind classified from the stderr is what makes the row countable
+            # beside every other failure.
+            if exit_code != 0 and not error_kind and reason:
+                error_kind = classify_transfer_error(reason)
 
             if exit_code == 0:
                 status = STATUS_SUCCESS

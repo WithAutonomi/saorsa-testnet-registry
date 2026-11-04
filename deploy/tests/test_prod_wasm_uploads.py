@@ -773,6 +773,7 @@ class TestServiceMainLoop:
         file_size=1024,
         env=None,
         download=None,
+        stderr="",
     ):
         import json as _json
 
@@ -797,7 +798,7 @@ class TestServiceMainLoop:
             code = exit_code
             if code is None:
                 code = 0 if result and not result.get("error") else 1
-            return code, stdout, ""
+            return code, stdout, stderr
 
         monkeypatch.setattr(service, "_run_transfer", _fake_transfer)
 
@@ -827,6 +828,53 @@ class TestServiceMainLoop:
         bucket, line = posted[0]
         field = [f for f in line.split(" ")[1].split(",") if f.startswith("status=")]
         return bucket, int(field[0].split("=")[1].rstrip("i"))
+
+    def test_a_failure_with_no_document_is_classified_from_its_stderr(
+        self, service, monkeypatch, tmp_path
+    ):
+        """INFRA-484: the classification was gated on the TRANSPORT, not on evidence.
+
+        The browser path reports its own kind from inside the bundle, so it was
+        excluded here -- but a child that died before that handler ran reports
+        none, and the row then carried a reason nothing could group it by. The
+        condition is "no kind was reported".
+        """
+        posted = self._run(
+            service,
+            monkeypatch,
+            tmp_path,
+            result=None,
+            exit_code=1,
+            stderr="Error: payment error: insufficient funds for gas\n",
+        )
+        _bucket, line = posted[0]
+        assert 'error_kind="payment"' in line
+        assert "insufficient funds for gas" in line
+
+    def test_a_reported_kind_is_still_never_classified_over(self, service, monkeypatch, tmp_path):
+        posted = self._run(
+            service,
+            monkeypatch,
+            tmp_path,
+            result={"error": "x", "error_kind": "quorum", "reason": "not enough peers"},
+            exit_code=1,
+            stderr="Error: timeout: elapsed\n",
+        )
+        _bucket, line = posted[0]
+        assert 'error_kind="quorum"' in line
+
+    def test_a_killed_child_keeps_its_crash_kind(self, service, monkeypatch, tmp_path):
+        posted = self._run(
+            service,
+            monkeypatch,
+            tmp_path,
+            result=None,
+            exit_code=-9,
+            stderr="Error: payment error: insufficient funds\n",
+        )
+        _bucket, line = posted[0]
+        # `crash` is evidence no text can carry, so the text does not replace it.
+        assert 'error_kind="crash"' in line
 
     def test_a_success_is_status_zero(self, service, monkeypatch, tmp_path):
         posted = self._run(

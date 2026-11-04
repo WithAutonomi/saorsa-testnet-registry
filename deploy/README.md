@@ -4998,6 +4998,16 @@ Fixtures with their provenance stated are in `deploy/tests/fixtures/transfer-err
 
 **A signal outranks any text.** `crash` is the kind the vocabulary reserves for a child the OS killed, and it is decided from the exit status before anything is classified: the last stderr line of a killed `ant -v` is whatever trace it had reached, so classifying that recorded `other` with reason "Connected to autonomi network (found 5 peers)" for an OOM kill. The child's own `Error:` line still wins over naming the signal when it managed to print one (`failure_reason(..., require_error_line=True)` is what turns the last-line fallback off). Note the shell is the odd one out: `subprocess` hands the Python services a negative returncode, but bash has no negative exit status and reports **128+N**, so `uploader.sh` tests that instead — `> 128`, since 128 itself would be signal 0.
 
+**The fallback is keyed on the evidence, never on the transport.** The browser path catches its own errors and reports `reason` and `error_kind` from inside the bundle. Each service therefore read the document on that path and fell back to stderr only on the native one — and classified only on the native one, on the reasoning that a browser-path failure arrives already classified. It does not when the child never reached that handler: a missing Node module or a bad bundle exits before any JavaScript of ours runs, and an OOM kill lands mid-transfer on the process that is by far the largest RSS on the VM, which is the likeliest end a browser-path transfer comes to at all. So the arrangement blanked exactly the failures this feature was opened over — PROD-WDL-01, whose eleven unexplained rows are the issue's motivation, is wholly WASM: a `Cannot find module /opt/ant-wasm/cli.mjs` exit recorded **neither** field, and a SIGKILL recorded `crash` with **no reason**.
+
+The rule in all three services is now one rule:
+
+* a **failed** operation with no reason takes the last stderr error block, or names the signal, or names the exit (`ant-wasm exit 3`) — in that order, and only when the operation failed;
+* a failure carrying **no kind** has one classified from whichever reason it ended up with;
+* and a kind already decided is **never** classified over — the bundle's own, the `over_cap` that makes the operation a skip rather than a failure, and `crash`, which is evidence no text can carry.
+
+Each case is driven through the real service loop in the tests (a fake child that exits without writing a document, one killed by a signal, one killed after printing its own `Error:` line, and a success with a noisy stderr), because the defect was in how the branches were arranged rather than in any one function.
+
 **`reason` had to be added to the `PIVOT_FLUX_TEMPLATE` field allowlist**, which is why a new field would otherwise never reach a consumer at all.
 
 **On a prod-upload row, the kind describes the reason on that row — and the pair moves together.** `deployment_prod_upload_results` is keyed on `(deployment, host, source_url)`, and a continuous upload that fails *before* paying releases its pool claim — so the same source legitimately comes round again on the same deployment and host, which makes a later row a **different attempt** rather than a re-record of the old one. Writing the two fields independently broke that invariant three ways:

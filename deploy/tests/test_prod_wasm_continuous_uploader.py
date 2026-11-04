@@ -598,6 +598,7 @@ class TestOneCycle:
         wasm=True,
         readback=None,
         readback_stdout="",
+        stderr="",
     ):
         import json as _json
 
@@ -648,7 +649,7 @@ class TestOneCycle:
             code = exit_code
             if code is None:
                 code = 0 if result and not result.get("error") else 1
-            return code, stdout, ""
+            return code, stdout, stderr
 
         monkeypatch.setattr(service, "_run_ant", _fake_run)
         # One cycle, then out: the loop is `while True`, so the sleep is what
@@ -728,6 +729,57 @@ class TestOneCycle:
     def test_points_go_to_the_wasm_bucket(self, service, registry, monkeypatch, tmp_path):
         out = self._run(service, registry, monkeypatch, tmp_path, result=self._SUCCESS)
         assert {bucket for bucket, _ in out.posted} == {"wasm-client-metrics"}
+
+    def test_a_browser_failure_with_no_document_is_classified_from_its_stderr(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        """INFRA-484: the classification was gated on the TRANSPORT, not on evidence.
+
+        The bundle reports its own kind, so the browser path was excluded from
+        the classification here. A child that died before that handler ran --
+        a missing Node module, a bad bundle -- reports none, and the row then
+        carried a reason with nothing to group it by. The condition is "no kind
+        was reported", which the native path and the bundle both satisfy.
+        """
+        out = self._run(
+            service,
+            registry,
+            monkeypatch,
+            tmp_path,
+            result=None,
+            exit_code=1,
+            stderr="Error: payment error: insufficient funds for gas\n",
+        )
+        assert out.rows[0].error_kind == "payment"
+        assert "insufficient funds for gas" in out.rows[0].reason
+
+    def test_a_reported_browser_kind_is_still_never_classified_over(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        out = self._run(
+            service,
+            registry,
+            monkeypatch,
+            tmp_path,
+            result={"error": "x", "error_kind": "quorum", "reason": "not enough peers"},
+            stderr="Error: timeout: elapsed\n",
+        )
+        assert out.rows[0].error_kind == "quorum"
+
+    def test_a_killed_browser_child_keeps_its_crash_kind(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        out = self._run(
+            service,
+            registry,
+            monkeypatch,
+            tmp_path,
+            result=None,
+            exit_code=-9,
+            stderr="Error: payment error: insufficient funds\n",
+        )
+        # `crash` is evidence no text can carry, so the text does not replace it.
+        assert out.rows[0].error_kind == "crash"
 
     def test_a_failure_before_payment_releases_the_claim(
         self, service, registry, monkeypatch, tmp_path

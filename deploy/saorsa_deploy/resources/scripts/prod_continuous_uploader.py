@@ -1520,11 +1520,17 @@ def main() -> int:
                             or f"ant exit {rc}"
                         )
                     )
-                # The browser path classifies inside the bundle and reports its
-                # own kind, so only the native path is classified here -- and
-                # never over a kind already decided from the exit code, because
+                # Only when the failure reported no kind of its own, which is
+                # the condition rather than the transport. The browser path
+                # classifies inside the bundle and so normally arrives with
+                # one -- but it cannot when the child died BEFORE that handler
+                # ran (a missing Node module, a bad bundle): then it arrives
+                # with the stderr reason above and no kind, and skipping the
+                # classification on the strength of being WASM left that row
+                # with a reason nothing could group it by. A kind already
+                # decided from the exit code is never classified over, because
                 # `crash` is evidence no text can carry.
-                if not is_wasm and not error_kind and reason:
+                if not error_kind and reason:
                     error_kind = classify_transfer_error(reason)
                 storage_cost = parsed.get("storage_cost_atto")
                 gas_cost = parsed.get("gas_cost_wei")
