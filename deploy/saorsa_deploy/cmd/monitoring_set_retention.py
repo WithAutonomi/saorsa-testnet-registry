@@ -26,6 +26,15 @@ import requests
 from rich.console import Console
 from rich.table import Table
 
+from saorsa_deploy.influx_retention import (
+    _headers,
+)
+from saorsa_deploy.influx_retention import (
+    find_bucket as _find_bucket,
+)
+from saorsa_deploy.influx_retention import (
+    retention_seconds as _retention_seconds,
+)
 from saorsa_deploy.provisioning.monitoring import (
     INFLUXDB_BUCKET,
     INFLUXDB_CLIENT_BUCKET,
@@ -40,37 +49,6 @@ from saorsa_deploy.state import load_monitoring_state
 STACK_BUCKETS = (INFLUXDB_BUCKET, INFLUXDB_CLIENT_BUCKET, INFLUXDB_WASM_BUCKET)
 
 _TIMEOUT = 30
-
-
-def _headers(token: str) -> dict:
-    return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
-
-
-def _find_bucket(url: str, token: str, org: str, name: str) -> dict | None:
-    resp = requests.get(
-        f"{url.rstrip('/')}/api/v2/buckets",
-        params={"org": org, "name": name},
-        headers=_headers(token),
-        timeout=_TIMEOUT,
-    )
-    resp.raise_for_status()
-    for bucket in resp.json().get("buckets", []):
-        if bucket.get("name") == name:
-            return bucket
-    return None
-
-
-def _retention_seconds(bucket: dict) -> int:
-    """The bucket's expiry in seconds, or 0 for infinite.
-
-    An empty ``retentionRules`` list IS infinite in InfluxDB 2.x -- the same
-    encoding ``influxdb_setup.py`` writes at create time -- so an absent rule is
-    reported as 0 rather than as unknown.
-    """
-    for rule in bucket.get("retentionRules") or []:
-        if rule.get("type") == "expire":
-            return int(rule.get("everySeconds") or 0)
-    return 0
 
 
 def _set_retention(url: str, token: str, bucket_id: str, seconds: int) -> dict:

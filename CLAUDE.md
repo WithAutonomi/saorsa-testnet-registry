@@ -924,6 +924,13 @@ one said why.
   shell is the odd one out: bash has no negative exit status and reports
   **128+N**, so `uploader.sh` tests `> 128` where the Python services test
   `rc < 0`.
+- **`ant --json`'s `error` is a DISCRIMINATOR, not a reason.**
+  `UploadFailureJson` sets it to the fixed string `"partial_upload"` and puts
+  the explanation in a separate `reason`, so reading `error` as the reason
+  recorded `reason="partial_upload"` with kind `other` — the diagnostic lost
+  and every quorum shortfall unattributable. `reason` is read and classified;
+  `error` stays the failure signal, by VALUE, because `ant --json` omits it on
+  success while `ant-wasm` sets it to null.
 - **A reason is derived ONLY for an operation that failed.** `uploader.sh` is
   the one where that is not obvious: it always runs `ant -v`, so stderr is
   never empty on a healthy upload, and an ungated fallback to its last line
@@ -977,15 +984,22 @@ inside it — so `print-downloads --window -30d` against a 7-day bucket looks li
 a complete 30 days. That is how nine days of PROD-WDL-01's download history read
 as present when the bucket no longer had it.
 
-- **`print-downloads` / `print-uploads` emit `oldest_point`, `window_start` and
-  `window_starts_before_data`** in their `--json-out` document, always present
-  (null when unresolvable, so an old tool and an unresolvable window are
-  distinguishable), plus a console warning naming the oldest timestamp and
-  pointing at `print-recorded-results`. **The JSON half matters most** — a
-  warning on a console nobody reads is how this went unnoticed for nine days.
-  The boolean is literally that comparison, so a deployment YOUNGER than its
-  window sets it too; that is the reader's to interpret, not a false positive to
-  suppress.
+- **`print-downloads` / `print-uploads` emit `oldest_point`, `window_start`,
+  `retention_secs`, `history_starts_at` and `window_starts_before_data`** in
+  their `--json-out` document, always present (null when unknown, so an old
+  tool and an unreadable retention are distinguishable), plus a console warning
+  naming the retention, the gap and both commands that answer it. **The JSON
+  half matters most** — a warning on a console nobody reads is how this went
+  unnoticed for nine days.
+- **The verdict comes from the bucket's RETENTION, never from the points.**
+  Every query is `range(start: <window>)`, so the earliest point it can return
+  is at or after the window start — comparing the two made the flag true on
+  almost every non-empty answer, COMPLETE ones included, so the signal fired
+  when nothing was missing. Retention is what actually bounds the history, is
+  one metadata read, and settles item 8 by construction: an infinite bucket can
+  never truncate. Unreadable retention is `null`, not `false`; the **shortest
+  finite** retention across the queried buckets binds; a younger deployment is
+  not flagged, because nothing expired. Nothing here may fail the command.
 - **`print-uploads` now passes `--window` to the prod-upload query**, where it
   queried from the epoch (hence `"window": null` in a prod-upload JSON). With
   retention infinite, epoch-to-now grows without bound.
@@ -997,6 +1011,12 @@ as present when the bucket no longer had it.
   `client-metrics`, `wasm-client-metrics`) because they expire independently. An
   absent bucket is reported, not an error. Retention is nearly free —
   PROD-DL-01's monitoring VM holds 44 MB for 7 days on a 49 GB volume.
+- **The empty-window Slack summary reports what was archived.**
+  `file_ops_result_blocks` returned early on an empty aggregate and ignored its
+  records, so `--update-slack` published "no upload/download points found" over
+  transfers just written to Postgres. That branch now builds its totals from
+  the records and says the aggregate found nothing; with nothing at all it
+  still says so.
 - **The per-operation archive pass no longer depends on the aggregate.**
   `--window` narrows only the aggregate rollup; the per-op query is full-range
   and `record-results` used to return before reaching it when the windowed

@@ -69,36 +69,159 @@ class TestResolveWindowStart:
 
 
 class TestWindowCoverage:
-    def test_a_window_reaching_past_the_data_is_flagged(self):
-        """The retention case: 30 days asked for, 7 days of data."""
+    """The verdict comes from RETENTION, not from the returned points.
+
+    Every query is `range(start: <window>)`, so the earliest point it can
+    return is at or after the window start. Comparing the two made the flag
+    true on almost every non-empty answer — complete ones included — which
+    left the signal firing when nothing was missing (review finding 3).
+    Retention is the fact that actually bounds the history.
+    """
+
+    def test_a_complete_answer_is_not_flagged(self):
+        """60 days retained indefinitely, 30 requested: nothing is missing.
+
+        The exact case the review reproduced, and the one the old comparison
+        got wrong: the oldest point of a complete 30-day answer is still later
+        than the 30-day boundary.
+        """
+        points = [_point(NOW - timedelta(days=d)) for d in range(30)]
+        coverage = _window_coverage(points, "-30d", 0, now=NOW)
+        assert coverage["window_starts_before_data"] is False
+
+    def test_a_window_wider_than_the_retention_is_flagged(self):
+        """The real case: 30 days asked of a 7-day bucket."""
         points = [_point(NOW - timedelta(days=d)) for d in (1, 4, 7)]
-        coverage = _window_coverage(points, "-30d")
+        coverage = _window_coverage(points, "-30d", 7 * 86400, now=NOW)
         assert coverage["window_starts_before_data"] is True
         assert coverage["oldest_point"] == (NOW - timedelta(days=7)).isoformat()
-        assert coverage["window_start"] is not None
+        assert coverage["history_starts_at"] == (NOW - timedelta(days=7)).isoformat()
+        assert coverage["retention_secs"] == 7 * 86400
 
-    def test_a_window_inside_the_data_is_not_flagged(self):
-        points = [_point(NOW - timedelta(days=d)) for d in (1, 10, 30)]
-        assert _window_coverage(points, "-7d")["window_starts_before_data"] is False
+    def test_a_window_inside_the_retention_is_not_flagged(self):
+        points = [_point(NOW - timedelta(days=d)) for d in (1, 4, 7)]
+        assert (
+            _window_coverage(points, "-7d", 7 * 86400, now=NOW)["window_starts_before_data"]
+            is False
+        )
 
-    def test_no_points_leaves_it_unknown_rather_than_true(self):
-        """A query that returned nothing says nothing about retention."""
-        coverage = _window_coverage([], "-30d")
+    def test_infinite_retention_can_never_be_flagged(self):
+        """Item 8: the permanent deployments stop triggering it at `--days 0`."""
+        for window in ("-7d", "-30d", "0"):
+            coverage = _window_coverage([_point(NOW)], window, 0, now=NOW)
+            assert coverage["window_starts_before_data"] is False, window
+            assert coverage["history_starts_at"] is None
+
+    def test_an_empty_answer_still_knows_whether_it_is_short(self):
+        """It no longer needs a point to say so — retention is enough."""
+        assert _window_coverage([], "-30d", 7 * 86400, now=NOW)["window_starts_before_data"] is True
+        assert _window_coverage([], "-30d", 0, now=NOW)["window_starts_before_data"] is False
+
+    def test_an_unreadable_retention_leaves_it_unknown(self):
+        """ "Could not look" is not "nothing there"."""
+        coverage = _window_coverage([_point(NOW)], "-30d", None, now=NOW)
         assert coverage["window_starts_before_data"] is None
-        assert coverage["oldest_point"] is None
+        assert coverage["retention_secs"] is None
 
     def test_an_unresolvable_window_leaves_it_unknown(self):
         points = [_point(NOW - timedelta(days=1))]
-        assert _window_coverage(points, "-1mo")["window_starts_before_data"] is None
+        assert (
+            _window_coverage(points, "-1mo", 7 * 86400, now=NOW)["window_starts_before_data"]
+            is None
+        )
+
+    def test_the_oldest_point_is_still_reported(self):
+        """It is what the warning names and what a reader checks by eye."""
+        points = [_point(NOW - timedelta(days=d)) for d in (1, 9)]
+        coverage = _window_coverage(points, "-30d", 0, now=NOW)
+        assert coverage["oldest_point"] == (NOW - timedelta(days=9)).isoformat()
 
     def test_the_keys_are_always_present(self):
-        """So a consumer can tell an unresolvable window from an old tool."""
-        for window in ("-30d", "-1mo", None):
-            assert set(_window_coverage([], window)) == {
+        """So a consumer can tell an unknown from a tool that predates this."""
+        for retention in (None, 0, 7 * 86400):
+            assert set(_window_coverage([], "-30d", retention, now=NOW)) == {
                 "oldest_point",
                 "window_start",
+                "retention_secs",
+                "history_starts_at",
                 "window_starts_before_data",
             }
+
+
+class TestTheBindingRetention:
+    """A query spans both buckets, so the shortest finite retention binds."""
+
+    def test_the_shortest_finite_retention_wins(self):
+        from saorsa_deploy.influx_retention import binding_retention_seconds
+
+        buckets = {"testnet-metrics": 30 * 86400, "wasm-client-metrics": 7 * 86400}
+        with patch(
+            "saorsa_deploy.influx_retention.find_bucket",
+            lambda _u, _t, _o, name: {
+                "name": name,
+                "retentionRules": [{"type": "expire", "everySeconds": buckets[name]}],
+            },
+        ):
+            assert binding_retention_seconds("u", "t", "o", list(buckets)) == 7 * 86400
+
+    def test_all_infinite_is_infinite(self):
+        from saorsa_deploy.influx_retention import binding_retention_seconds
+
+        with patch(
+            "saorsa_deploy.influx_retention.find_bucket",
+            lambda _u, _t, _o, name: {"name": name, "retentionRules": []},
+        ):
+            assert binding_retention_seconds("u", "t", "o", ["a", "b"]) == 0
+
+    def test_one_finite_bucket_binds_even_beside_an_infinite_one(self):
+        from saorsa_deploy.influx_retention import binding_retention_seconds
+
+        rules = {"a": [], "b": [{"type": "expire", "everySeconds": 86400}]}
+        with patch(
+            "saorsa_deploy.influx_retention.find_bucket",
+            lambda _u, _t, _o, name: {"name": name, "retentionRules": rules[name]},
+        ):
+            assert binding_retention_seconds("u", "t", "o", ["a", "b"]) == 86400
+
+    def test_an_absent_bucket_contributes_nothing(self):
+        """A stack predating the WASM tier has no WASM bucket."""
+        from saorsa_deploy.influx_retention import binding_retention_seconds
+
+        rules = {"a": [{"type": "expire", "everySeconds": 86400}]}
+        with patch(
+            "saorsa_deploy.influx_retention.find_bucket",
+            lambda _u, _t, _o, name: (
+                {"name": name, "retentionRules": rules[name]} if name in rules else None
+            ),
+        ):
+            assert binding_retention_seconds("u", "t", "o", ["a", "missing"]) == 86400
+
+    def test_no_bucket_at_all_is_unknown_not_infinite(self):
+        from saorsa_deploy.influx_retention import binding_retention_seconds
+
+        with patch("saorsa_deploy.influx_retention.find_bucket", lambda *_a: None):
+            assert binding_retention_seconds("u", "t", "o", ["a"]) is None
+
+    def test_a_failed_read_is_unknown_not_infinite(self):
+        import requests
+
+        from saorsa_deploy.influx_retention import binding_retention_seconds
+
+        with patch(
+            "saorsa_deploy.influx_retention.find_bucket",
+            side_effect=requests.ConnectionError("no route"),
+        ):
+            assert binding_retention_seconds("u", "t", "o", ["a"]) is None
+
+    def test_the_resolver_never_raises(self):
+        """A diagnostic must not break the report it sits beside."""
+        from saorsa_deploy.cmd.print_file_ops import _resolve_retention
+
+        with patch(
+            "saorsa_deploy.cmd.print_file_ops.binding_retention_seconds",
+            side_effect=RuntimeError("anything at all"),
+        ):
+            assert _resolve_retention(("u", "t", "o", "b"), ("b",), None) is None
 
 
 class TestTheJsonCarriesIt:
@@ -120,11 +243,36 @@ class TestTheJsonCarriesIt:
             )
         return captured
 
-    def test_the_three_keys_reach_the_document(self):
+    def test_the_coverage_keys_reach_the_document(self):
         doc = self._emit([_point(NOW - timedelta(days=7))], "-30d")
         assert doc["window"] == "-30d"
-        assert doc["window_starts_before_data"] is True
         assert doc["oldest_point"] == (NOW - timedelta(days=7)).isoformat()
+        # The verdict needs the retention, which `_emit_ops_json` has no way to
+        # read on its own; its default is the unknown it should be.
+        assert doc["window_starts_before_data"] is None
+        assert doc["retention_secs"] is None
+
+    def test_a_caller_supplied_coverage_is_what_is_emitted(self):
+        """The callers resolve the retention and pass the coverage in."""
+        coverage = _window_coverage([_point(NOW - timedelta(days=7))], "-30d", 7 * 86400, now=NOW)
+        captured = {}
+        with patch(
+            "saorsa_deploy.cmd.print_file_ops.emit_json",
+            lambda doc, dest, console: captured.update(doc),
+        ):
+            _emit_ops_json(
+                SimpleNamespace(json_out="-"),
+                SimpleNamespace(print=lambda *_, **__: None),
+                deployment="PROD-DL-01",
+                kind="prod-continuous-downloader",
+                op_type="download",
+                source="influx",
+                points=[_point(NOW - timedelta(days=7))],
+                window="-30d",
+                coverage=coverage,
+            )
+        assert captured["window_starts_before_data"] is True
+        assert captured["retention_secs"] == 7 * 86400
 
     def test_an_empty_answer_still_emits_them(self):
         doc = self._emit([], "-30d")
@@ -134,25 +282,33 @@ class TestTheJsonCarriesIt:
 
 
 class TestTheConsoleWarning:
-    def test_it_names_the_oldest_timestamp_and_the_durable_command(self):
+    def _warn(self, coverage, name="PROD-DL-01"):
         lines: list[str] = []
         console = SimpleNamespace(print=lambda *a, **_k: lines.append(" ".join(map(str, a))))
-        coverage = _window_coverage([_point(NOW - timedelta(days=7))], "-30d")
-        _warn_if_truncated(coverage, "PROD-DL-01", console)
+        _warn_if_truncated(coverage, name, console)
+        return lines
+
+    def test_it_names_the_retention_the_gap_and_both_ways_out(self):
+        coverage = _window_coverage([_point(NOW - timedelta(days=7))], "-30d", 7 * 86400, now=NOW)
+        lines = self._warn(coverage)
         assert len(lines) == 1
+        # The retention is the explanation, so it is named...
+        assert "7 day(s)" in lines[0]
+        assert coverage["history_starts_at"] in lines[0]
+        # ...along with the oldest point the issue asks for...
         assert coverage["oldest_point"] in lines[0]
+        # ...and both commands that answer it.
         assert "print-recorded-results" in lines[0]
+        assert "set-retention" in lines[0]
         assert "PROD-DL-01" in lines[0]
 
-    def test_it_is_silent_when_the_answer_is_complete(self):
-        lines: list[str] = []
-        console = SimpleNamespace(print=lambda *a, **_k: lines.append(" ".join(map(str, a))))
-        # A point older than the window start: the answer reaches all the way.
-        old_enough = datetime.now(timezone.utc) - timedelta(days=60)
-        _warn_if_truncated(_window_coverage([_point(old_enough)], "-30d"), "DEV-01", console)
-        # And an empty answer, which says nothing about retention either way.
-        _warn_if_truncated(_window_coverage([], "-30d"), "DEV-01", console)
-        assert lines == []
+    def test_it_is_silent_on_a_complete_answer(self):
+        """The regression: this used to fire on almost every answer."""
+        points = [_point(NOW - timedelta(days=d)) for d in range(30)]
+        assert self._warn(_window_coverage(points, "-30d", 0, now=NOW)) == []
+
+    def test_it_is_silent_when_the_retention_is_unknown(self):
+        assert self._warn(_window_coverage([_point(NOW)], "-30d", None, now=NOW)) == []
 
 
 class TestProdUploadsHonourTheWindow:

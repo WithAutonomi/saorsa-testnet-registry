@@ -157,8 +157,27 @@ def file_ops_result_blocks(
     full; the list is capped at ``_MAX_OP_DETAIL_LINES`` with a note when it
     overflows. ``client_kind`` also splits the headline totals per transport.
     """
-    if not aggregates:
+    if not aggregates and not op_records:
         return [_section("*Results:* _no upload/download points found._")]
+
+    if not aggregates:
+        # The windowed AGGREGATE found nothing while the per-operation pass,
+        # which queries the full range and takes no window, archived these
+        # (INFRA-484). Reporting "no points found" over a list of operations
+        # just written to Postgres is the one reading this must not give, so
+        # the records speak for themselves and the aggregate's absence is
+        # stated as what it is.
+        total_ok = sum(1 for r in op_records if r.get("status") == "success")
+        total_fail = sum(1 for r in op_records if r.get("status") == "failure")
+        blocks = [
+            _totals_section(total_ok, total_fail, op_records),
+            _section(
+                "_No points in the requested window, so there is no per-host "
+                "aggregate; the operations below were archived full-range._"
+            ),
+        ]
+        blocks.extend(_op_detail_blocks(op_records))
+        return blocks
 
     total_ok = sum(a["success_count"] for a in aggregates)
     total_fail = sum(a["failure_count"] for a in aggregates)
@@ -183,20 +202,30 @@ def file_ops_result_blocks(
         )
     blocks.extend(_chunked_sections("*Per-host results:*", host_lines))
 
-    if op_records:
-        # Most-recent-first, so the cap keeps the freshest operations.
-        ordered = sorted(op_records, key=lambda r: r.get("started_at") or 0, reverse=True)
-        total = len(ordered)
-        shown = ordered[:_MAX_OP_DETAIL_LINES]
-        op_lines = [_op_detail_line(r) for r in shown]
-        header = (
-            f"*Per-operation detail (most recent {len(shown)} of {total}):*"
-            if total > len(shown)
-            else "*Per-operation detail:*"
-        )
-        blocks.extend(_chunked_sections(header, op_lines))
+    blocks.extend(_op_detail_blocks(op_records))
 
     return blocks
+
+
+def _op_detail_blocks(op_records: list[dict] | None) -> list[dict]:
+    """The per-operation detail sections, or nothing when there are none.
+
+    Its own function because the empty-aggregate branch above needs exactly
+    this and a second copy would be a second thing to keep in step.
+    """
+    if not op_records:
+        return []
+    # Most-recent-first, so the cap keeps the freshest operations.
+    ordered = sorted(op_records, key=lambda r: r.get("started_at") or 0, reverse=True)
+    total = len(ordered)
+    shown = ordered[:_MAX_OP_DETAIL_LINES]
+    op_lines = [_op_detail_line(r) for r in shown]
+    header = (
+        f"*Per-operation detail (most recent {len(shown)} of {total}):*"
+        if total > len(shown)
+        else "*Per-operation detail:*"
+    )
+    return _chunked_sections(header, op_lines)
 
 
 def _op_detail_line(record: dict) -> str:

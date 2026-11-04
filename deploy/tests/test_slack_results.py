@@ -1,6 +1,7 @@
 """Tests for the per-kind result-block builders (saorsa_deploy.slack_results)."""
 
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 
 from saorsa_deploy.slack_results import (
     _format_duration_ms,
@@ -235,3 +236,83 @@ def test_canary_blocks_render_summary_and_histogram():
     assert "Hours-to-confirmed-loss" in text
     assert "0–6h: 2" in text
     assert "6–24h: 0" not in text  # zero buckets are dropped
+
+
+class TestTheEmptyAggregateBranchStillReportsWhatWasArchived:
+    """`record-results` archives full-range even when the window is empty.
+
+    The per-operation pass takes no window (INFRA-484 item 9), so a deployment
+    whose service was down across the window still has operations to archive.
+    This helper returned early on an empty aggregate and ignored the records,
+    so `record-results --update-slack` published "no upload/download points
+    found" over transfers it had just written to Postgres (review finding 2).
+    """
+
+    def _op(self, **over):
+        op = {
+            "client_hostname": "PROD-DL-01-ant-client-download-fsn1-1",
+            "op_type": "download",
+            "status": "failure",
+            "file_size_bytes": 0,
+            "duration_ms": 1_190_248,
+            "started_at": datetime(2026, 11, 3, 2, tzinfo=timezone.utc),
+            "client_kind": "wasm",
+            "address": "caebaf34",
+            "client_build": None,
+            "error_kind": "not_found",
+            "reason": "not found: DataMap chunk not found at caebaf34",
+        }
+        op.update(over)
+        return op
+
+    def _text(self, blocks):
+        return json.dumps(blocks)
+
+    def test_the_archived_operations_are_reported(self):
+        blocks = file_ops_result_blocks([], op_records=[self._op()])
+        text = self._text(blocks)
+        assert "PROD-DL-01-ant-client-download-fsn1-1" in text
+        assert "no upload/download points found" not in text
+
+    def test_the_aggregate_s_absence_is_stated_rather_than_implied(self):
+        text = self._text(file_ops_result_blocks([], op_records=[self._op()]))
+        assert "No points in the requested window" in text
+        assert "archived full-range" in text
+
+    def test_the_totals_count_the_records(self):
+        ops = [self._op(status="success"), self._op(status="success"), self._op()]
+        text = self._text(file_ops_result_blocks([], op_records=ops))
+        # Two successes and one failure, from the records rather than from an
+        # aggregate that has nothing to say.
+        assert "2" in text and "1" in text
+
+    def test_nothing_at_all_still_says_nothing_was_found(self):
+        for records in (None, []):
+            blocks = file_ops_result_blocks([], op_records=records)
+            assert blocks == [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*Results:* _no upload/download points found._",
+                    },
+                }
+            ]
+
+    def test_a_populated_aggregate_renders_exactly_as_before(self):
+        """The branch is additive: the normal path is untouched."""
+        aggregates = [
+            {
+                "client_hostname": "hostA",
+                "op_type": "upload",
+                "file_size_bytes": 1024 * 1024,
+                "success_count": 3,
+                "failure_count": 1,
+                "avg_duration_ms": 100,
+                "min_duration_ms": 90,
+                "max_duration_ms": 110,
+            }
+        ]
+        text = self._text(file_ops_result_blocks(aggregates, op_records=[self._op()]))
+        assert "Per-host results" in text
+        assert "No points in the requested window" not in text

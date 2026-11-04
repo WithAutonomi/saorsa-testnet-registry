@@ -525,8 +525,23 @@ def _read(path):
         return ""
 
 
-def _json_error(text):
-    """`ant --json`'s own `error` value, from the last JSON line on stdout."""
+def _json_failure(text):
+    """``(failed, reason)`` from `ant --json`'s last JSON line on stdout.
+
+    `error` is a DISCRIMINATOR, not a reason. `UploadFailureJson` at
+    ant-cli-v0.3.11 sets it to the fixed string `"partial_upload"` and puts the
+    actual explanation in a separate `reason` field, so reading `error` as the
+    reason recorded `reason="partial_upload"` with `error_kind="other"` -- the
+    diagnostic lost before either store could keep it, and every quorum
+    shortfall counted as unattributable.
+
+    It stays the discriminator, because that is what it is for: `ant --json`
+    omits the key on success while `ant-wasm` always emits it set to null, so
+    the VALUE is the signal -- the rule `prod_uploader._classify` applies.
+
+    The fall back from `reason` to `error` covers a client that carries only
+    the one field; a fixed discriminator is a poor reason but it beats none.
+    """
     for line in reversed(text.strip().splitlines()):
         line = line.strip()
         if not line.startswith("{"):
@@ -535,10 +550,12 @@ def _json_error(text):
             data = json.loads(line)
         except ValueError:
             continue
-        if isinstance(data, dict):
-            return str(data.get("error") or "")
-        break
-    return ""
+        if not isinstance(data, dict):
+            break
+        error = str(data.get("error") or "")
+        reason = str(data.get("reason") or "")
+        return bool(error), (reason or error)
+    return False, ""
 
 
 def _field(value):
@@ -574,10 +591,10 @@ def _signal_number(raw):
 # the same pair `prod_uploader._classify` uses: `ant --json` omits the key on
 # success while `ant-wasm` always emits it and sets it to null, so a presence
 # check would report every healthy browser-path upload as a failure.
-json_error = _json_error(_read(sys.argv[1]))
+json_failed, json_reason = _json_failure(_read(sys.argv[1]))
 exit_code = sys.argv[3] if len(sys.argv) > 3 else ""
 signal_number = _signal_number(exit_code)
-failed = bool(json_error) or exit_code not in ("0", "")
+failed = json_failed or exit_code not in ("0", "")
 reason = ""
 kind = ""
 if signal_number is not None:
@@ -589,12 +606,12 @@ if signal_number is not None:
     # managed to print one.
     kind = "crash"
     reason = (
-        clip_reason(json_error)
+        clip_reason(json_reason)
         or failure_reason(_read(sys.argv[2]), require_error_line=True)
         or "ant killed by signal %d" % signal_number
     )
 elif failed:
-    reason = clip_reason(json_error) or failure_reason(_read(sys.argv[2]))
+    reason = clip_reason(json_reason) or failure_reason(_read(sys.argv[2]))
     kind = classify_transfer_error(reason) if reason else ""
 print(kind)
 print(',error_kind="%s",reason="%s"' % (_field(kind), _field(reason)) if reason else "")

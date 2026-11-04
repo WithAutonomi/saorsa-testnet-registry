@@ -37,6 +37,7 @@ from saorsa_deploy.influx import (
     fetch_all_prod_upload_points,
     fetch_browser_download_points,
 )
+from saorsa_deploy.influx_retention import binding_retention_seconds
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import load_client_state, load_monitoring_state
@@ -84,8 +85,8 @@ def _resolve_window_start(window, now=None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def _window_coverage(points: list[dict], window) -> dict:
-    """How far back the data actually goes, against how far back it was asked for.
+def _window_coverage(points: list[dict], window, retention_secs=None, now=None) -> dict:
+    """How far back the stored history goes, against how far back it was asked for.
 
     A short answer has to SAY it is short. InfluxDB does not refuse a window
     wider than its retention -- it returns whatever is inside it -- so a `-30d`
@@ -93,22 +94,57 @@ def _window_coverage(points: list[dict], window) -> dict:
     nothing in the output says otherwise. That is how nine days of PROD-WDL-01's
     download history read as present when it was not (INFRA-484).
 
-    ``window_starts_before_data`` is literally that comparison and nothing
-    cleverer, so a deployment YOUNGER than its window sets it too. That is not a
-    false positive to suppress: the requested window does reach further back
-    than the data, and whether the reason is retention or a recent deploy is the
-    reader's to know.
+    **The verdict comes from the bucket's RETENTION, not from the points.**
+    Every query is already `range(start: <window>)`, so the earliest point it
+    can return is at or after the window start: comparing the two made
+    ``window_starts_before_data`` true on almost every non-empty answer,
+    complete ones included, which left the signal firing when nothing was
+    missing (review finding 3). Retention is the fact that actually bounds the
+    history, and it is one cheap metadata read rather than a second query.
+
+    It also settles the case item 8 asks for by construction: a bucket set to
+    infinite can never truncate, so the four permanent deployments stop
+    triggering the signal once their retention is `0`.
+
+    ``retention_secs`` is 0 for infinite, a positive number of seconds, or None
+    when it could not be read -- which yields a verdict of None, because "could
+    not look" is not "nothing there". ``oldest_point`` is still reported: it is
+    what the warning names and what a reader compares against by eye.
     """
+    now = now or datetime.now(timezone.utc)
     times = [p["_time"] for p in points if p.get("_time") is not None]
     oldest = min(times) if times else None
-    start = _resolve_window_start(window)
+    start = _resolve_window_start(window, now=now)
+    history_start = None
+    if retention_secs is not None and retention_secs > 0:
+        history_start = now - timedelta(seconds=retention_secs)
+    if start is None or retention_secs is None:
+        truncated = None
+    elif history_start is None:
+        # Infinite retention: nothing has ever expired, whatever was asked for.
+        truncated = False
+    else:
+        truncated = start < history_start
     return {
         "oldest_point": oldest.isoformat() if oldest is not None else None,
         "window_start": start.isoformat() if start is not None else None,
-        "window_starts_before_data": (
-            None if (oldest is None or start is None) else start < oldest
-        ),
+        "retention_secs": retention_secs,
+        "history_starts_at": history_start.isoformat() if history_start else None,
+        "window_starts_before_data": truncated,
     }
+
+
+def _resolve_retention(creds, buckets, console) -> int | None:
+    """The retention bounding a query over ``buckets``, or None if unreadable.
+
+    Never raises and never fails the command: this is a diagnostic printed
+    beside the answer, not the answer.
+    """
+    influx_url, influx_token, influx_org, _bucket = creds
+    try:
+        return binding_retention_seconds(influx_url, influx_token, influx_org, buckets)
+    except Exception:  # noqa: BLE001 — a diagnostic must not break the report
+        return None
 
 
 def _warn_if_truncated(coverage: dict, name: str, console) -> None:
@@ -116,17 +152,22 @@ def _warn_if_truncated(coverage: dict, name: str, console) -> None:
 
     The JSON half matters more -- a warning on a console nobody reads is how
     this went unnoticed for nine days -- but the operator running the command by
-    hand is also the one who can act on it.
+    hand is also the one who can act on it. Named in terms of the retention,
+    because that is the thing to change (`monitoring set-retention`) and the
+    thing that explains the gap.
     """
     if not coverage.get("window_starts_before_data"):
         return
+    days = (coverage.get("retention_secs") or 0) / 86400
     console.print(
-        f"[yellow]Warning:[/yellow] the oldest point returned is "
-        f"{coverage['oldest_point']}, which is later than the start of the "
-        f"requested window ({coverage['window_start']}). InfluxDB has a "
-        f"retention window and does not say when a query outruns it, so this "
-        f"answer may be short. The durable history is in Postgres: "
-        f"`saorsa-deploy deployments print-recorded-results --name {name}`."
+        f"[yellow]Warning:[/yellow] this answer is short. The bucket keeps "
+        f"{days:g} day(s), so it holds nothing before "
+        f"{coverage['history_starts_at']} while the requested window starts at "
+        f"{coverage['window_start']}; the oldest point returned is "
+        f"{coverage['oldest_point']}. The durable history is in Postgres: "
+        f"`saorsa-deploy deployments print-recorded-results --name {name}`. "
+        f"`saorsa-deploy monitoring set-retention --name {name} --days 0` "
+        f"removes the expiry."
     )
 
 
@@ -371,7 +412,11 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         sys.exit(1)
 
     filtered = [p for p in points if p.get("_measurement") == op_type]
-    coverage = _window_coverage(filtered, args.window)
+    coverage = _window_coverage(
+        filtered,
+        args.window,
+        _resolve_retention(creds, (influx_bucket, INFLUXDB_WASM_BUCKET), console),
+    )
     _emit_ops_json(
         args,
         console,
@@ -877,6 +922,11 @@ def _run_browser_rounds(args, console: Console) -> None:
         source="influx:browser_download",
         points=points,
         window=args.window,
+        coverage=_window_coverage(
+            points,
+            args.window,
+            _resolve_retention(creds, (INFLUXDB_WASM_BUCKET,), console),
+        ),
     )
     if not points:
         console.print(
@@ -1007,7 +1057,11 @@ def _run_prod_uploads(args, console: Console) -> None:
         wasm_bucket=INFLUXDB_WASM_BUCKET,
         start=args.window,
     )
-    coverage = _window_coverage(points, args.window)
+    coverage = _window_coverage(
+        points,
+        args.window,
+        _resolve_retention(creds, (influx_bucket, INFLUXDB_WASM_BUCKET), console),
+    )
     _emit_ops_json(
         args,
         console,

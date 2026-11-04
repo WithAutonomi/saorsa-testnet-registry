@@ -61,8 +61,62 @@ def _run(embedded: Path, tmp_path: Path, stdout_text: str, stderr_text: str, exi
     return lines[0], lines[1]
 
 
+#: `ant --json`'s real failure document, as `UploadFailureJson` serialises it at
+#: ant-cli-v0.3.11: `error` is the fixed DISCRIMINATOR `"partial_upload"` and
+#: the explanation is in a separate `reason` field.
+REAL_FAILURE_DOCUMENT = {
+    "error": "partial_upload",
+    "total_chunks": 4,
+    "chunks_stored": 3,
+    "chunks_failed": 1,
+    "storage_cost_atto": "123",
+    "gas_cost_wei": "456",
+    "reason": (
+        "close-group PUT shortfall (dial churn): Stored on 2 peers, need 4 "
+        "(full: 12, price-floor: 5, other-rejection: 0, timeout: 0, dial: 1)"
+    ),
+}
+
+
 class TestTheEmbeddedClassifier:
-    def test_a_result_document_s_error_becomes_reason_and_a_kind(self, embedded, tmp_path):
+    def test_the_real_document_s_reason_is_read_and_classified(self, embedded, tmp_path):
+        """`error` is a discriminator, not a reason (review finding 1).
+
+        Reading `error` as the reason recorded `reason="partial_upload"` with
+        `error_kind="other"`: the explanation lost before either store could
+        keep it, and every quorum shortfall counted as unattributable. The
+        previous test here put the whole sentence in `error`, which is not a
+        shape `ant` produces — exactly the hand-written-fixture failure this
+        repository has a recorded position on.
+        """
+        kind, fields = _run(
+            embedded, tmp_path, json.dumps(REAL_FAILURE_DOCUMENT) + "\n", HEALTHY_STDERR
+        )
+        assert kind == "quorum"
+        assert "close-group PUT shortfall (dial churn)" in fields
+        # The discriminator is not the reason, and not the kind either.
+        assert "partial_upload" not in fields
+
+    def test_the_discriminator_still_detects_the_failure(self, embedded, tmp_path):
+        """Even on a zero exit, which is what it is for."""
+        kind, fields = _run(
+            embedded,
+            tmp_path,
+            json.dumps(REAL_FAILURE_DOCUMENT) + "\n",
+            HEALTHY_STDERR,
+            exit_code="0",
+        )
+        assert kind == "quorum"
+        assert fields
+
+    def test_a_document_with_only_an_error_falls_back_to_it(self, embedded, tmp_path):
+        """A fixed discriminator is a poor reason, but it beats none."""
+        kind, fields = _run(embedded, tmp_path, json.dumps({"error": "partial_upload"}) + "\n", "")
+        assert kind == "other"
+        assert 'reason="partial_upload"' in fields
+
+    def test_a_legacy_whole_sentence_in_error_is_still_classified(self, embedded, tmp_path):
+        """Older clients carried the sentence in `error` and no `reason`."""
         document = {
             "error": (
                 "partial upload: 3/4 stored, 1 failed: close-group PUT shortfall "
@@ -73,7 +127,6 @@ class TestTheEmbeddedClassifier:
         kind, fields = _run(embedded, tmp_path, json.dumps(document) + "\n", "trace\n")
         assert kind == "quorum"
         assert fields.startswith(',error_kind="quorum",reason="partial upload: 3/4 stored')
-        # The sentence is in `reason` and nowhere near `error_kind`.
         assert 'error_kind="partial upload' not in fields
 
     def test_no_document_falls_back_to_the_stderr_error_line(self, embedded, tmp_path):
