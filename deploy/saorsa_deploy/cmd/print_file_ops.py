@@ -85,22 +85,35 @@ def _resolve_window_start(window, now=None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def _resolve_deployment_start(name: str):
-    """When the deployment's registry row was created, or None.
+def _resolve_deployment_facts(name: str) -> tuple[str, "datetime | None"]:
+    """``(kind, created_at)`` from ONE registry lookup.
 
-    The start of the SERIES, which is what this is for: `prod
+    Both are wanted by every path here -- the kind to label the JSON, the
+    creation time to tell a truncated history from a young deployment -- and
+    resolving them separately meant two round trips to the registry on a
+    read-only diagnostic.
+
+    ``created_at`` is the start of the SERIES, which is what this is for: `prod
     continuous-uploader deploy` deliberately reuses its row, so a redeploy does
-    not move it.
+    not move it. Empty kind and None are "not recorded"; callers treat an empty
+    kind as testnet, as they always have.
     """
     repo = get_repository()
     if repo is None:
-        return None
+        return "", None
     deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
-    created = getattr(deployment, "created_at", None) if deployment else None
-    if created is None:
-        return None
-    # SQLite hands back naive datetimes on some paths; everything stored is UTC.
-    return created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+    if deployment is None:
+        return "", None
+    created = getattr(deployment, "created_at", None)
+    if created is not None and created.tzinfo is None:
+        # SQLite hands back naive datetimes on some paths; all stored UTC.
+        created = created.replace(tzinfo=timezone.utc)
+    return _kind_from_deploy_args(deployment.deploy_args), created
+
+
+def _resolve_deployment_start(name: str):
+    """When the deployment's registry row was created, or None."""
+    return _resolve_deployment_facts(name)[1]
 
 
 def _window_coverage(
@@ -376,13 +389,12 @@ def _resolve_kind(name: str, console: Console) -> str:
     treat that as testnet for backwards compatibility with rows that
     pre-date the ``kind`` field.
     """
-    repo = get_repository()
-    if repo is None:
-        return ""
-    deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
-    if deployment is None:
-        return ""
-    deploy_args = deployment.deploy_args or {}
+    return _resolve_deployment_facts(name)[0]
+
+
+def _kind_from_deploy_args(deploy_args) -> str:
+    """The deployment's ``kind``, from its `deploy_args` alone."""
+    deploy_args = deploy_args or {}
     if not isinstance(deploy_args, dict):
         return ""
     explicit = deploy_args.get("kind")

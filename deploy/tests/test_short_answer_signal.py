@@ -169,7 +169,7 @@ class TestResolvingTheDeploymentStart:
     def test_it_reads_created_at_from_the_registry(self):
         from saorsa_deploy.cmd.print_file_ops import _resolve_deployment_start
 
-        row = SimpleNamespace(created_at=NOW - timedelta(days=18))
+        row = SimpleNamespace(created_at=NOW - timedelta(days=18), deploy_args={})
         repo = SimpleNamespace(get_active_by_name=lambda _n: row, get_by_name=lambda _n: row)
         with patch("saorsa_deploy.cmd.print_file_ops.get_repository", return_value=repo):
             assert _resolve_deployment_start("PROD-DL-01") == NOW - timedelta(days=18)
@@ -178,12 +178,33 @@ class TestResolvingTheDeploymentStart:
         """SQLite hands naive datetimes back on some paths."""
         from saorsa_deploy.cmd.print_file_ops import _resolve_deployment_start
 
-        row = SimpleNamespace(created_at=datetime(2026, 10, 17, 9, 0))
+        row = SimpleNamespace(created_at=datetime(2026, 10, 17, 9, 0), deploy_args={})
         repo = SimpleNamespace(get_active_by_name=lambda _n: row, get_by_name=lambda _n: row)
         with patch("saorsa_deploy.cmd.print_file_ops.get_repository", return_value=repo):
             assert _resolve_deployment_start("X") == datetime(
                 2026, 10, 17, 9, 0, tzinfo=timezone.utc
             )
+
+    def test_the_kind_and_the_start_come_from_ONE_lookup(self):
+        """Two round trips on a read-only diagnostic, for no reason."""
+        from saorsa_deploy.cmd.print_file_ops import _resolve_deployment_facts
+
+        calls = []
+        row = SimpleNamespace(
+            created_at=NOW - timedelta(days=18),
+            deploy_args={"kind": "prod-continuous-downloader"},
+        )
+
+        def _active(name):
+            calls.append(name)
+            return row
+
+        repo = SimpleNamespace(get_active_by_name=_active, get_by_name=lambda _n: row)
+        with patch("saorsa_deploy.cmd.print_file_ops.get_repository", return_value=repo):
+            kind, started = _resolve_deployment_facts("PROD-DL-01")
+        assert kind == "prod-continuous-downloader"
+        assert started == NOW - timedelta(days=18)
+        assert calls == ["PROD-DL-01"]
 
     def test_no_registry_is_unknown(self):
         from saorsa_deploy.cmd.print_file_ops import _resolve_deployment_start
