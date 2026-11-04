@@ -2395,7 +2395,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.upload_secs = upload_secs
             existing.started_at = started_at
             existing.finished_at = finished_at
-            existing.reason = reason
             # Only overwrite cost when the caller actually has it — a re-record
             # against an older `ant` binary (which omits cost) shouldn't wipe a
             # value captured by an earlier run.
@@ -2421,24 +2420,36 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             # one must not erase it.
             if client_build is not None:
                 existing.client_build = client_build
-            # Same rule again (INFRA-484), with one exception: a pass whose
-            # Influx points have aged out of the retention window carries no
-            # kind, and writing that null would erase the classification of a
-            # failure nothing else records -- but a row that has just been
-            # recorded as a SUCCESS has no failure to classify, so the old kind
-            # is cleared rather than coalesced.
+            # `reason` and `error_kind` describe ONE failure, so they move
+            # together or not at all. The invariant is simply that the kind on
+            # a row describes the reason on that row (INFRA-484).
             #
             # The key here is (deployment, host, source_url), and a continuous
-            # upload that failed BEFORE paying releases its pool claim, so the
-            # same source legitimately comes round again on the same
-            # deployment. Keeping the previous attempt's kind left a
-            # `status=success` row reading `error_kind='quorum'`, which the new
-            # kind summaries then counted as a quorum failure that did not
-            # happen. `reason` was already assigned unconditionally, so the two
-            # fields now agree.
+            # upload that fails BEFORE paying releases its pool claim -- so the
+            # same source legitimately comes round again on the same deployment
+            # and host, and a later row is a DIFFERENT attempt rather than a
+            # re-record of the old one. Writing the two fields independently
+            # broke that invariant in both directions:
+            #
+            #   * a success kept the previous attempt's kind, so
+            #     `status=success` read `error_kind='quorum'`;
+            #   * a new failure carrying a reason but no kind -- a source-fetch
+            #     failure, which supplies the HTTP error and no kind because an
+            #     unreachable source mirror is not an Autonomi transfer failure
+            #     at all -- paired `HTTP Error 503` with the old `payment`,
+            #     counting a mirror outage as a production payment failure;
+            #   * and a re-record carrying neither wiped the reason while
+            #     keeping the kind.
+            #
+            # So: a success clears both, anything that carries either field
+            # writes both, and a pass that carries neither (a `record-results`
+            # over an Influx window whose points have expired) leaves both
+            # alone -- which is what the COALESCE was for.
             if status is ProdUploadStatus.SUCCESS:
+                existing.reason = None
                 existing.error_kind = None
-            elif error_kind is not None:
+            elif reason is not None or error_kind is not None:
+                existing.reason = reason
                 existing.error_kind = error_kind
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()

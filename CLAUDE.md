@@ -951,13 +951,19 @@ one said why.
   `deployment_prod_upload_results` and `deployment_prod_download_results`.
   `deployment_prod_upload_verifications` is **deliberately excluded** — its
   `reason` is composed by us and its four-value status already is the kind.
-- **A successful retry CLEARS the previous attempt's kind.**
-  `deployment_prod_upload_results` keys on `(deployment, host, source_url)` and
-  an upload that fails before paying releases its claim, so the same source
-  comes round again. The kind is COALESCEd while the row stays a failure, but a
-  row recorded as a SUCCESS has no failure to classify — keeping it left
-  `status=success` reading `error_kind='quorum'`, counted by the kind summaries
-  as a failure that never happened.
+- **On a prod-upload row the kind describes THAT row's reason, and the pair
+  moves together.** `deployment_prod_upload_results` keys on `(deployment,
+  host, source_url)` and an upload that fails before paying releases its claim,
+  so the same source comes round again — a later row is a DIFFERENT attempt.
+  Writing the two fields independently broke that three ways: a SUCCESS kept
+  the old kind (`status=success` reading `error_kind='quorum'`); a new failure
+  with a reason but no kind inherited it (a source-fetch failure supplies the
+  HTTP error and no kind **on purpose** — an unreachable mirror is not an
+  Autonomi transfer failure, which is why that path releases the claim — so
+  `HTTP Error 503` read as `payment`); and a re-record with neither wiped the
+  reason and kept the kind. So: a success clears both, either field present
+  writes both, neither present leaves both — the last being what the COALESCE
+  was for.
 - **NULL means NOT RECORDED, never "no error", and nothing is backfilled.** The
   upserts **COALESCE** both fields, the rule `client_kind` and `client_build`
   carry: a later pass over a window the Influx points expired out of resolves

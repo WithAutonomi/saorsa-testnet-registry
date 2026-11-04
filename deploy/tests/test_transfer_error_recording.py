@@ -126,13 +126,27 @@ class TestProdResultTables:
         kwargs.update(over)
         return repo.upsert_prod_upload_result(**kwargs)
 
-    def test_the_upload_kind_is_written_and_never_erased(self, repo):
+    def test_the_upload_kind_is_written(self, repo):
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        row = self._upload(repo, d.id, error_kind="quorum")
+        assert row.error_kind == "quorum"
+        assert row.to_dict()["error_kind"] == "quorum"
+
+    def test_a_pass_carrying_NEITHER_field_erases_neither(self, repo):
+        """What the COALESCE is for: an Influx window whose points expired.
+
+        This case supplies no reason either — a pass that carried a reason but
+        no kind is a DIFFERENT attempt, covered below, and conflating the two
+        is how the kind came to outlive the failure it described.
+        """
         d = repo.create(name="PROD-UL-01", deploy_args={})
         self._upload(repo, d.id, error_kind="quorum")
-        row = self._upload(repo, d.id, error_kind=None, duration_ms=200)
+        row = self._upload(repo, d.id, reason=None, error_kind=None, duration_ms=200)
         assert row.error_kind == "quorum"
+        assert row.reason == "insufficient peers: Got 0 quotes, need 1"
+        # The rest of the row still updates: this is two columns held back, not
+        # a refusal to write.
         assert row.duration_ms == 200
-        assert row.to_dict()["error_kind"] == "quorum"
 
     def test_the_download_kind_is_written(self, repo):
         d = repo.create(name="PROD-DL-LOCAL", deploy_args={})
@@ -555,6 +569,120 @@ class TestLegacyProseNeverReachesTheKindColumn:
         )
         assert row.error_kind is None
         assert row.reason == self.LEGACY
+
+
+class TestTheKindMustDescribeTheReasonOnTheRow:
+    """One invariant, and the pair moves together to keep it.
+
+    `deployment_prod_upload_results` is keyed on (deployment, host,
+    source_url), and a continuous upload that fails BEFORE paying releases its
+    pool claim — so the same source legitimately comes round again and a later
+    row is a DIFFERENT attempt, not a re-record of the old one. Writing
+    `reason` and `error_kind` independently broke the invariant in three
+    directions, each found separately (review findings across ab1b9c5 and
+    870c939):
+
+    * a success kept the previous attempt's kind;
+    * a new failure carrying a reason but no kind — a source-fetch failure —
+      paired its HTTP error with the old `payment`;
+    * a re-record carrying neither wiped the reason and kept the kind.
+    """
+
+    def _upload(self, repo, deployment_id, **over):
+        kwargs = dict(
+            deployment_id=deployment_id,
+            client_hostname="PROD-UL-01-ant-client-upload-LON1-1",
+            region="LON1",
+            source_url="https://example.invalid/a.bin",
+            file_name="a.bin",
+            file_size_bytes=1024,
+            status=ProdUploadStatus.FAILED,
+            address=None,
+            chunks_stored=0,
+            chunks_failed=0,
+            total_chunks=0,
+            duration_ms=100,
+            upload_secs=0.1,
+            started_at=T0,
+            finished_at=T0,
+            reason=None,
+            error_kind=None,
+        )
+        kwargs.update(over)
+        return repo.upsert_prod_upload_result(**kwargs)
+
+    def test_a_source_fetch_failure_does_not_inherit_the_old_kind(self, repo):
+        """The finding: a mirror outage counted as a production payment failure.
+
+        The fetch writer supplies the HTTP error and NO kind, deliberately —
+        an unreachable source mirror is not an Autonomi transfer failure at
+        all, which is why that path releases the claim. So the row must read
+        NULL rather than the previous attempt's classification.
+        """
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(repo, d.id, reason="payment error: nonce too low", error_kind="payment")
+        row = self._upload(
+            repo,
+            d.id,
+            status=ProdUploadStatus.DOWNLOAD_FAILED,
+            reason="HTTP Error 503: Service Unavailable",
+        )
+        assert row.status is ProdUploadStatus.DOWNLOAD_FAILED
+        assert row.reason == "HTTP Error 503: Service Unavailable"
+        assert row.error_kind is None
+
+    def test_a_quorum_failure_is_not_inherited_either(self, repo):
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(repo, d.id, reason="insufficient peers: x", error_kind="quorum")
+        row = self._upload(
+            repo,
+            d.id,
+            status=ProdUploadStatus.DOWNLOAD_FAILED,
+            reason="HTTP Error 503: Service Unavailable",
+        )
+        assert row.error_kind is None
+
+    def test_a_re_record_carrying_neither_keeps_BOTH(self, repo):
+        """The reverse direction: the reason used to be wiped."""
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(repo, d.id, reason="timeout: x", error_kind="timeout")
+        row = self._upload(repo, d.id)
+        assert row.reason == "timeout: x"
+        assert row.error_kind == "timeout"
+
+    def test_a_new_failure_carrying_both_replaces_both(self, repo):
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(repo, d.id, reason="timeout: x", error_kind="timeout")
+        row = self._upload(repo, d.id, reason="payment error: y", error_kind="payment")
+        assert (row.reason, row.error_kind) == ("payment error: y", "payment")
+
+    def test_a_kind_with_no_reason_still_replaces_the_pair(self, repo):
+        """Whichever field arrives, both are written: the pair is one fact."""
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(repo, d.id, reason="timeout: x", error_kind="timeout")
+        row = self._upload(repo, d.id, error_kind="crash")
+        assert row.error_kind == "crash"
+        assert row.reason is None
+
+    @pytest.mark.parametrize(
+        "first,second",
+        [
+            (("payment error: x", "payment"), (None, None)),
+            (("payment error: x", "payment"), ("HTTP Error 503", None)),
+            (("payment error: x", "payment"), ("timeout: y", "timeout")),
+            ((None, None), ("timeout: y", "timeout")),
+            ((None, None), (None, None)),
+        ],
+    )
+    def test_the_invariant_holds_over_every_pair_of_attempts(self, repo, first, second):
+        """A kind is never left describing a reason that is not on the row."""
+        d = repo.create(name="PROD-UL-01", deploy_args={})
+        self._upload(repo, d.id, reason=first[0], error_kind=first[1])
+        row = self._upload(repo, d.id, reason=second[0], error_kind=second[1])
+        # A kind only ever accompanies the reason it was recorded with.
+        if row.error_kind is not None:
+            expected = second if (second[0] or second[1]) else first
+            assert (row.reason, row.error_kind) == expected
 
 
 class TestASuccessfulRetryClearsThePreviousKind:

@@ -5000,7 +5000,13 @@ Fixtures with their provenance stated are in `deploy/tests/fixtures/transfer-err
 
 **`reason` had to be added to the `PIVOT_FLUX_TEMPLATE` field allowlist**, which is why a new field would otherwise never reach a consumer at all.
 
-**A successful retry clears the previous attempt's kind.** `deployment_prod_upload_results` is keyed on `(deployment, host, source_url)`, and a continuous upload that fails *before* paying releases its pool claim — so the same source legitimately comes round again on the same deployment and host. The kind is COALESCEd while the row stays a failure (a re-record over an expired Influx window carries none), but a row recorded as a **success** has no failure to classify, so the old kind is cleared rather than kept. Keeping it left `status=success` reading `error_kind='quorum'`, which the kind summaries then counted as a failure that did not happen; `reason` was already assigned unconditionally, so the two now agree.
+**On a prod-upload row, the kind describes the reason on that row — and the pair moves together.** `deployment_prod_upload_results` is keyed on `(deployment, host, source_url)`, and a continuous upload that fails *before* paying releases its pool claim — so the same source legitimately comes round again on the same deployment and host, which makes a later row a **different attempt** rather than a re-record of the old one. Writing the two fields independently broke that invariant three ways:
+
+* a **success** kept the previous attempt's kind, so `status=success` read `error_kind='quorum'`;
+* a new failure carrying a reason but **no kind** paired it with the old one — a source-fetch failure supplies the HTTP error and no kind, deliberately, because an unreachable source mirror is not an Autonomi transfer failure at all (which is why that path releases the claim), so `HTTP Error 503` was recorded as `payment` and a mirror outage counted as a production payment failure;
+* and a re-record carrying **neither** wiped the reason while keeping the kind.
+
+So a success clears both, anything carrying either field writes both, and a pass carrying neither — a `record-results` over an Influx window whose points have expired — leaves both alone, which is what the COALESCE was for all along.
 
 **NULL means NOT RECORDED and never means "no error".** Nothing is backfilled — the Influx points of every earlier run carried no such field, and a guessed kind reads as a fact. Whatever is still inside a deployment's retention window is picked up by the next `deployments archive` at no cost, because that pass re-upserts the same rows. The upserts **COALESCE** both fields, the same rule `client_kind` and `client_build` carry: the bucket has a retention window, so a later pass over a window the points have expired out of resolves None for every one of them, and writing that would erase the only durable record of why a transfer failed.
 
