@@ -9,7 +9,6 @@ with it.
 
 import importlib.util
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -631,7 +630,13 @@ class TestTheClientRoleCommand:
         monkeypatch.delenv("DATABASE_URL", raising=False)
 
         def fake_load_env_files(*args, **kwargs):
-            os.environ["DATABASE_URL"] = "postgresql://admin:pw@example.org/reg"
+            # `monkeypatch.setenv`, NOT a bare `os.environ[...] =`: the bare
+            # assignment is not tracked, so it survived the test and handed
+            # every later test in the session a DATABASE_URL pointing at
+            # example.org. Dormant until something later actually opened a
+            # connection from the environment, and then two `print-uploads`
+            # tests spent five minutes each on a TCP timeout (INFRA-484 CI).
+            monkeypatch.setenv("DATABASE_URL", "postgresql://admin:pw@example.org/reg")
             return []
 
         monkeypatch.setattr(module, "load_env_files", fake_load_env_files)

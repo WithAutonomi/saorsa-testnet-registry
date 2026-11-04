@@ -39,6 +39,9 @@ from saorsa_db.models.host_metric_bucket import (
     METRIC_MEM_PERCENT,
     METRIC_RSS_BYTES,
 )
+from saorsa_db.models.transfer_error_kind import TRANSFER_ERROR_KIND_VALUES
+
+from saorsa_deploy.transfer_errors import clip_reason
 
 OP_MEASUREMENTS = ("upload", "download")
 
@@ -73,6 +76,7 @@ PIVOT_FLUX_TEMPLATE = """from(bucket: "{bucket}")
        r._field == "error_kind" or
        r._field == "expected_sha256" or
        r._field == "file_size" or
+       r._field == "reason" or
        r._field == "sha256" or
        r._field == "start_ns" or
        r._field == "status" or
@@ -274,6 +278,38 @@ def _iter_flux_rows(
         yield record
 
 
+#: Every value `error_kind` may legitimately hold. A point carrying anything
+#: else is carrying a REASON under the wrong name -- see `_split_op_error`.
+_KNOWN_ERROR_KINDS = frozenset(TRANSFER_ERROR_KIND_VALUES)
+
+
+def _split_op_error(kind: str, reason: str) -> tuple[str | None, str | None]:
+    """Separate a pivoted point's kind from its reason, tolerating legacy prose.
+
+    Until INFRA-484 `uploader.sh` wrote `ant`'s whole error SENTENCE into the
+    field it calls `error_kind`, and those points are still in every bucket
+    that has not aged out. A value that is not one of the nine kinds is
+    therefore not a kind at all: it is a reason stored under the wrong name, so
+    it goes to `reason` and `error_kind` reads NULL -- "not recorded", which is
+    exactly what "the existing contents are not migrated" means. Nothing in
+    Influx is rewritten and no classification is guessed for a past operation:
+    an old row reads as unclassified, as the issue says it should.
+
+    Load-bearing for more than tidiness. `error_kind` is a `String(32)` and a
+    real legacy sentence measured **103 characters**, so Postgres rejects the
+    row -- and with it the whole bulk archive batch, which would make
+    `deployments archive` fail outright on any pre-change testnet run.
+
+    Done here, at the parse boundary, so every consumer is right at once: the
+    archive's row dicts, the kind counts in `print-downloads --summary` and
+    `print-recorded-results`, and the `--json-out` document a reporting tool
+    reads.
+    """
+    if kind and kind not in _KNOWN_ERROR_KINDS:
+        return None, reason or clip_reason(kind)
+    return kind or None, reason or None
+
+
 def _parse_pivoted_csv(body: "str | Iterable[str]") -> list[dict]:
     points: list[dict] = []
     reader = csv.reader(_csv_lines(body))
@@ -292,6 +328,9 @@ def _parse_pivoted_csv(body: "str | Iterable[str]") -> list[dict]:
             continue
         if record.get("host") in (None, ""):
             continue
+        error_kind, reason = _split_op_error(
+            record.get("error_kind") or "", record.get("reason") or ""
+        )
         try:
             points.append(
                 {
@@ -307,7 +346,14 @@ def _parse_pivoted_csv(body: "str | Iterable[str]") -> list[dict]:
                     # existed, so None rather than "" — "" would read as an
                     # address that was recorded and happened to be empty.
                     "address": record.get("address") or None,
-                    "error_kind": record.get("error_kind") or None,
+                    # Why the transfer failed: a short classified kind, and
+                    # `ant`'s own words clipped to 500 characters (INFRA-484).
+                    # Both absent on a success and on every point written
+                    # before the fields existed. A legacy `upload` point whose
+                    # `error_kind` holds the whole sentence is split here --
+                    # see `_split_op_error`.
+                    "error_kind": error_kind,
+                    "reason": reason,
                     # The ant-client commit the transferring binary was built
                     # from. Browser path only, and only from a bundle carrying
                     # build provenance.

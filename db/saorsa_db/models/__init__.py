@@ -122,6 +122,11 @@ from saorsa_db.models.release_candidate import (
     ReleaseCandidateCrate,
     ReleaseCandidatePR,
 )
+from saorsa_db.models.transfer_error_kind import (
+    TRANSFER_ERROR_KIND_VALUES,
+    TRANSFER_ERROR_KINDS_NOT_FROM_TEXT,
+    TransferErrorKind,
+)
 
 __all__ = [
     "BLOCKING_STATUSES",
@@ -217,4 +222,7 @@ __all__ = [
     "ReleaseCandidate",
     "ReleaseCandidateCrate",
     "ReleaseCandidatePR",
+    "TRANSFER_ERROR_KIND_VALUES",
+    "TRANSFER_ERROR_KINDS_NOT_FROM_TEXT",
+    "TransferErrorKind",
 ]

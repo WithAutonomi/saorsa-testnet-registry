@@ -96,6 +96,215 @@ ERROR_KIND_CRASH = "crash"
 # browser cap at deploy time, so an over-cap file is never claimed. The value is
 # skipped rather than reused so the two services' wire values stay aligned.
 
+
+# --- transfer error classification: keep byte-identical in every copy ---
+#
+# `ant` has no `error_kind` of its own: the kind is entirely our invention, and
+# the only material it can be derived from is the single line `ant-cli` prints
+# to stderr on a failure (`ant-cli/src/main.rs`: `eprintln!("Error: {e:#}")`).
+# Exit codes are 0 or 1 and so discriminate nothing, and a failed DOWNLOAD
+# writes nothing at all to stdout -- `--json` included, because the only
+# `println!` of the result document sits after the `?` that aborts. Verified
+# against the 0.3.12 release binary: stdout empty, one `Error: ...` line on
+# stderr, exit 1.
+#
+# So this maps ant-core's own `Display` text -- the `#[error(...)]` literals in
+# `ant-core/src/data/error.rs`, stable within a release -- onto the vocabulary.
+# Matched as SUBSTRINGS, not prefixes: by the time a variant reaches stderr it
+# is wrapped in context. A real capture reads
+# `Error: Failed to fetch public DataMap: not found: DataMap chunk not found at
+# <64 hex>`.
+#
+# ORDER IS LOAD-BEARING, as it is in `pointer_client.classify_failure`. One
+# string can satisfy several markers and the first match wins:
+#
+#   * the chunk-exhaustion sentence contains the words "not found" AND is
+#     wrapped in `encryption error:`, so it is tested before either;
+#   * `partial upload: N/M stored, K failed: <inner reason>` carries the real
+#     reason INSIDE it, so every specific marker is tested before the wrapper.
+#
+# The copies are byte-identical by TEST, not by convention: this block lives in
+# `saorsa_deploy/transfer_errors.py` and is mirrored by hand into
+# `prod_downloader.py`, `prod_continuous_uploader.py`, `prod_uploader.py` and
+# the embedded Python block in `uploader.sh`, because each of those is
+# delivered to its VM as one self-contained file and can import nothing of
+# ours.
+
+#: Every value a transfer's `error_kind` may take. Mirrors
+#: `saorsa_db.models.transfer_error_kind.TransferErrorKind`, which is the
+#: canonical definition and names the column these are stored in.
+TRANSFER_ERROR_KINDS = (
+    "payment",
+    "quorum",
+    "timeout",
+    "connection",
+    "not_found",
+    "over_cap",
+    "crash",
+    "unreachable",
+    "other",
+)
+
+#: `(marker, kind)` pairs in match order -- see ORDER IS LOAD-BEARING above.
+TRANSFER_ERROR_MARKERS = (
+    # ant-core refuses a browser-path file above its cap once the data map
+    # resolves. That is a property of the transport and not of the network, and
+    # every consumer records it as a SKIP, so it is tested first and on its
+    # own -- exactly as the WASM client's own classifier does.
+    ("invalid public file size", "over_cap"),
+    # The collapsed native-DOWNLOAD kind. `chunk_get` returns `Ok(None)` when
+    # the peer sweep is exhausted, and its retry predicate swallows
+    # `Timeout | Network | Protocol` into that exhaustion -- so not-found, a
+    # quorum shortfall, a timeout and a connection failure all render as this
+    # one sentence. Calling it `not_found` would assert something ant-core does
+    # not know, so the kind is named for what IS known: the chunk could not be
+    # reached. It can only arise on a read; an `unreachable` recorded against an
+    # upload means the markers have moved and the classifier fell through.
+    ("Chunk not found after", "unreachable"),
+    # A missing DataMap chunk, by contrast, genuinely IS an answer: the close
+    # group agreed there is nothing stored at that address.
+    ("DataMap chunk not found", "not_found"),
+    ("not found:", "not_found"),
+    ("payment error:", "payment"),
+    # `insufficient peers:` is ant-core's `InsufficientPeers` -- too few peers
+    # quoted or stored -- so it is a quorum shortfall even where the text talks
+    # about quotes. The WASM client's classifier reads those same words as
+    # `payment`; it matches loose words on a JavaScript exception, while this
+    # matches the variant ant-core actually raised.
+    ("insufficient peers:", "quorum"),
+    ("close-group PUT shortfall (dial churn):", "quorum"),
+    # A remote node refused the PUT at the application layer (disk full, stale
+    # quote, merkle-pool rejection). The write fell short of its close group,
+    # which is what a shortfall is; which node and why is in `reason`.
+    ("remote PUT rejected for", "quorum"),
+    ("timeout:", "timeout"),
+    ("network error:", "connection"),
+    ("protocol error:", "connection"),
+    # The `partial upload:` WRAPPER, tested after every marker that can appear
+    # inside it. Some chunks did not store, so a shortfall is the honest
+    # reading of what is left.
+    ("partial upload:", "quorum"),
+    # Deliberately `other`, and LISTED rather than left to fall through, so it
+    # is visible that each was considered: these are local or data faults, and
+    # `other` is the one kind that means "a fault we cannot attribute".
+    ("invalid data:", "other"),
+    ("encryption error:", "other"),
+    ("serialization error:", "other"),
+    ("I/O error:", "other"),
+    ("storage error:", "other"),
+    ("operation cancelled:", "other"),
+)
+
+#: Same cap, and the same shape of value, as the browser path's
+#: `describeError` (`resources/wasm-client/src/errors.ts`). A native `reason`
+#: and a browser `reason` have to be the same size and shape of thing, or the
+#: column holds two incomparable kinds of text.
+REASON_LIMIT = 500
+#: Anything this long is calldata or a signed payload, never an identifier --
+#: `errors.ts`'s own threshold.
+REASON_HEX_BLOB_MIN = 130
+_REASON_HEX_DIGITS = "0123456789abcdefABCDEF"
+
+
+def _elide_hex_blobs(text):
+    """Replace every `0x` run of >=130 hex characters with its length.
+
+    Deliberately a scanner rather than a regex: this block is mirrored into
+    three service scripts and one shell heredoc, and the fewer module-level
+    imports it needs the fewer ways a copy can fail to run.
+    """
+    out = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] == "0" and index + 1 < length and text[index + 1] == "x":
+            end = index + 2
+            while end < length and text[end] in _REASON_HEX_DIGITS:
+                end += 1
+            if end - (index + 2) >= REASON_HEX_BLOB_MIN:
+                out.append("0x…(%d hex chars)" % (end - (index + 2)))
+                index = end
+                continue
+        out.append(text[index])
+        index += 1
+    return "".join(out)
+
+
+def clip_reason(text, limit=REASON_LIMIT):
+    """One line, at most ``limit`` characters, keeping the head AND the tail.
+
+    Both ends, because the context is at the start and the reason is usually at
+    the end -- a plain prefix is what lost the RPC's own reason on DEV-03 run
+    590 and is why `errors.ts` clips this way. The split is the same 60/40.
+    """
+    collapsed = _elide_hex_blobs(" ".join((text or "").split()))
+    if len(collapsed) <= limit:
+        return collapsed
+    marker = " … "
+    tail = int((limit - len(marker)) * 0.4)
+    head = limit - len(marker) - tail
+    return collapsed[:head] + marker + collapsed[len(collapsed) - tail :]
+
+
+def classify_transfer_error(text):
+    """The `error_kind` for a failure's text, or `other` when nothing matches.
+
+    Never raises and never returns an empty string: a failure always has a
+    kind, and `other` is a finding in its own right -- a rising `other` share
+    is how a client release that moved these strings announces itself.
+    """
+    haystack = text or ""
+    for marker, kind in TRANSFER_ERROR_MARKERS:
+        if marker in haystack:
+            return kind
+    return "other"
+
+
+def failure_reason(stderr, limit=REASON_LIMIT, require_error_line=False):
+    """The clipped one-line reason out of `ant`'s stderr.
+
+    `ant-cli` prints exactly one error BLOCK, last, on every failure path;
+    everything before it is `-v` trace, which on a download runs to tens of
+    thousands of lines. The fallback to the last non-empty line covers a
+    failure that left no `Error:` line at all.
+
+    **The block, not the line.** `eprintln!("Error: {e:#}")` does not promise
+    one physical line: an error whose Display carries newlines prints several,
+    and taking only the first threw away the actual cause --
+
+        Error: payment error: RPC Request failed
+        URL: https://rpc.example.invalid
+        Details: nonce too low
+
+    kept "payment error: RPC Request failed" and dropped "nonce too low",
+    which is the whole reason the field exists. So everything from the last
+    `Error: ` line to the end of stderr is the message, joined and handed to
+    `clip_reason` -- which collapses the whitespace and keeps the head AND the
+    tail, so a cause at the end survives even when the block is long. A
+    trailing trace line would be swallowed into a bounded reason, which is a
+    far better trade than losing the cause.
+
+    ``require_error_line`` turns the fallback OFF, and is for a child the OS
+    KILLED. Its last stderr line is then whatever trace it had happened to
+    reach -- "Connected to autonomi network (found 5 peers)" is a real example
+    -- which is not a reason for anything, and classifying it reports a
+    connection message as the cause of an OOM kill. A caller that has
+    something true to say instead (which signal it was) asks for the `Error:`
+    block alone and gets "" when the child printed none.
+    """
+    lines = [line.strip() for line in (stderr or "").splitlines()]
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].startswith("Error: "):
+            block = [lines[index][len("Error: ") :], *lines[index + 1 :]]
+            return clip_reason(" ".join(part for part in block if part), limit)
+    if require_error_line:
+        return ""
+    nonempty = [line for line in lines if line]
+    return clip_reason(nonempty[-1], limit) if nonempty else ""
+
+
+# --- end transfer error classification ---
+
 STDERR_TAIL_LINES = 200
 LOG_DIR = "/var/log/ant-prod-continuous-uploader"
 
@@ -798,6 +1007,38 @@ def _upload_succeeded(parsed, rc: int) -> bool:
     return not parsed.get("error")
 
 
+def _native_failure_outcome(parsed, rc) -> int:
+    """Which failure a NATIVE upload was: paid-for (partial) or unpaid (failed).
+
+    `ant` emits a result document for exactly one error variant,
+    `DataError::PartialUpload`, and ant-core converts any error into that
+    variant as soon as a payment went out or an address was stored. So an error
+    reaching `ant-cli` with NO document means zero spend and zero chunks on the
+    network, which is `failed` -- and its pool claim is released.
+
+    This existed as an inline `startup_failure` that the branch then threw away:
+    the row status was `partial_upload` unconditionally, which is why
+    PROD-UL-01's 2026-10-23 row reads `partial_upload` with reason `ant exit 1`
+    while its claim was correctly RELEASED beside it -- two fields disagreeing
+    about one failure (INFRA-484). The claim was always right; only the status
+    was wrong, and that row is deliberately NOT corrected.
+
+    A process KILLED by a signal (`rc < 0`) is the one case the absence of a
+    document says nothing about: a SIGTERM from a restart, or the OOM killer,
+    can land after the payment transaction went out, and the native path has no
+    payment marker to ask. Held as partial -- the side that costs one pool entry
+    rather than putting stored chunks in front of a canary.
+    """
+    killed = rc is not None and rc < 0
+    # The predicate is the `startup_failure` this branch already computed, moved
+    # verbatim: an `rc` of None (which `subprocess` does not produce after a
+    # wait, but the signature allows) keeps reading as a failure, because that
+    # is what decided the CLAIM, and a claim decision is money.
+    if parsed is None and rc != 0 and not killed:
+        return STATUS_FAILED
+    return STATUS_PARTIAL_UPLOAD
+
+
 def _wasm_failure_outcome(parsed, marker_path) -> int:
     """Which failure a browser-path upload was: paid, or unpaid.
 
@@ -1190,6 +1431,11 @@ def main() -> int:
                 # nothing, so the payment marker decides instead.
                 error_kind = ""
                 killed_reason = None
+                # Bound before the branches, not inside the native one: the
+                # reason block below reads it on EVERY path, and a browser-path
+                # failure would otherwise raise `NameError` -- which is every
+                # failure PROD-WUL-01 has.
+                killed = rc is not None and rc < 0
                 if _upload_succeeded(parsed, rc):
                     status = ProdUploadStatus.SUCCESS
                     influx_status = STATUS_SUCCESS
@@ -1206,20 +1452,23 @@ def main() -> int:
                         else ProdUploadStatus.PARTIAL_UPLOAD
                     )
                 else:
-                    # "No document and a non-zero exit" is only evidence that
-                    # nothing was uploaded for a process that exited on its OWN
-                    # (`rc > 0`). One that was KILLED (`rc < 0`) says nothing of
-                    # the kind: a SIGTERM from a restart, or the OOM killer, can
-                    # land after the payment transaction went out, and the
-                    # native path has no payment marker to ask. So a signal exit
-                    # is held as partial — the side that costs one pool entry
-                    # rather than putting stored chunks in front of a canary.
-                    killed = rc is not None and rc < 0
-                    startup_failure = parsed is None and rc != 0 and not killed
-                    status = ProdUploadStatus.PARTIAL_UPLOAD
-                    influx_status = STATUS_PARTIAL_UPLOAD
+                    influx_status = _native_failure_outcome(parsed, rc)
+                    startup_failure = influx_status == STATUS_FAILED
+                    # Reads identically to the browser branch above, which is
+                    # the point: both decide the row status from the same
+                    # `startup_failure` their own evidence produced.
+                    status = (
+                        ProdUploadStatus.FAILED
+                        if startup_failure
+                        else ProdUploadStatus.PARTIAL_UPLOAD
+                    )
                     if killed:
                         killed_reason = f"ant killed by signal {-rc}; payment unknown"
+                        # Same reading as the browser path: a signal exit on a
+                        # client VM is almost always the OOM killer, and that
+                        # is a different finding from a transfer the network
+                        # refused.
+                        error_kind = ERROR_KIND_CRASH
 
                 parsed = parsed or {}
                 # The ant-client commit the transferring binary reported. Only
@@ -1235,11 +1484,54 @@ def main() -> int:
                 # The kill takes precedence over anything the child managed to
                 # print: which signal ended it, and that the payment is
                 # therefore unknown, is what the claim's note has to carry.
-                reason = (
-                    killed_reason
-                    or parsed.get("reason")
-                    or (None if status is ProdUploadStatus.SUCCESS else f"ant exit {rc}")
-                )
+                #
+                # `ant` emits a result document for exactly one error variant
+                # (`PartialUpload`); every other failure prints one
+                # `Error: ...` line to stderr and nothing to stdout. So the
+                # stderr falls between the document and the bare `ant exit N`
+                # that used to be recorded instead -- the same empty signal a
+                # failed download's blank row carried, from a command whose
+                # stderr this process was already holding (INFRA-484).
+                #
+                # EVERY source goes through `clip_reason`, not just the stderr
+                # fallback. `ant`'s own `reason` is ant-core's raw text: a
+                # payment failure carries viem's multi-line message with
+                # hundreds of hex characters of calldata in it, and storing it
+                # verbatim both breaks the 500-character single-line contract
+                # this field shares with the browser path AND emits literal
+                # newlines into the Influx payload, where the field escape
+                # handles only backslashes and quotes -- so one failure would
+                # split its own point into three unparseable lines and take the
+                # whole write batch with it.
+                if status is ProdUploadStatus.SUCCESS:
+                    reason = None
+                else:
+                    reason = clip_reason(
+                        str(
+                            killed_reason
+                            or parsed.get("reason")
+                            # A killed child's last stderr line is whatever
+                            # trace it reached, not a reason, so on a signal
+                            # only its own `Error:` line counts and the
+                            # fall-through below names the exit instead. The
+                            # native path's `killed_reason` usually gets there
+                            # first; the browser path has none.
+                            or failure_reason(stderr, require_error_line=killed)
+                            or f"ant exit {rc}"
+                        )
+                    )
+                # Only when the failure reported no kind of its own, which is
+                # the condition rather than the transport. The browser path
+                # classifies inside the bundle and so normally arrives with
+                # one -- but it cannot when the child died BEFORE that handler
+                # ran (a missing Node module, a bad bundle): then it arrives
+                # with the stderr reason above and no kind, and skipping the
+                # classification on the strength of being WASM left that row
+                # with a reason nothing could group it by. A kind already
+                # decided from the exit code is never classified over, because
+                # `crash` is evidence no text can carry.
+                if not error_kind and reason:
+                    error_kind = classify_transfer_error(reason)
                 storage_cost = parsed.get("storage_cost_atto")
                 gas_cost = parsed.get("gas_cost_wei")
 
@@ -1293,6 +1585,10 @@ def main() -> int:
                     # in place by `deployments upgrade-wasm-client`, so without
                     # this the rows either side of an upgrade cannot be split.
                     client_build=client_build or None,
+                    # The classification of `reason`, so a failure count can be
+                    # grouped by cause. NULL means not recorded, never "no
+                    # error" (INFRA-484).
+                    error_kind=error_kind or None,
                 )
 
                 # ---- resolve the claim by what actually happened ----

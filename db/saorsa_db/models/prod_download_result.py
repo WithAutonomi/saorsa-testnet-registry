@@ -57,6 +57,11 @@ class DeploymentProdDownloadResult(Base):
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     download_secs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The classification of `reason` (INFRA-484). See
+    # `saorsa_db.models.transfer_error_kind.TransferErrorKind` for the
+    # vocabulary; NULL means NOT RECORDED, never "no error", and nothing is
+    # backfilled.
+    error_kind: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -90,6 +95,7 @@ class DeploymentProdDownloadResult(Base):
             "duration_ms": self.duration_ms,
             "download_secs": self.download_secs,
             "reason": self.reason,
+            "error_kind": self.error_kind,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat(),
             "recorded_at": self.recorded_at.isoformat(),

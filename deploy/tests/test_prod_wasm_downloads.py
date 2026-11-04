@@ -8,6 +8,8 @@ byte-identically to before.
 
 import importlib
 import importlib.util
+import json
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -598,6 +600,108 @@ class TestTheServiceWalk:
         assert "progress" in stderr
 
 
+class TestAFailureWithNoResultDocumentStillSaysWhy:
+    """INFRA-484: the browser path's own failures were the blank ones.
+
+    `_parse_wasm_result` returns `{}` when the child exited before writing any
+    JSON, and the stderr fallback lived inside the native branch -- so a child
+    that died BEFORE the bundle's error handler ran (a missing Node module, a
+    bad bundle) or was OOM-killed mid-transfer recorded a point with neither
+    field, which is the blank row this issue exists to stop. PROD-WDL-01, the
+    deployment whose eleven unexplained failures opened the issue, is wholly
+    WASM, so these are precisely its failures.
+
+    Driven through the real service loop, because the defect was in how the
+    branches were arranged and not in any one function.
+    """
+
+    _run = TestTheServiceWalk._run
+
+    def _one(self, service, tmp_path, monkeypatch, fake, *, wasm=True):
+        posted = self._run(
+            service, tmp_path, monkeypatch, addresses="addr1\n", fake_cli=fake, wasm=wasm
+        )
+        assert len(posted) == 1
+        return posted[0]
+
+    def test_a_child_that_wrote_no_document_records_its_stderr_and_a_kind(
+        self, service, tmp_path, monkeypatch
+    ):
+        fake = "#!/bin/sh\necho 'Error: Cannot find module /opt/ant-wasm/cli.mjs' >&2\nexit 1\n"
+        line = self._one(service, tmp_path, monkeypatch, fake)
+        assert "status=1i" in line
+        assert 'reason="Cannot find module /opt/ant-wasm/cli.mjs"' in line
+        # Nothing in the vocabulary describes a broken install, and `other` is
+        # what the vocabulary has for that -- but the row is now countable
+        # beside every other failure, which a NULL kind is not.
+        assert 'error_kind="other"' in line
+
+    def test_a_child_with_no_output_at_all_names_its_exit(self, service, tmp_path, monkeypatch):
+        line = self._one(service, tmp_path, monkeypatch, "#!/bin/sh\nexit 3\n")
+        assert 'reason="ant-wasm exit 3"' in line
+        assert 'error_kind="other"' in line
+
+    def test_a_killed_child_records_the_signal_as_the_reason(self, service, tmp_path, monkeypatch):
+        # `crash` was already recorded here; the reason was not, so the durable
+        # row said a transfer crashed without saying what ended it.
+        line = self._one(service, tmp_path, monkeypatch, "#!/bin/sh\nkill -9 $$\n")
+        assert 'error_kind="crash"' in line
+        assert 'reason="ant-wasm killed by signal 9"' in line
+
+    def test_a_killed_child_prefers_its_own_error_line_to_the_signal(
+        self, service, tmp_path, monkeypatch
+    ):
+        fake = "#!/bin/sh\necho 'Error: payment error: nonce too low' >&2\nkill -9 $$\n"
+        line = self._one(service, tmp_path, monkeypatch, fake)
+        assert 'reason="payment error: nonce too low"' in line
+        # The SIGNAL still decides the kind: a killed child's text cannot
+        # outrank the evidence of how it died.
+        assert 'error_kind="crash"' in line
+
+    def test_a_reported_kind_is_never_classified_over(self, service, tmp_path, monkeypatch):
+        document = json.dumps({"error": "x", "error_kind": "timeout", "reason": "timeout: elapsed"})
+        fake = f"#!/bin/sh\necho {shlex.quote(document)}\nexit 1\n"
+        line = self._one(service, tmp_path, monkeypatch, fake)
+        assert 'error_kind="timeout"' in line
+        assert 'reason="timeout: elapsed"' in line
+
+    def test_a_successful_download_acquires_neither_from_a_noisy_stderr(
+        self, service, tmp_path, monkeypatch
+    ):
+        # The gate is the exit code, as on the shell uploader: `ant -v` and a
+        # verbose bundle both write to stderr on a perfectly healthy transfer,
+        # and an ungated fallback gave every success a reason and `other`.
+        fake = (
+            "#!/bin/sh\n"
+            "echo 'Error: a trace line that is not a failure' >&2\n"
+            'echo \'{"address": "addr1", "elapsed_secs": 1.5}\'\n'
+        )
+        line = self._one(service, tmp_path, monkeypatch, fake)
+        assert "status=0i" in line
+        assert "error_kind=" not in line
+        assert "reason=" not in line
+
+    def test_the_native_path_is_unchanged_and_still_classifies(
+        self, service, tmp_path, monkeypatch
+    ):
+        # The fallback moved out of the native branch, so this is the guard
+        # that moving it changed nothing there.
+        fake = (
+            "#!/bin/sh\n"
+            "echo 'Error: Failed to fetch public DataMap: not found: "
+            "DataMap chunk not found at abc' >&2\n"
+            "exit 1\n"
+        )
+        line = self._one(service, tmp_path, monkeypatch, fake, wasm=False)
+        assert 'error_kind="not_found"' in line
+        assert "DataMap chunk not found" in line
+
+    def test_a_killed_native_child_still_names_ant(self, service, tmp_path, monkeypatch):
+        line = self._one(service, tmp_path, monkeypatch, "#!/bin/sh\nkill -9 $$\n", wasm=False)
+        assert 'reason="ant killed by signal 9"' in line
+        assert 'error_kind="crash"' in line
+
+
 # ---------------------------------------------------------------------------
 # Recording and reporting
 # ---------------------------------------------------------------------------
@@ -1114,7 +1218,50 @@ class TestTheNativeWalkStillWorks:
             wasm=False,
         )
         assert "status=1i" in posted[0]
+        # A native failure now carries both fields (INFRA-484): it used to carry
+        # neither, which is why PROD-WDL-01's eleven failed downloads say
+        # nothing about why. `boom` matches no marker, so the kind is `other`.
+        assert 'error_kind="other"' in posted[0]
+        assert 'reason="boom"' in posted[0]
+
+    def test_a_native_failure_is_classified_from_ant_s_own_error_line(
+        self, service, tmp_path, monkeypatch
+    ):
+        """The real capture's shape, through the service's own recording path."""
+        fake = (
+            "#!/bin/sh\n"
+            "echo 'Connected to autonomi network (found 5 peers)' 1>&2\n"
+            "echo 'Error: Failed to fetch public DataMap: not found: "
+            "DataMap chunk not found at abcd' 1>&2\n"
+            "exit 1\n"
+        )
+        posted = TestTheServiceWalk()._run(
+            service,
+            tmp_path,
+            monkeypatch,
+            addresses="a\n",
+            fake_cli=fake,
+            wasm=False,
+        )
+        assert 'error_kind="not_found"' in posted[0]
+        assert 'reason="Failed to fetch public DataMap: not found:' in posted[0]
+        # The `-v` trace line before it is not the reason.
+        assert "Connected to autonomi network" not in posted[0]
+
+    def test_a_native_success_carries_neither_field(self, service, tmp_path, monkeypatch):
+        """So a successful point is byte-identical to what it always was."""
+        fake = "#!/bin/sh\necho 'Time: 1.25'\n"
+        posted = TestTheServiceWalk()._run(
+            service,
+            tmp_path,
+            monkeypatch,
+            addresses="a\n",
+            fake_cli=fake,
+            wasm=False,
+        )
+        assert "status=0i" in posted[0]
         assert "error_kind" not in posted[0]
+        assert "reason" not in posted[0]
 
     def test_a_native_run_ignores_a_declared_size(self, service, tmp_path, monkeypatch):
         # MAX_DOWNLOAD_BYTES is ant-core's BROWSER cap; the native client has no

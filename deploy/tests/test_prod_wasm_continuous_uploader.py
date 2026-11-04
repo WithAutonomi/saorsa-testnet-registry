@@ -598,6 +598,7 @@ class TestOneCycle:
         wasm=True,
         readback=None,
         readback_stdout="",
+        stderr="",
     ):
         import json as _json
 
@@ -648,7 +649,7 @@ class TestOneCycle:
             code = exit_code
             if code is None:
                 code = 0 if result and not result.get("error") else 1
-            return code, stdout, ""
+            return code, stdout, stderr
 
         monkeypatch.setattr(service, "_run_ant", _fake_run)
         # One cycle, then out: the loop is `while True`, so the sleep is what
@@ -729,6 +730,57 @@ class TestOneCycle:
         out = self._run(service, registry, monkeypatch, tmp_path, result=self._SUCCESS)
         assert {bucket for bucket, _ in out.posted} == {"wasm-client-metrics"}
 
+    def test_a_browser_failure_with_no_document_is_classified_from_its_stderr(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        """INFRA-484: the classification was gated on the TRANSPORT, not on evidence.
+
+        The bundle reports its own kind, so the browser path was excluded from
+        the classification here. A child that died before that handler ran --
+        a missing Node module, a bad bundle -- reports none, and the row then
+        carried a reason with nothing to group it by. The condition is "no kind
+        was reported", which the native path and the bundle both satisfy.
+        """
+        out = self._run(
+            service,
+            registry,
+            monkeypatch,
+            tmp_path,
+            result=None,
+            exit_code=1,
+            stderr="Error: payment error: insufficient funds for gas\n",
+        )
+        assert out.rows[0].error_kind == "payment"
+        assert "insufficient funds for gas" in out.rows[0].reason
+
+    def test_a_reported_browser_kind_is_still_never_classified_over(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        out = self._run(
+            service,
+            registry,
+            monkeypatch,
+            tmp_path,
+            result={"error": "x", "error_kind": "quorum", "reason": "not enough peers"},
+            stderr="Error: timeout: elapsed\n",
+        )
+        assert out.rows[0].error_kind == "quorum"
+
+    def test_a_killed_browser_child_keeps_its_crash_kind(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        out = self._run(
+            service,
+            registry,
+            monkeypatch,
+            tmp_path,
+            result=None,
+            exit_code=-9,
+            stderr="Error: payment error: insufficient funds\n",
+        )
+        # `crash` is evidence no text can carry, so the text does not replace it.
+        assert out.rows[0].error_kind == "crash"
+
     def test_a_failure_before_payment_releases_the_claim(
         self, service, registry, monkeypatch, tmp_path
     ):
@@ -779,12 +831,15 @@ class TestOneCycle:
         assert out.claim.status is ClaimStatus.RELEASED
         assert 'error_kind="crash"' in out.posted[0][1]
 
-    def test_the_native_no_document_rule_is_unchanged(
+    def test_the_native_no_document_rule_releases_and_records_failed(
         self, service, registry, monkeypatch, tmp_path
     ):
-        # `rc != 0` with no result document still means ant never started, so the
-        # file goes back in the pool — recorded as a partial upload, exactly as
-        # before the browser path existed.
+        # `rc > 0` with no result document still means `ant` never stored
+        # anything, so the file goes back in the pool — the claim side was
+        # always right. The row status was PARTIAL_UPLOAD, which contradicted
+        # the claim beside it and is now FAILED (INFRA-484): ant-core converts
+        # any error into `PartialUpload` the moment a payment goes out, so an
+        # error with no document means zero spend and zero chunks.
         out = self._run(
             service,
             registry,
@@ -795,15 +850,17 @@ class TestOneCycle:
             wasm=False,
         )
         assert out.claim.status is ClaimStatus.RELEASED
-        assert out.rows[0].status is ProdUploadStatus.PARTIAL_UPLOAD
+        assert out.rows[0].status is ProdUploadStatus.FAILED
         assert out.rows[0].client_kind == "native"
         assert out.spawned[0][0] == "/root/.local/bin/ant"
 
-    def test_a_native_partial_still_has_no_error_kind(
+    def test_a_native_partial_is_classified_and_carries_its_reason(
         self, service, registry, monkeypatch, tmp_path
     ):
-        # Only the browser path reports one, so a native point's field set is
-        # exactly what it was.
+        # The native path reported no `error_kind` at all, so the durable copy
+        # of a failure said nothing about why. It is now classified from `ant`'s
+        # own text (INFRA-484); `store failed` matches no marker, so the kind is
+        # `other` — which is itself the finding when it starts rising.
         out = self._run(
             service,
             registry,
@@ -813,7 +870,27 @@ class TestOneCycle:
             wasm=False,
         )
         assert out.claim.status is ClaimStatus.PARTIAL
-        assert "error_kind" not in out.posted[0][1]
+        assert 'error_kind="other"' in out.posted[0][1]
+        assert out.rows[0].error_kind == "other"
+
+    def test_a_native_quorum_shortfall_is_classified_as_quorum(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        # The shape of a real PROD-WUL-01 row, on the native path.
+        reason = (
+            "partial upload: 3/4 stored, 1 failed: close-group PUT shortfall "
+            "(dial churn): Stored on 2 peers, need 4"
+        )
+        out = self._run(
+            service,
+            registry,
+            monkeypatch,
+            tmp_path,
+            result={"error": reason, "reason": reason, "chunks_stored": 3, "total_chunks": 4},
+            wasm=False,
+        )
+        assert out.rows[0].error_kind == "quorum"
+        assert out.rows[0].reason == reason
 
     def test_the_build_that_ran_reaches_both_tables_and_both_points(
         self, service, registry, monkeypatch, tmp_path

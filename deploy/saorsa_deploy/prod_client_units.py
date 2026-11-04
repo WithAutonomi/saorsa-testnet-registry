@@ -27,13 +27,23 @@ from saorsa_deploy.provisioning.prod_continuous_uploader import (
     UPLOADER_LOG_DIR as CONTINUOUS_UPLOADER_LOG_DIR,
 )
 from saorsa_deploy.provisioning.prod_continuous_uploader import (
+    UPLOADER_SCRIPT_NAME,
+    UPLOADER_SCRIPTS_DIR,
     UPLOADER_SERVICE,
+    VERIFIER_SCRIPT_NAME,
+    VERIFIER_SCRIPTS_DIR,
     VERIFIER_SERVICE,
 )
 from saorsa_deploy.provisioning.prod_continuous_uploader import (
     VERIFIER_LOG_DIR as UPLOAD_VERIFIER_LOG_DIR,
 )
 from saorsa_deploy.provisioning.prod_downloader import LOG_DIR as PROD_DOWNLOADER_LOG_DIR
+from saorsa_deploy.provisioning.prod_downloader import (
+    SCRIPT_NAME as PROD_DOWNLOADER_SCRIPT_NAME,
+)
+from saorsa_deploy.provisioning.prod_downloader import (
+    SCRIPTS_DIR as PROD_DOWNLOADER_SCRIPTS_DIR,
+)
 from saorsa_deploy.provisioning.prod_downloader import SERVICE_NAME as PROD_DOWNLOADER_SERVICE
 from saorsa_deploy.provisioning.prod_uploader import LOG_DIR as PROD_UPLOADER_LOG_DIR
 from saorsa_deploy.provisioning.prod_uploader import SERVICE_NAME as PROD_UPLOADER_SERVICE
@@ -62,6 +72,19 @@ class ProdClientUnit:
     service: str
     log_dir: str
     is_upload: bool
+    #: ``(scripts_dir, script_name)`` of the host-side Python this unit
+    #: executes, or None where no named constant identifies it.
+    #:
+    #: Here rather than only in `upgrade-service-script`'s own map because the
+    #: two roles of `prod-continuous-uploader` run DIFFERENT scripts from
+    #: DIFFERENT directories, and a command that resolved one script per KIND
+    #: sent the uploader's script to a verifier host and then restarted
+    #: `ant-prod-upload-verifier` — a directory that does not exist there, so
+    #: the write failed, and had it existed the verifier's own script would
+    #: have been left in place while the command reported success. With the
+    #: script on the unit, "the hosts that run this script" is derived from the
+    #: same place the unit name is (INFRA-484 review).
+    script: tuple[str, str] | None = None
     #: Roles that run this unit. Empty together with ``catch_all`` means every
     #: VM of the kind does.
     roles: tuple[str, ...] = field(default=())
@@ -76,6 +99,9 @@ PROD_UPLOADERS_UNIT = ProdClientUnit(
     service=PROD_UPLOADER_SERVICE,
     log_dir=PROD_UPLOADER_LOG_DIR,
     is_upload=True,
+    # No `script`: this kind is rewritten by every `deployments up`, so nothing
+    # upgrades its script in place, and its provisioner spells the filename
+    # inline rather than exporting a constant to point at here.
 )
 
 #: Both download kinds: every VM runs `prod_downloader.py` under
@@ -85,6 +111,7 @@ PROD_DOWNLOADER_UNIT = ProdClientUnit(
     service=PROD_DOWNLOADER_SERVICE,
     log_dir=PROD_DOWNLOADER_LOG_DIR,
     is_upload=False,
+    script=(PROD_DOWNLOADER_SCRIPTS_DIR, PROD_DOWNLOADER_SCRIPT_NAME),
 )
 
 #: The daily write test's uploader VM. Role `upload`, and a client state entry
@@ -96,6 +123,7 @@ CONTINUOUS_UPLOADER_UNIT = ProdClientUnit(
     is_upload=True,
     roles=(ROLE_UPLOAD,),
     catch_all=False,
+    script=(UPLOADER_SCRIPTS_DIR, UPLOADER_SCRIPT_NAME),
 )
 
 #: The daily write test's verifier VMs: every other role on that kind. They
@@ -106,6 +134,7 @@ UPLOAD_VERIFIER_UNIT = ProdClientUnit(
     log_dir=UPLOAD_VERIFIER_LOG_DIR,
     is_upload=False,
     catch_all=True,
+    script=(VERIFIER_SCRIPTS_DIR, VERIFIER_SCRIPT_NAME),
 )
 
 #: Kind -> its units, in the order they are reported.

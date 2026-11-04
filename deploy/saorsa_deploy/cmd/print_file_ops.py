@@ -37,11 +37,212 @@ from saorsa_deploy.influx import (
     fetch_all_prod_upload_points,
     fetch_browser_download_points,
 )
+from saorsa_deploy.influx_retention import binding_retention_seconds
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import load_client_state, load_monitoring_state
 
 _TESTNET_KIND = "testnet"
+
+#: Flux relative-duration units this command's `--window` can carry, in
+#: seconds. `mo` and `y` are deliberately absent: they are CALENDAR units in
+#: Flux and have no fixed length, so resolving them here would be a guess.
+_WINDOW_UNIT_SECONDS = {
+    "s": 1,
+    "m": 60,
+    "h": 3600,
+    "d": 86400,
+    "w": 604800,
+}
+
+
+def _resolve_window_start(window, now=None) -> datetime | None:
+    """The absolute instant a Flux ``start`` argument names, or None.
+
+    Only the forms `--window` can take: a negative relative duration (`-30d`),
+    `0` for the epoch, or an RFC3339 timestamp. Anything else yields None and
+    the truncation signal below is simply not emitted -- claiming a run's
+    history is short when it is not would be worse than saying nothing.
+    """
+    if window is None:
+        return None
+    text = str(window).strip()
+    if not text:
+        return None
+    if text in ("0", "-0"):
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if text.startswith("-"):
+        body = text[1:]
+        for unit, seconds in _WINDOW_UNIT_SECONDS.items():
+            if body.endswith(unit) and body[: -len(unit)].replace(".", "", 1).isdigit():
+                now = now or datetime.now(timezone.utc)
+                return now - timedelta(seconds=float(body[: -len(unit)]) * seconds)
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _resolve_deployment_facts(name: str) -> tuple[str, "datetime | None"]:
+    """``(kind, created_at)`` from ONE registry lookup.
+
+    Both are wanted by every path here -- the kind to label the JSON, the
+    creation time to tell a truncated history from a young deployment -- and
+    resolving them separately meant two round trips to the registry on a
+    read-only diagnostic.
+
+    ``created_at`` is the start of the SERIES, which is what this is for: `prod
+    continuous-uploader deploy` deliberately reuses its row, so a redeploy does
+    not move it. Empty kind and None are "not recorded"; callers treat an empty
+    kind as testnet, as they always have.
+    """
+    repo = get_repository()
+    if repo is None:
+        return "", None
+    deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+    if deployment is None:
+        return "", None
+    created = getattr(deployment, "created_at", None)
+    if created is not None and created.tzinfo is None:
+        # SQLite hands back naive datetimes on some paths; all stored UTC.
+        created = created.replace(tzinfo=timezone.utc)
+    return _kind_from_deploy_args(deployment.deploy_args), created
+
+
+def _resolve_deployment_start(name: str):
+    """When the deployment's registry row was created, or None."""
+    return _resolve_deployment_facts(name)[1]
+
+
+def _window_coverage(
+    points: list[dict],
+    window,
+    retention_secs=None,
+    now=None,
+    deployment_started_at=None,
+) -> dict:
+    """How far back the stored history goes, against how far back it was asked for.
+
+    A short answer has to SAY it is short. InfluxDB does not refuse a window
+    wider than its retention -- it returns whatever is inside it -- so a `-30d`
+    query against a 7-day bucket comes back looking like a complete 30 days and
+    nothing in the output says otherwise. That is how nine days of PROD-WDL-01's
+    download history read as present when it was not (INFRA-484).
+
+    **The verdict comes from the bucket's RETENTION, not from the points.**
+    Every query is already `range(start: <window>)`, so the earliest point it
+    can return is at or after the window start: comparing the two made
+    ``window_starts_before_data`` true on almost every non-empty answer,
+    complete ones included, which left the signal firing when nothing was
+    missing (review finding 3). Retention is the fact that actually bounds the
+    history, and it is one cheap metadata read rather than a second query.
+
+    It also settles the case item 8 asks for by construction: a bucket set to
+    infinite can never truncate, so the four permanent deployments stop
+    triggering the signal once their retention is `0`.
+
+    **And the DEPLOYMENT'S AGE decides whether anything was actually lost.**
+    Retention bounds what the bucket *can* hold; it says nothing about whether
+    there was ever anything there to expire. A deployment created this morning,
+    queried with the default `-30d` against a 7-day bucket, has its entire
+    history present -- and was reported as truncated purely because the
+    requested start precedes `now - 7d` (review finding 3). So the two facts
+    are reported separately:
+
+    * ``retention_limits_window`` -- the window asks for data the bucket cannot
+      hold. A property of the request and the bucket, always computable.
+    * ``window_starts_before_data`` -- the answer is ACTUALLY short, i.e. the
+      deployment was already running before the retention horizon, so data that
+      existed has since expired. This is the one the warning fires on and the
+      one the issue asks for.
+
+    ``retention_secs`` is 0 for infinite, a positive number of seconds, or None
+    when it could not be read; an unknown retention or an unknown deployment
+    start yields a verdict of None, because "could not look" is not "nothing
+    there". ``oldest_point`` is still reported: it is what the warning names
+    and what a reader compares against by eye.
+    """
+    now = now or datetime.now(timezone.utc)
+    times = [p["_time"] for p in points if p.get("_time") is not None]
+    oldest = min(times) if times else None
+    start = _resolve_window_start(window, now=now)
+    history_start = None
+    if retention_secs is not None and retention_secs > 0:
+        history_start = now - timedelta(seconds=retention_secs)
+
+    if start is None or retention_secs is None:
+        limited = None
+    elif history_start is None:
+        # Infinite retention: nothing can ever have expired.
+        limited = False
+    else:
+        limited = start < history_start
+
+    if limited is None:
+        truncated = None
+    elif not limited:
+        # The bucket can hold everything that was asked for.
+        truncated = False
+    elif deployment_started_at is None:
+        # The window outruns the bucket, but without knowing when the
+        # deployment began there is no telling whether anything existed to be
+        # lost. Unknown, not "short".
+        truncated = None
+    else:
+        truncated = deployment_started_at < history_start
+
+    return {
+        "oldest_point": oldest.isoformat() if oldest is not None else None,
+        "window_start": start.isoformat() if start is not None else None,
+        "retention_secs": retention_secs,
+        "history_starts_at": history_start.isoformat() if history_start else None,
+        "deployment_started_at": (
+            deployment_started_at.isoformat() if deployment_started_at else None
+        ),
+        "retention_limits_window": limited,
+        "window_starts_before_data": truncated,
+    }
+
+
+def _resolve_retention(creds, buckets, console) -> int | None:
+    """The retention bounding a query over ``buckets``, or None if unreadable.
+
+    Never raises and never fails the command: this is a diagnostic printed
+    beside the answer, not the answer.
+    """
+    influx_url, influx_token, influx_org, _bucket = creds
+    try:
+        return binding_retention_seconds(influx_url, influx_token, influx_org, buckets)
+    except Exception:  # noqa: BLE001 — a diagnostic must not break the report
+        return None
+
+
+def _warn_if_truncated(coverage: dict, name: str, console) -> None:
+    """Say on the console what the JSON already says.
+
+    The JSON half matters more -- a warning on a console nobody reads is how
+    this went unnoticed for nine days -- but the operator running the command by
+    hand is also the one who can act on it. Named in terms of the retention,
+    because that is the thing to change (`monitoring set-retention`) and the
+    thing that explains the gap.
+    """
+    if not coverage.get("window_starts_before_data"):
+        return
+    days = (coverage.get("retention_secs") or 0) / 86400
+    console.print(
+        f"[yellow]Warning:[/yellow] this answer is short. The bucket keeps "
+        f"{days:g} day(s), so it holds nothing before "
+        f"{coverage['history_starts_at']}, and this deployment has been "
+        f"running since {coverage['deployment_started_at']} — so operations "
+        f"it performed before then have expired. The requested window starts "
+        f"at {coverage['window_start']} and the oldest point returned is "
+        f"{coverage['oldest_point']}. The durable history is in Postgres: "
+        f"`saorsa-deploy deployments print-recorded-results --name {name}`. "
+        f"`saorsa-deploy monitoring set-retention --name {name} --days 0` "
+        f"removes the expiry."
+    )
 
 
 def cmd_print_uploads(args):
@@ -142,6 +343,7 @@ def _emit_ops_json(
     source: str,
     points: list[dict],
     window=None,
+    coverage: dict | None = None,
 ) -> None:
     """Write the per-operation records as JSON when `--json-out` was given.
 
@@ -168,6 +370,11 @@ def _emit_ops_json(
             "window": window,
             "queried_at": datetime.now(timezone.utc).isoformat(),
             "count": len(points),
+            # How far back the answer actually reaches (INFRA-484). Emitted
+            # even when it cannot be worked out, with nulls, so a consumer can
+            # tell "the window was not resolvable" from "the key is missing
+            # because this tool predates it".
+            **(coverage or _window_coverage(points, window)),
             "ops": [_json_point(p) for p in points],
         },
         json_out,
@@ -182,13 +389,12 @@ def _resolve_kind(name: str, console: Console) -> str:
     treat that as testnet for backwards compatibility with rows that
     pre-date the ``kind`` field.
     """
-    repo = get_repository()
-    if repo is None:
-        return ""
-    deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
-    if deployment is None:
-        return ""
-    deploy_args = deployment.deploy_args or {}
+    return _resolve_deployment_facts(name)[0]
+
+
+def _kind_from_deploy_args(deploy_args) -> str:
+    """The deployment's ``kind``, from its `deploy_args` alone."""
+    deploy_args = deploy_args or {}
     if not isinstance(deploy_args, dict):
         return ""
     explicit = deploy_args.get("kind")
@@ -279,6 +485,12 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         sys.exit(1)
 
     filtered = [p for p in points if p.get("_measurement") == op_type]
+    coverage = _window_coverage(
+        filtered,
+        args.window,
+        _resolve_retention(creds, (influx_bucket, INFLUXDB_WASM_BUCKET), console),
+        deployment_started_at=_resolve_deployment_start(args.name),
+    )
     _emit_ops_json(
         args,
         console,
@@ -288,7 +500,9 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         source="influx",
         points=filtered,
         window=args.window,
+        coverage=coverage,
     )
+    _warn_if_truncated(coverage, args.name, console)
     if not filtered:
         console.print(
             f"[yellow]No {op_type} operations recorded yet for '{args.name}' "
@@ -592,6 +806,15 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
     # browser-path transfer too large for the box looks like. Counted separately
     # from a plain failure because the fix is a bigger VM, not the network.
     crashes = sum(1 for o in ops if o.get("error_kind") == "crash")
+    # The distribution of WHY, which is what makes a failure count actionable
+    # (INFRA-484). Every row with a kind, skips included: a skip carries
+    # `over_cap` and leaving it out would make the table disagree with the
+    # counts beside it. A diagnostic and nothing more -- no gate reads it.
+    error_kinds: dict[str, int] = {}
+    for o in ops:
+        kind = o.get("error_kind")
+        if kind:
+            error_kinds[kind] = error_kinds.get(kind, 0) + 1
 
     success_durations = [
         o["total_ms"] for o in ops if o.get("status") == 0 and o.get("total_ms") is not None
@@ -606,6 +829,7 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
         "failures": failures,
         "skipped": skipped,
         "crashes": crashes,
+        "error_kinds": error_kinds,
         "overall_avg_ms": overall_avg_ms,
     }
 
@@ -647,6 +871,24 @@ def _print_summary(op_type: str, by_host: dict, console: Console) -> None:
             table.add_row("Crashes (killed by signal)", str(summary["crashes"]))
         table.add_row("Avg duration", _fmt_duration(summary["overall_avg_ms"]))
         console.print(table)
+        _print_error_kinds(summary["error_kinds"], console)
+
+
+def _print_error_kinds(kinds: dict, console: Console) -> None:
+    """Counts by `error_kind`, most frequent first.
+
+    Printed only when something has a kind, so a clean run and every run
+    recorded before the field existed render exactly as they did. The per-record
+    `reason` behind each of these is in the `--details` view.
+    """
+    if not kinds:
+        return
+    table = Table(title="By error_kind")
+    table.add_column("error_kind")
+    table.add_column("ops", justify="right")
+    for kind, count in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0])):
+        table.add_row(kind, f"{count:,}")
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------
@@ -745,6 +987,16 @@ def _run_browser_rounds(args, console: Console) -> None:
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
         sys.exit(1)
 
+    # Bound to a name, not inlined into the call: the warning needs it too, and
+    # computing it only as an argument meant the console half of the signal
+    # never fired here and the coverage was discarded outright without
+    # `--json-out`. Rounds expire exactly as file operations do.
+    coverage = _window_coverage(
+        points,
+        args.window,
+        _resolve_retention(creds, (INFLUXDB_WASM_BUCKET,), console),
+        deployment_started_at=_resolve_deployment_start(args.name),
+    )
     _emit_ops_json(
         args,
         console,
@@ -754,7 +1006,11 @@ def _run_browser_rounds(args, console: Console) -> None:
         source="influx:browser_download",
         points=points,
         window=args.window,
+        coverage=coverage,
     )
+    # BEFORE the empty-result return: "no rounds recorded yet" over a window
+    # whose rounds have expired is the one reading this must not give.
+    _warn_if_truncated(coverage, args.name, console)
     if not points:
         console.print(
             f"[yellow]No browser-download rounds recorded yet for "
@@ -864,16 +1120,31 @@ def _run_prod_uploads(args, console: Console) -> None:
         return
     influx_url, influx_token, influx_org, influx_bucket = creds
 
-    console.print(f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]")
+    console.print(
+        f"[bold]Querying {influx_url} (bucket={influx_bucket}, window={args.window})...[/bold]"
+    )
     # Both buckets: a browser-path uploader writes the same `prod_upload`
     # measurement into its own, so a single-bucket read would make a WASM tier
     # that failed every upload look like one that was never configured.
+    #
+    # `--window` is PASSED, where this used to call with no `start` and so
+    # query from the epoch -- which is why a prod-upload JSON recorded
+    # `"window": null` (INFRA-484). With a deployment's retention set to
+    # infinite, epoch-to-now grows without bound, so this stopped being
+    # tidiness.
     points = fetch_all_prod_upload_points(
         url=influx_url,
         token=influx_token,
         org=influx_org,
         bucket=influx_bucket,
         wasm_bucket=INFLUXDB_WASM_BUCKET,
+        start=args.window,
+    )
+    coverage = _window_coverage(
+        points,
+        args.window,
+        _resolve_retention(creds, (influx_bucket, INFLUXDB_WASM_BUCKET), console),
+        deployment_started_at=_resolve_deployment_start(args.name),
     )
     _emit_ops_json(
         args,
@@ -883,7 +1154,10 @@ def _run_prod_uploads(args, console: Console) -> None:
         op_type="upload",
         source="influx:prod_upload",
         points=points,
+        window=args.window,
+        coverage=coverage,
     )
+    _warn_if_truncated(coverage, args.name, console)
     if not points:
         console.print(f"[yellow]No prod_upload records yet for '{args.name}'.[/yellow]")
         return

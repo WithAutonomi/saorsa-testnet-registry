@@ -1,0 +1,162 @@
+{
+  "ant_client_ref": "ant-cli-v0.3.11",
+  "cases": [
+    {
+      "id": "observed-672-2026-10-23T00:01:26",
+      "provenance": "observed",
+      "source": "deployment_prod_upload_results, read from the live registry on 2026-11-03. Already clipped to 500 characters by the client that wrote it.",
+      "deployment_id": 672,
+      "client_kind": "native",
+      "recorded_status": "partial_upload",
+      "text": "ant exit 1",
+      "expected_kind": "other"
+    },
+    {
+      "id": "observed-673-2026-10-19T00:04:57",
+      "provenance": "observed",
+      "source": "deployment_prod_upload_results, read from the live registry on 2026-11-03. Already clipped to 500 characters by the client that wrote it.",
+      "deployment_id": 673,
+      "client_kind": "wasm",
+      "recorded_status": "failed",
+      "text": "insufficient peers: Got 0 quotes, need 1 (15 responses: 3 already_stored, 12 failed including 0 with mismatched peer bindings). Failures: [412c443930eb5eb822d052f0e4c427bf32a7570021aba91dd8dd24f2dd3fe970: network error: Failed to send quote request to 412c443930eb5eb822d052f0e4c427bf32a7570021aba91 … cf3fa69bd056d62489: network error: Failed to send quote request to 4106f4b6129d81cb9b74b5ed94898d881814e194ee5e16cf3fa69bd056d62489: network error: WebRTC endpoint is in the failed-connection cache]",
+      "expected_kind": "quorum"
+    },
+    {
+      "id": "observed-673-2026-10-23T00:00:01",
+      "provenance": "observed",
+      "source": "deployment_prod_upload_results, read from the live registry on 2026-11-03. Already clipped to 500 characters by the client that wrote it.",
+      "deployment_id": 673,
+      "client_kind": "wasm",
+      "recorded_status": "failed",
+      "text": "payment error: Nonce provided for the transaction is lower than the current nonce of the account. Try increasing the nonce or find the latest nonce with `getTransactionCount`. Request Arguments: from: 0xC227dF6E8d6C6eC43c2434369bA7ff32Dd098691 to: 0x9a3ecac693b699fc0b2b6a50b5549e50c2320a26 data: 0x … 6eC43c2434369bA7ff32Dd098691 Docs: https://viem.sh/docs/contract/writeContract Details: nonce too low: address 0xC227dF6E8d6C6eC43c2434369bA7ff32Dd098691, tx: 23870 state: 23871 Version: viem@2.56.3",
+      "expected_kind": "payment"
+    },
+    {
+      "id": "observed-673-2026-10-28T00:05:17",
+      "provenance": "observed",
+      "source": "deployment_prod_upload_results, read from the live registry on 2026-11-03. Already clipped to 500 characters by the client that wrote it.",
+      "deployment_id": 673,
+      "client_kind": "wasm",
+      "recorded_status": "partial_upload",
+      "text": "partial upload: 8/10 stored, 2 failed: remote PUT rejected for 347e23a6e8abbbd9065355c26a78c80343dbbef657da78f0fc221357e3323151: storage failed: chunk storage operation failed; insufficient peers: Stored on 2 peers, need 4 (full: 14, price-floor: 0, other-rejection: 0, timeout: 3, dial: 1). Failure … 98ba70d059e4675f7971098a8055b333155d6fe2256db7e: storage failed: chunk storage operation failed; ad727f94d4f4e5af7e4fe121b7d73c5ecaa2dfbae13dbb63fe63acad84c63748: timeout: WebRTC response timed out]",
+      "expected_kind": "quorum"
+    },
+    {
+      "id": "observed-673-2026-10-29T00:00:02",
+      "provenance": "observed",
+      "source": "deployment_prod_upload_results, read from the live registry on 2026-11-03. Already clipped to 500 characters by the client that wrote it.",
+      "deployment_id": 673,
+      "client_kind": "wasm",
+      "recorded_status": "partial_upload",
+      "text": "partial upload: 3/4 stored, 1 failed: remote PUT rejected for 536f13ebcb9e6c6f8cc15a11169802a7693577d7f004455e577dd3ee7bb4eabe: storage failed: chunk storage operation failed",
+      "expected_kind": "quorum"
+    },
+    {
+      "id": "observed-673-2026-10-29T00:03:52",
+      "provenance": "observed",
+      "source": "deployment_prod_upload_results, read from the live registry on 2026-11-03. Already clipped to 500 characters by the client that wrote it.",
+      "deployment_id": 673,
+      "client_kind": "wasm",
+      "recorded_status": "partial_upload",
+      "text": "partial upload: 3/4 stored, 1 failed: remote PUT rejected for b0e10260b720fc6231a025796b44738cc6ffebd48c171d935d26b1ec4a9a3195: storage failed: chunk storage operation failed",
+      "expected_kind": "quorum"
+    },
+    {
+      "id": "observed-673-2026-10-31T00:00:01",
+      "provenance": "observed",
+      "source": "deployment_prod_upload_results, read from the live registry on 2026-11-03. Already clipped to 500 characters by the client that wrote it.",
+      "deployment_id": 673,
+      "client_kind": "wasm",
+      "recorded_status": "partial_upload",
+      "text": "partial upload: 3/4 stored, 1 failed: close-group PUT shortfall (dial churn): Stored on 2 peers, need 4 (full: 12, price-floor: 5, other-rejection: 0, timeout: 0, dial: 1). Failures: [f740534976b948fc554a6fd1cff3de94ca73f118f1634a4900f3a533ceb29de4: network error: Failed to send PUT to peer: networ … 82327c21a2946591f1bc806b762e6b94f696613bd99483cb61b1f46fe1b: remote PUT rejected for f6998be01bd1d59d183dd251826463261ce7f438b46edf8a335e343d49253d42: storage failed: chunk storage operation failed]",
+      "expected_kind": "quorum"
+    },
+    {
+      "id": "derived-chunk-exhaustion",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/data/client/file/native.rs:3413-3418 (the `self_encryption::Error::Generic` text) wrapped by `Error::Encryption` at :3435 and by `anyhow!(\"Download failed: {e}\")` in ant-cli/src/commands/data/file.rs. CANNOT be provoked on demand: it needs a chunk whose whole close group stops answering mid-download.",
+      "text": "Error: Download failed: encryption error: decryption failed: Generic error(Chunk not found after 3 deferred retry rounds: 3f55227adcadef40a0655e0242898487f17a5a71690d60579045ebfa91e6f041)",
+      "expected_kind": "unreachable"
+    },
+    {
+      "id": "derived-timeout",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/data/error.rs `#[error(\"timeout: {0}\")]`, with the payload as it appears inside the observed `insufficient peers:` failure lists above.",
+      "text": "Error: Upload failed: timeout: Timeout waiting for store response after 60s",
+      "expected_kind": "timeout"
+    },
+    {
+      "id": "derived-network",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/data/error.rs `#[error(\"network error: {0}\")]`, payload as it appears inside the observed failure lists above.",
+      "text": "Error: network error: Failed to send quote request to 412c443930eb5eb822d052f0e4c427bf32a7570021aba91dd8dd24f2dd3fe970",
+      "expected_kind": "connection"
+    },
+    {
+      "id": "derived-protocol",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/data/error.rs `#[error(\"protocol error: {0}\")]`.",
+      "text": "Error: protocol error: Remote PUT error for a3d2c3168d5771c6ce6723e20bde50473b8bd954f095329504c98c215a4a69d9",
+      "expected_kind": "connection"
+    },
+    {
+      "id": "derived-invalid-data",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/data/error.rs `#[error(\"invalid data: {0}\")]`. Content WAS retrieved and is malformed, which the vocabulary has no kind for, so `other` is the honest answer.",
+      "text": "Error: invalid data: chunk failed integrity check",
+      "expected_kind": "other"
+    },
+    {
+      "id": "derived-io",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/data/error.rs `#[error(\"I/O error: {0}\")]`, a local fault.",
+      "text": "Error: I/O error: No space left on device (os error 28)",
+      "expected_kind": "other"
+    },
+    {
+      "id": "derived-serialization",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/data/error.rs `#[error(\"serialization error: {0}\")]`.",
+      "text": "Error: serialization error: failed to decode data map chunk",
+      "expected_kind": "other"
+    },
+    {
+      "id": "derived-storage",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/data/error.rs `#[error(\"storage error: {0}\")]`.",
+      "text": "Error: storage error: chunk store write failed",
+      "expected_kind": "other"
+    },
+    {
+      "id": "derived-cancelled",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/data/error.rs `#[error(\"operation cancelled: {0}\")]`.",
+      "text": "Error: operation cancelled: consumer dropped the receiver",
+      "expected_kind": "other"
+    },
+    {
+      "id": "derived-over-cap",
+      "provenance": "derived",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core's browser-path size refusal, as matched by the WASM client's own classifier (`resources/wasm-client/src/classify.ts`, OVER_CAP). Derived: it needs a browser-path upload of an over-cap file to see.",
+      "text": "Error: Upload failed: invalid public file size: 2147483648 bytes exceeds the browser limit of 1000000000 bytes",
+      "expected_kind": "over_cap"
+    },
+    {
+      "id": "captured-native-download-not-found",
+      "provenance": "captured",
+      "source": "Produced on 2026-11-03 by running the ant 0.3.12 release binary against the production network on a random 64-hex address. See README.md for the exact command. The whole stderr is committed as native-download-not-found.stderr.",
+      "stderr_file": "native-download-not-found.stderr",
+      "expected_kind": "not_found",
+      "expected_reason": "Failed to fetch public DataMap: not found: DataMap chunk not found at d3da53369b9d08264405cccd5f3f6284be26a041787f535f570761ff7ef790d4"
+    },
+    {
+      "id": "captured-native-download-not-found-json",
+      "provenance": "captured",
+      "source": "The same run with the global `--json` flag, committed to show that stdout is EMPTY on a failed download: the only `println!` of the result document sits after the `?` that aborts. See README.md.",
+      "stderr_file": "native-download-not-found-json.stderr",
+      "stdout_file": "native-download-not-found-json.stdout",
+      "expected_stdout": "",
+      "expected_kind": "not_found"
+    }
+  ]
+}

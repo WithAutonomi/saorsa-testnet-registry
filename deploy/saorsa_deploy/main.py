@@ -2554,9 +2554,12 @@ def main(argv=None):
             "Archive a deployment's InfluxDB results into Postgres for long-term "
             "history. Thin wrapper over `record-results` intended to be run "
             "from the machine that owns the registry DB (DATABASE_URL set). "
-            "Influx retention is bounded (~7 days), so run this at least that "
-            "often. One-shot by default (cron / scheduled-agent friendly); pass "
-            "--loop to keep archiving on an interval."
+            "Run it at least as often as the stack's Influx retention, which "
+            "is 7 days unless it was changed -- `monitoring set-retention "
+            "--days 0` makes it infinite, and then there is no deadline, only "
+            "the fact that Postgres is the copy that survives the monitoring "
+            "stack. One-shot by default (cron / scheduled-agent friendly); "
+            "pass --loop to keep archiving on an interval."
         ),
     )
     deployments_archive_parser.add_argument(
@@ -2578,7 +2581,9 @@ def main(argv=None):
         help=(
             "Flux range start for the aggregate rollup (default: -7d, matching "
             "the default Influx retention). Per-op records are always pulled "
-            "full-range and idempotently upserted regardless of this value."
+            "full-range and idempotently upserted regardless of this value -- "
+            "including when the aggregate query finds nothing in the window, "
+            "which used to end the pass before the records were written."
         ),
     )
     deployments_archive_parser.add_argument(
@@ -2790,6 +2795,45 @@ def main(argv=None):
             "disk without restarting — useful for a completed one-shot "
             "'prod-downloaders' run, since restarting it re-walks the "
             "entire address list from scratch (no checkpointing)."
+        ),
+    )
+
+    # deployments upgrade-service-script
+    deployments_upgrade_service_script_parser = deployments_subparsers.add_parser(
+        "upgrade-service-script",
+        help=(
+            "Redeploy the host-side service script on a running "
+            "prod-continuous-downloader / prod-continuous-uploader deployment "
+            "and restart the unit(s) it runs. Covers both transports; no "
+            "infrastructure is touched and no registry row is created. A "
+            "restart mid-cycle resolves the uploader's batch in flight (and "
+            "releases the claims it never started) and abandons the "
+            "downloader's cycle, so run it outside the deployment's daily "
+            "window."
+        ),
+    )
+    deployments_upgrade_service_script_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must have client state in S3).",
+    )
+    deployments_upgrade_service_script_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+    deployments_upgrade_service_script_parser.add_argument(
+        "--restart",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Restart each host's own service after writing the script "
+            "(default: on). --no-restart leaves the new script on disk with "
+            "the services still executing the old one, for the same reason "
+            "`upgrade-ant-binary` has the flag: the restart is the part with "
+            "a cost."
         ),
     )
 
@@ -3310,6 +3354,34 @@ def main(argv=None):
         type=str,
         required=True,
         help="Monitoring stack name to destroy",
+    )
+
+    # monitoring set-retention
+    monitoring_set_retention_parser = monitoring_subparsers.add_parser(
+        "set-retention",
+        help=(
+            "Change the InfluxDB retention of a running monitoring stack, on "
+            "every bucket it created, and print what each one now reads. "
+            "`--influx-retention-days` applies at first provision only, so "
+            "this is the only way to change it on a live deployment."
+        ),
+    )
+    monitoring_set_retention_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Monitoring stack name",
+    )
+    monitoring_set_retention_parser.add_argument(
+        "--days",
+        type=int,
+        required=True,
+        help=(
+            "Days to keep measurements for. 0 means INFINITE (nothing "
+            "expires), which is what the permanent production transfer "
+            "deployments want: their history is then bounded by the archive "
+            "into Postgres rather than by the bucket."
+        ),
     )
 
     # monitoring info
@@ -8299,6 +8371,12 @@ def main(argv=None):
             from saorsa_deploy.cmd.upgrade_ant_binary import cmd_upgrade_ant_binary
 
             cmd_upgrade_ant_binary(args)
+        elif args.deployments_subcommand == "upgrade-service-script":
+            from saorsa_deploy.cmd.upgrade_service_script import (
+                cmd_upgrade_service_script,
+            )
+
+            cmd_upgrade_service_script(args)
         elif args.deployments_subcommand == "upgrade-wasm-client":
             from saorsa_deploy.cmd.upgrade_wasm_client import (
                 cmd_upgrade_wasm_client,
@@ -8367,6 +8445,12 @@ def main(argv=None):
             from saorsa_deploy.cmd.provision_monitoring import cmd_provision_monitoring
 
             cmd_provision_monitoring(args)
+        elif args.monitoring_subcommand == "set-retention":
+            from saorsa_deploy.cmd.monitoring_set_retention import (
+                cmd_monitoring_set_retention,
+            )
+
+            cmd_monitoring_set_retention(args)
     elif args.command == "migration":
         if args.migration_subcommand == "plan":
             from saorsa_deploy.cmd.migration_plan import cmd_migration_plan

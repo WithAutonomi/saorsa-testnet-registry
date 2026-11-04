@@ -71,6 +71,12 @@ from saorsa_deploy.registry import (
     record_deploy_args_update,
     record_event,
 )
+from saorsa_deploy.registry_client_upgrade import (
+    add_install_ops,
+    needs_registry_client,
+    schema_problem,
+    wheel_for_kinds,
+)
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_client_state
 
@@ -116,6 +122,10 @@ class UpgradeTarget:
     #: ``wasm_binary.branch`` in the local run manifest, if one names this
     #: deployment. Only used for the drift warning.
     manifest_ref: str | None = None
+    #: The `saorsa-db` wheel to install on this target's VM(s) before the
+    #: script, for a kind whose service writes Postgres itself. None otherwise.
+    #: See `saorsa_deploy.registry_client_upgrade`.
+    saorsa_db_wheel: Path | None = None
     failed_hosts: list[str] = field(default_factory=list)
 
     @property
@@ -246,6 +256,15 @@ def _resolve_targets(names: list[str], console: Console) -> list[UpgradeTarget]:
             problems.append(f"'{name}': no client VM IP in its S3 client state")
             continue
 
+        # A kind whose service writes Postgres needs the registry to have
+        # moved first, or its first upload dies in the INSERT while holding a
+        # pool claim. Collected with the rest so a three-name invocation
+        # reports everything at once, and checked BEFORE the ~10-minute build.
+        problem = schema_problem(repo, kind)
+        if problem:
+            problems.append(f"'{name}': {problem}")
+            continue
+
         targets.append(
             UpgradeTarget(
                 name=name,
@@ -352,6 +371,11 @@ def _install_on_target(
     state = State(inventory=Inventory((hosts_data, {})), config=Config())
     try:
         connect_all(state)
+        if target.saorsa_db_wheel is not None:
+            # BEFORE the script op below: the script is what calls the new
+            # repository argument, so a restart that beat the wheel would raise
+            # on the service's first operation.
+            add_install_ops(state, target.saorsa_db_wheel, console)
         add_op(
             state,
             server.shell,
@@ -388,6 +412,22 @@ def cmd_upgrade_wasm_client(args) -> None:
 
     targets = _resolve_targets(list(args.name), console)
     _warn_manifest_drift(targets, args.branch_name, console)
+
+    # The service script this command redeploys alongside the bundle calls a
+    # repository argument the VM's provision-time `saorsa-db` does not accept,
+    # so the wheel has to go with it — exactly as in
+    # `deployments upgrade-service-script`. Built once for every target that
+    # needs it, before the bundle build, so a missing checkout refuses with
+    # nothing installed.
+    wheel, problem = wheel_for_kinds([target.kind for target in targets])
+    if problem:
+        console.print(f"[bold red]Error:[/bold red] nothing was built or installed. {problem}")
+        sys.exit(1)
+    for target in targets:
+        if needs_registry_client(target.kind):
+            target.saorsa_db_wheel = wheel
+    if wheel is not None:
+        console.print(f"Built the VM's saorsa-db wheel: {wheel.name}")
 
     bundle_url, build_info = _build_bundle(args, targets[0].name, console)
     new_commit = (build_info or {}).get("commit")
@@ -439,6 +479,12 @@ def cmd_upgrade_wasm_client(args) -> None:
                 "ref": args.branch_name,
                 "repo_owner": args.repo_owner,
                 "upgraded_at": _now_iso(),
+                # Which VM-side package went with the bundle, so a deployment
+                # whose script and wheel came from different releases is
+                # visible afterwards.
+                "saorsa_db_wheel": (
+                    target.saorsa_db_wheel.name if target.saorsa_db_wheel else None
+                ),
             },
         )
         console.print(
