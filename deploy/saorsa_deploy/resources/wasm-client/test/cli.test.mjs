@@ -62,6 +62,31 @@ test("payment mode is only forced when asked for", () => {
   assert.equal(parseArgs(["file", "upload", "--no-merkle", "/f"]).paymentMode, "single");
 });
 
+test("an unset --concurrency leaves the fetch controller governing", () => {
+  // ant-core takes min(adaptive fetch cap, concurrency), so a value here is a
+  // ceiling the controller can never climb past. Undefined is what a browser
+  // caller passes, and is the only way the download is governed adaptively.
+  const args = parseArgs(["file", "download", "abc123", "-o", "/tmp/out.bin"]);
+  assert.equal(args.concurrency, undefined);
+});
+
+test("--concurrency caps the download when it is asked for", () => {
+  assert.equal(parseArgs(["file", "download", "a", "-o", "/f", "--concurrency", "8"]).concurrency, 8);
+});
+
+test("a non-positive or non-numeric --concurrency is a usage error", () => {
+  // 0 is refused by ant-core itself, and a word parses to NaN: either silently
+  // kept would make every download in the run behave in a way no argv explains.
+  assert.throws(
+    () => parseArgs(["file", "download", "a", "-o", "/f", "--concurrency", "0"]),
+    UsageError,
+  );
+  assert.throws(
+    () => parseArgs(["file", "download", "a", "-o", "/f", "--concurrency", "x"]),
+    UsageError,
+  );
+});
+
 test("a download with no -o is a usage error", () => {
   assert.throws(() => parseArgs(["file", "download", "abc"]), UsageError);
 });
