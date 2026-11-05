@@ -126,6 +126,9 @@ class UpgradeTarget:
     #: script, for a kind whose service writes Postgres itself. None otherwise.
     #: See `saorsa_deploy.registry_client_upgrade`.
     saorsa_db_wheel: Path | None = None
+    #: Where that wheel came from, recorded on the event: a wheelhouse copy, a
+    #: working-tree build and a release download are all legitimate.
+    saorsa_db_wheel_source: str | None = None
     failed_hosts: list[str] = field(default_factory=list)
 
     @property
@@ -419,15 +422,22 @@ def cmd_upgrade_wasm_client(args) -> None:
     # `deployments upgrade-service-script`. Built once for every target that
     # needs it, before the bundle build, so a missing checkout refuses with
     # nothing installed.
-    wheel, problem = wheel_for_kinds([target.kind for target in targets])
+    resolved, problem = wheel_for_kinds(
+        [target.kind for target in targets],
+        explicit_wheel=args.saorsa_db_wheel,
+        allow_version_mismatch=args.allow_wheel_version_mismatch,
+    )
     if problem:
         console.print(f"[bold red]Error:[/bold red] nothing was built or installed. {problem}")
         sys.exit(1)
-    for target in targets:
-        if needs_registry_client(target.kind):
-            target.saorsa_db_wheel = wheel
-    if wheel is not None:
-        console.print(f"Built the VM's saorsa-db wheel: {wheel.name}")
+    if resolved is not None:
+        console.print(f"saorsa-db wheel: {resolved.describe()}")
+        if resolved.warning:
+            console.print(f"[yellow]Warning:[/yellow] {resolved.warning}")
+        for target in targets:
+            if needs_registry_client(target.kind):
+                target.saorsa_db_wheel = resolved.path
+                target.saorsa_db_wheel_source = resolved.source
 
     bundle_url, build_info = _build_bundle(args, targets[0].name, console)
     new_commit = (build_info or {}).get("commit")
@@ -485,6 +495,7 @@ def cmd_upgrade_wasm_client(args) -> None:
                 "saorsa_db_wheel": (
                     target.saorsa_db_wheel.name if target.saorsa_db_wheel else None
                 ),
+                "saorsa_db_wheel_source": target.saorsa_db_wheel_source,
             },
         )
         console.print(

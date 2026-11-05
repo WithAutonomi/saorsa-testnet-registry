@@ -6,6 +6,7 @@ deployment, and a failure on one must not strand the others on a mix of builds
 with nothing recording which is which.
 """
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -39,6 +40,10 @@ def _args(names=("PROD-WDL-01",), **overrides):
         "repo_owner": "WithAutonomi",
         "ssh_key_path": "~/.ssh/ant_deploy",
         "build_vm_size": None,
+        # The wheel-resolution escape hatches (INFRA-517). Both are always set
+        # by argparse, so the stand-in sets them too.
+        "saorsa_db_wheel": None,
+        "allow_wheel_version_mismatch": False,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -267,6 +272,69 @@ class TestServiceScriptGoesWithTheBundle:
         commands = _commands(upgrade_patches.add_op.call_args)
         assert commands[-1].startswith("systemctl restart")
         assert any("prod_continuous_uploader.py" in c for c in commands[:-1])
+
+
+class TestTheVmSideWheelIsResolvedNotOnlyBuilt:
+    """The wheel has four sources, not one (INFRA-517).
+
+    This command is run from a released, version-pinned install in every
+    production maintenance procedure -- which is the one place it used to
+    refuse outright, two seconds in, because the wheel could only be built from
+    a workspace that an installed tree does not have.
+    """
+
+    def test_the_escape_hatches_reach_the_resolution(self, upgrade_patches):
+        with patch(f"{MODULE}.wheel_for_kinds", return_value=(None, None)) as resolve:
+            cmd_upgrade_wasm_client(
+                _args(
+                    names=("PROD-WUL-01",),
+                    saorsa_db_wheel="/tmp/by-hand.whl",
+                    allow_wheel_version_mismatch=True,
+                )
+            )
+        assert resolve.call_args.kwargs == {
+            "explicit_wheel": "/tmp/by-hand.whl",
+            "allow_version_mismatch": True,
+        }
+
+    def test_the_resolved_source_is_reported_and_recorded(self, upgrade_patches):
+        """Where the VM's wheel came from, for the run's results comment."""
+        resolved = SimpleNamespace(
+            path=Path("/tmp/saorsa_db-1.14.2-py3-none-any.whl"),
+            source="wheelhouse /tmp",
+            version="1.14.2",
+            warning=None,
+            describe=lambda: "saorsa_db-1.14.2-py3-none-any.whl (wheelhouse /tmp)",
+        )
+        printed: list[str] = []
+        with (
+            patch(f"{MODULE}.wheel_for_kinds", return_value=(resolved, None)),
+            patch(f"{MODULE}.Console") as console_cls,
+        ):
+            console_cls.return_value = SimpleNamespace(
+                print=lambda *a, **_k: printed.append(" ".join(map(str, a))),
+                rule=lambda *_a, **_k: None,
+            )
+            cmd_upgrade_wasm_client(_args(names=("PROD-WUL-01",)))
+        assert any("(wheelhouse /tmp)" in line for line in printed)
+        details = [
+            call.args[2]
+            for call in upgrade_patches.event.call_args_list
+            if call.args[1] == "wasm_client_upgraded"
+        ]
+        assert details[0]["saorsa_db_wheel"] == "saorsa_db-1.14.2-py3-none-any.whl"
+        assert details[0]["saorsa_db_wheel_source"] == "wheelhouse /tmp"
+
+    def test_an_unresolvable_wheel_refuses_before_the_bundle_build(self, upgrade_patches):
+        """The build is ~10 minutes on a VM that bills."""
+        with patch(
+            f"{MODULE}.wheel_for_kinds",
+            return_value=(None, "no source has a saorsa-db 1.14.2 wheel. Tried: ..."),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cmd_upgrade_wasm_client(_args(names=("PROD-WUL-01",)))
+        assert exc.value.code == 1
+        upgrade_patches.build.assert_not_called()
 
 
 class TestRecording:

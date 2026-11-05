@@ -156,12 +156,19 @@ def cmd_upgrade_service_script(args) -> None:
     if problem:
         console.print(f"[bold red]Error:[/bold red] {problem}")
         sys.exit(1)
-    wheel, problem = wheel_for_kinds([kind])
+    resolved, problem = wheel_for_kinds(
+        [kind],
+        explicit_wheel=args.saorsa_db_wheel,
+        allow_version_mismatch=args.allow_wheel_version_mismatch,
+    )
     if problem:
         console.print(f"[bold red]Error:[/bold red] {problem}")
         sys.exit(1)
-    if wheel is not None:
-        console.print(f"  Built the VM's saorsa-db wheel: {wheel.name}")
+    wheel = resolved.path if resolved is not None else None
+    if resolved is not None:
+        console.print(f"  saorsa-db wheel: {resolved.describe()}")
+        if resolved.warning:
+            console.print(f"  [yellow]Warning:[/yellow] {resolved.warning}")
 
     scripts_dir, script_name = SCRIPT_BY_KIND[kind]
     total_hosts = sum(len(ips) for _, ips in groups)
@@ -244,6 +251,7 @@ def cmd_upgrade_service_script(args) -> None:
                 "failed_hosts": sorted(set(failures)),
                 "restarted": bool(args.restart),
                 "saorsa_db_wheel": wheel.name if wheel else None,
+                "saorsa_db_wheel_source": resolved.source if resolved else None,
             },
         )
         sys.exit(1)
@@ -265,6 +273,10 @@ def cmd_upgrade_service_script(args) -> None:
             # Which VM-side package went with it, so a deployment whose script
             # and wheel came from different releases is visible afterwards.
             "saorsa_db_wheel": wheel.name if wheel else None,
+            # And where it came from: a wheelhouse copy, a working-tree build
+            # and a release download are all legitimate, and which one it was
+            # is what a maintenance run's results comment has to say.
+            "saorsa_db_wheel_source": resolved.source if resolved else None,
             "registry_client": needs_registry_client(kind),
         },
     )

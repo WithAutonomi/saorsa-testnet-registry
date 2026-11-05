@@ -36,7 +36,15 @@ MODULE = "saorsa_deploy.cmd.upgrade_service_script"
 
 
 def _args(**over):
-    defaults = {"name": "PROD-DL-01", "ssh_key_path": "~/.ssh/id_rsa", "restart": True}
+    defaults = {
+        "name": "PROD-DL-01",
+        "ssh_key_path": "~/.ssh/id_rsa",
+        "restart": True,
+        # The wheel-resolution escape hatches (INFRA-517). Both are always set
+        # by argparse, so the stand-in sets them too.
+        "saorsa_db_wheel": None,
+        "allow_wheel_version_mismatch": False,
+    }
     defaults.update(over)
     return SimpleNamespace(**defaults)
 
@@ -63,6 +71,8 @@ class _RunRecorder:
         #: added BEFORE that group's script op.
         self.wheel_installed_for: list[list[str]] = []
         self.wheel_before_script = True
+        #: ``(name, event, details)`` for every event the run recorded.
+        self.events: list[tuple] = []
 
     def install(self, stack):
         recorder = self
@@ -102,14 +112,24 @@ class _RunRecorder:
         stack.enter_context(patch(f"{MODULE}.run_ops", lambda _state: None))
         stack.enter_context(patch(f"{MODULE}.add_op", _add_op))
         stack.enter_context(patch(f"{MODULE}.clear_known_hosts", lambda *_a, **_k: None))
-        stack.enter_context(patch(f"{MODULE}.record_event", lambda *_a, **_k: None))
+        stack.enter_context(
+            patch(f"{MODULE}.record_event", lambda *a, **_k: recorder.events.append(a))
+        )
 
 
 #: Stands in for the built wheel; nothing reads its contents.
 FAKE_WHEEL = "saorsa_db-1.14.0-py3-none-any.whl"
 
 
-def _run(args, repo, clients, failing_ips=(), missing_columns=(), wheel_error=None):
+def _run(
+    args,
+    repo,
+    clients,
+    failing_ips=(),
+    missing_columns=(),
+    wheel_error=None,
+    wheel_calls=None,
+):
     """Drive the command with the registry, S3 state, wheel build and SSH stood in for.
 
     `schema_problem` and `wheel_for_kinds` are patched rather than their
@@ -125,12 +145,23 @@ def _run(args, repo, clients, failing_ips=(), missing_columns=(), wheel_error=No
             return f"missing {', '.join(missing_columns)}; run alembic upgrade head"
         return None
 
-    def _wheel_for_kinds(kinds):
+    def _wheel_for_kinds(kinds, **kwargs):
+        if wheel_calls is not None:
+            wheel_calls.append(kwargs)
         if not any(kind in KINDS_WITH_REGISTRY_CLIENT for kind in kinds):
             return None, None
         if wheel_error is not None:
             return None, str(wheel_error)
-        return _Path("/tmp") / FAKE_WHEEL, None
+        return (
+            SimpleNamespace(
+                path=_Path("/tmp") / FAKE_WHEEL,
+                source="wheelhouse /tmp",
+                version="1.14.0",
+                warning=None,
+                describe=lambda: f"{FAKE_WHEEL} (wheelhouse /tmp)",
+            ),
+            None,
+        )
 
     recorder = _RunRecorder(failing_ips)
     with contextlib.ExitStack() as stack:
@@ -421,13 +452,51 @@ class TestTheVmSidePackageGoesWithTheScript:
         assert code == 0
         assert recorder.groups
 
-    def test_a_wheel_that_cannot_be_built_refuses_before_any_host(self):
-        """Running from an installed wheel instead of from the checkout."""
+    def test_a_wheel_that_cannot_be_resolved_refuses_before_any_host(self):
+        """No source had one -- so nothing is written and nothing restarts."""
         recorder, code = _run(
             _args(name="PROD-UL-01"),
             _repo("prod-continuous-uploader", name="PROD-UL-01"),
             [{"ip": "10.0.0.1", "role": "upload"}],
-            wheel_error=FileNotFoundError("no db/pyproject.toml under /usr/lib"),
+            wheel_error="no source has a saorsa-db 1.14.2 wheel. Tried: ...",
         )
         assert code == 1
         assert recorder.groups == []
+
+    def test_the_resolved_source_is_reported_and_recorded(self):
+        """Where the VM's wheel came from, for the run's results comment.
+
+        A wheelhouse copy, a working-tree build and a release download are all
+        legitimate, so "which wheel" is only half the answer (INFRA-517).
+        """
+        printed: list[str] = []
+        with patch(f"{MODULE}.Console") as console_cls:
+            console_cls.return_value = SimpleNamespace(
+                print=lambda *a, **_k: printed.append(" ".join(map(str, a))),
+                rule=lambda *_a, **_k: None,
+            )
+            recorder, code = _run(
+                _args(name="PROD-UL-01"),
+                _repo("prod-continuous-uploader", name="PROD-UL-01"),
+                [{"ip": "10.0.0.1", "role": "upload"}],
+            )
+        assert code == 0
+        assert any(f"saorsa-db wheel: {FAKE_WHEEL} (wheelhouse /tmp)" in line for line in printed)
+        details = [event[2] for event in recorder.events if event[1] == "service_script_upgraded"]
+        assert details and details[0]["saorsa_db_wheel_source"] == "wheelhouse /tmp"
+
+    def test_the_escape_hatches_reach_the_resolution(self):
+        """An operator holding the file, and a deliberate version mismatch."""
+        calls: list[dict] = []
+        _, code = _run(
+            _args(
+                name="PROD-UL-01",
+                saorsa_db_wheel="/tmp/by-hand.whl",
+                allow_wheel_version_mismatch=True,
+            ),
+            _repo("prod-continuous-uploader", name="PROD-UL-01"),
+            [{"ip": "10.0.0.1", "role": "upload"}],
+            wheel_calls=calls,
+        )
+        assert code == 0
+        assert calls == [{"explicit_wheel": "/tmp/by-hand.whl", "allow_version_mismatch": True}]
