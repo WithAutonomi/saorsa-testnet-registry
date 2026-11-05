@@ -328,7 +328,6 @@ class TestTheTestnetTierIsUnchangedByTheExtraction:
                 "CLIENT_INDEX": 1,
                 "BOOTSTRAP_MULTIADDRS": MA1,
                 "FILE_SIZE_KB": 0,
-                "MAX_DOWNLOAD_BYTES": 1_000_000_000,
             },
             quoted=WASM_ENV_QUOTED_KEYS,
         )
@@ -338,7 +337,6 @@ class TestTheTestnetTierIsUnchangedByTheExtraction:
             "CLIENT_INDEX=1\n"
             f'BOOTSTRAP_MULTIADDRS="{MA1}"\n'
             "FILE_SIZE_KB=0\n"
-            "MAX_DOWNLOAD_BYTES=1000000000\n"
         )
 
     def test_the_testnet_bundle_install_does_not_require_the_cli(self):

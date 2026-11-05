@@ -532,18 +532,31 @@ only what differs.
   a re-run after teardown would otherwise relabel every WASM op as native and
   push its failures into the NATIVE hard floors. The upsert **COALESCEs**: a NULL
   never overwrites a known transport.
-- **The file cap is ant-core's, not the network's**: it refuses a browser-path
-  **upload** above `WASM_MAX_FILE_BYTES` (1,000,000,000). Downloads were capped
-  too until ant-client#214 (in `ant-cli` 0.3.11-rc.1), which removed the download
-  cap; a 0.3.11-rc.1 bundle fetched 2.6–3.1 GB files against production
-  (STG-WDL-01, run 670). The tooling's download-side skip (a declared over-cap
-  size, `MAX_DOWNLOAD_BYTES`, `error_kind=over_cap`) is still in place and still
-  fires whatever the bundle, so it is now needed only for older bundles and is
-  more conservative than a current client: a testnet WASM downloader still skips
-  entries over 1 GB that the client could fetch. What each kind does about the
-  cap differs — a download **skips**, a pool draw is **refused or clamped** —
-  but an over-cap file is never counted in a success-rate denominator, and a
-  **bare address line is never treated as over-cap** (unknown is not "too big").
+- **The file cap is ant-core's, not the network's, and it is UPLOAD-ONLY**: it
+  refuses a browser-path **upload** above `WASM_MAX_FILE_BYTES`
+  (1,000,000,000), before the file reaches the network. Downloads were capped
+  too until ant-client#214 (in `ant-cli` 0.3.11-rc.1), which removed the
+  download cap; a 0.3.11-rc.1 bundle fetched 2.6–3.1 GB files against
+  production (STG-WDL-01, run 670), and a 0.3.13-rc.1 one 2.6–3.0 GB (run 710).
+  **No download path in ant-core consults the constant, so nothing provisions
+  `MAX_DOWNLOAD_BYTES` any more** (INFRA-511): the default is `0` (unbounded)
+  and the bound survives only as an operator override for a deliberately
+  pinned pre-0.3.11 bundle. The default was the bad kind of wrong — an
+  over-cap line is **skipped, not failed**, so it is in no success-rate
+  denominator and a run reported 100% having quietly not fetched part of its
+  list (it cost the 2026-10-22 rollout watch two files, because the checkpoint
+  appended sizes to the address list). A pool draw is still **refused or
+  clamped** on the upload side, an over-cap file is never counted in a
+  success-rate denominator, and a **bare address line is never treated as
+  over-cap** (unknown is not "too big").
+- **`error_kind=over_cap` is ant-core's refusal of an over-cap UPLOAD**, matched
+  on `browser files are limited to` (`ant-core/src/browser.rs`). It used to be
+  matched on `invalid public file size`, which is not the cap at all but
+  `browser/manifest.rs`'s self-encryption / `MAX_SAFE_JS_INTEGER` bounds check
+  — so an ordinary manifest-validation failure was recorded as a skip and
+  dropped out of the denominator. One canonical copy in
+  `transfer_errors.py`, mirrored byte-identically, plus the bundle's own
+  `classify.ts`.
 - **An upload that failed is classified by whether a payment went out**:
   `payment_sent: true` in the result JSON **or** the existence of the
   `--payment-marker` file. The marker is the only evidence left when an OOM
@@ -1767,14 +1780,16 @@ What will bite you:
   baseline that used a different NAT fraction.
 - **A WASM upload needs ≥7 initial PUT peers** before it will pay; a small fleet
   fails every upload with "Witnessed close group returned only N/7".
-- **Every published address line is `<address> <bytes>`.** ant-core refuses an
-  over-cap file only *after* resolving its data map, so with bare lines the WASM
-  downloader drew the native 1000 MiB uploads from the shared pool and failed
-  every one. Both downloaders parse the first field, and one with a bound
-  (`MAX_DOWNLOAD_BYTES`, `0` = none) skips over-cap entries before fetching
-  anything. `downloader.sh` tries up to five keys because one uploader's entire
-  list can be over the cap. The constant lives in `client_roles.py` (the
-  provisioner must not import the schema).
+- **Every published address line is `<address> <bytes>`.** A pre-0.3.11 bundle
+  refused an over-cap file only *after* resolving its data map, so with bare
+  lines the WASM downloader drew the native 1000 MiB uploads from the shared
+  pool and failed every one. Both downloaders parse the first field, and one
+  with a bound (`MAX_DOWNLOAD_BYTES`, `0` = none) skips over-cap entries before
+  fetching anything — but **nothing sets that bound now** (INFRA-511: the
+  download cap is gone from ant-core, so the provisioned default only
+  suppressed work a current bundle does fine). `downloader.sh` tries up to five
+  keys because one uploader's entire list could be over the cap. The constant
+  lives in `client_roles.py` (the provisioner must not import the schema).
 - **Addresses are one shared pool per deployment, read two ways.** The WASM
   downloader lists the whole prefix (so it fetches native uploads too); the
   native `downloader.sh` filters keys to `upload-*` and never sees WASM uploads.

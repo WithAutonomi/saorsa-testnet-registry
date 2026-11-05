@@ -62,11 +62,17 @@ TRANSFER_ERROR_KINDS = (
 
 #: `(marker, kind)` pairs in match order -- see ORDER IS LOAD-BEARING above.
 TRANSFER_ERROR_MARKERS = (
-    # ant-core refuses a browser-path file above its cap once the data map
-    # resolves. That is a property of the transport and not of the network, and
-    # every consumer records it as a SKIP, so it is tested first and on its
-    # own -- exactly as the WASM client's own classifier does.
-    ("invalid public file size", "over_cap"),
+    # ant-core refuses a browser-path UPLOAD above its cap before the file
+    # reaches the network (`MAX_BROWSER_FILE_BYTES`, `ant-core/src/browser.rs`).
+    # That is a property of the transport and not of the network, and every
+    # consumer records it as a SKIP, so it is tested first and on its own --
+    # exactly as the WASM client's own classifier does. It cannot arise on a
+    # DOWNLOAD: ant-client#214 removed the browser download cap. The marker
+    # used to be `invalid public file size`, which is not the cap at all but
+    # `browser/manifest.rs`'s self-encryption / `MAX_SAFE_JS_INTEGER` bounds
+    # check -- so an ordinary manifest-validation failure was classified as a
+    # skip and dropped from every success-rate denominator (INFRA-511).
+    ("browser files are limited to", "over_cap"),
     # The collapsed native-DOWNLOAD kind. `chunk_get` returns `Ok(None)` when
     # the peer sweep is exhausted, and its retry predicate swallows
     # `Timeout | Network | Protocol` into that exhaustion -- so not-found, a

@@ -266,8 +266,11 @@ class TestTheProvisioner:
         assert "ANT_WASM=/usr/local/bin/ant-wasm" in script
         assert f'BOOTSTRAP_MULTIADDRS="{MA}"' in script
         assert "WASM_DIR=/opt/ant-wasm-client/pkg" in script
-        # ant-core's browser cap, so an over-cap entry is skipped up front.
-        assert "MAX_DOWNLOAD_BYTES=1000000000" in script
+        # No download bound: ant-client#214 removed ant-core's browser download
+        # cap, so a provisioned default would skip multi-GB files a current
+        # bundle fetches -- as a SKIP, in no success-rate denominator
+        # (INFRA-511). The bound stays an operator override only.
+        assert "MAX_DOWNLOAD_BYTES" not in script
 
     def test_wasm_operations_go_to_their_own_influx_bucket(self):
         # Both transports write the same `download` measurement, so sharing a
@@ -542,12 +545,14 @@ class TestTheServiceWalk:
     def test_a_bare_over_cap_address_is_attempted_and_recorded_as_a_skip(
         self, service, tmp_path, monkeypatch
     ):
-        # The declared size is absent, so the child runs and ant-core refuses the
-        # file once the data map resolves. Still a skip, not a failure: the
-        # content is on the network and healthy.
+        # The declared size is absent, so the child runs and reports a refusal
+        # of its own. Still a skip, not a failure: the content is on the network
+        # and healthy. (A download no longer reaches this on a current bundle --
+        # ant-client#214 removed the browser download cap -- but a child-reported
+        # `over_cap` must keep being recorded as a skip.)
         fake = (
             "#!/bin/sh\n"
-            'echo \'{"error": "invalid public file size 2000000000", '
+            'echo \'{"error": "browser files are limited to 1000000000 bytes", '
             '"error_kind": "over_cap", "elapsed_secs": 0.5}\'\n'
             "exit 1\n"
         )

@@ -18,13 +18,20 @@ export type ErrorKind =
   | "other";
 
 /**
- * ant-core's refusal of a file above `MAX_BROWSER_FILE_BYTES`. Checked FIRST
- * and on its own: the message names a size, and it is the one failure that is
- * not a failure of the network — the file is there and healthy, this transport
- * simply will not carry it. Everything downstream records it as a skip, so
- * misclassifying it as `other` would show up as a real download failure.
+ * ant-core's refusal of an UPLOAD above `MAX_BROWSER_FILE_BYTES`, raised in
+ * `ant-core/src/browser.rs` before the file reaches the network. Checked FIRST
+ * and on its own: it is the one failure that is not a failure of the network —
+ * this transport simply will not carry the file. Everything downstream records
+ * it as a skip, so misclassifying it as `other` would show up as a real
+ * failure.
+ *
+ * It cannot arise on a DOWNLOAD: ant-client#214 removed the browser download
+ * cap. The pattern used to be `invalid public file size`, which is not the cap
+ * at all but `browser/manifest.rs`'s self-encryption / `MAX_SAFE_JS_INTEGER`
+ * bounds check — so an ordinary manifest-validation failure was reported as an
+ * over-cap skip and dropped from every success-rate denominator (INFRA-511).
  */
-const OVER_CAP = /invalid public file size/i;
+const OVER_CAP = /browser files are limited to/i;
 
 export function classifyError(error: unknown): ErrorKind {
   const msg = String(error);

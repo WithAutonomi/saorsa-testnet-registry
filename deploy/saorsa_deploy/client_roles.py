@@ -55,13 +55,17 @@ POINTER_ROLES = (ROLE_POINTER,)
 #: `wasm-download` one and leave `clients start` looking for a unit nobody wrote.
 BROWSER_ROLES = (ROLE_BROWSER_DOWNLOAD,)
 
-#: ant-core refuses a browser-path file larger than this (a DECIMAL gigabyte,
-#: `MAX_BROWSER_FILE_BYTES`), on upload before touching the network and on
-#: download once the data map is resolved. The manifest validator uses it to
-#: refuse an over-cap WASM uploader, and `clients provision` hands it to the
-#: WASM downloader as `MAX_DOWNLOAD_BYTES` so it skips over-cap entries in the
-#: shared address pool instead of fetching and rejecting them. Defined here,
-#: not in `config.models`, because the provisioner must not import the schema.
+#: ant-core refuses a browser-path UPLOAD of a file larger than this (a DECIMAL
+#: gigabyte, `MAX_BROWSER_FILE_BYTES`), before touching the network. The
+#: manifest validator uses it to refuse an over-cap WASM uploader. Defined
+#: here, not in `config.models`, because the provisioner must not import the
+#: schema.
+#:
+#: It is NOT a download bound: ant-client#214 (`ant-cli` 0.3.11-rc.1) removed
+#: the browser download cap, and no download path in ant-core consults the
+#: constant. So nothing hands it to a WASM downloader as `MAX_DOWNLOAD_BYTES`
+#: any more -- that bound now defaults to `0` (unbounded) and exists only as an
+#: operator override for a deliberately pinned pre-0.3.11 bundle (INFRA-511).
 WASM_MAX_FILE_BYTES = 1_000_000_000
 
 #: A node admits at most this many WebRTC sessions from one source IPv4 address
