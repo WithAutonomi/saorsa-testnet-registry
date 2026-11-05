@@ -67,7 +67,10 @@ export interface BrowserNetworkClient {
   ): Promise<UploadResult>;
   downloadPublicFile(
     file: unknown,
-    concurrency: number,
+    // Optional on purpose: ant-core maps a missing concurrency to `usize::MAX`
+    // and lets the adaptive fetch controller govern, which is what a browser
+    // caller gets.
+    concurrency: number | undefined,
     onProgress?: ((msg: string) => void) | null,
   ): Promise<DownloadResult>;
   /**

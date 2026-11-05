@@ -62,8 +62,15 @@ export interface ParsedArgs {
   paymentMode: "auto" | "single" | "merkle";
   /** Where to record that a payment transaction went out. */
   paymentMarker?: string;
-  /** Download concurrency; ant-core clamps this to 6. */
-  concurrency: number;
+  /**
+   * Download concurrency, set only when `--concurrency N` was given.
+   *
+   * Unset means ant-core's adaptive fetch controller governs the download,
+   * exactly as it does for a browser caller that passes no concurrency: the
+   * browser download takes `min(adaptive fetch cap, concurrency)`, so any value
+   * here is a ceiling the controller can never climb past.
+   */
+  concurrency: number | undefined;
 }
 
 /**
@@ -142,7 +149,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   let path = "";
   let address: string | undefined;
   let paymentMarker: string | undefined;
-  let concurrency = 4;
+  let concurrency: number | undefined;
   // Unset means ant-core's "auto", exactly as PAYMENT_TYPE does in the harness:
   // never assume a mode, because "auto" needs a merkle wallet above ant-core's
   // own chunk-count threshold and a forced mode below it does not.
