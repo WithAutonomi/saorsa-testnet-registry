@@ -2,10 +2,16 @@
 
 The address pool is shared per deployment, and the WASM downloader lists the
 whole prefix, so it drew the native 1000 MB uploads and ant-core's browser cap
-rejected each one *after* resolving its data map (`invalid public file size
-1048576000`, DEV-03 run 588). The bare-address format gave the downloader no
-way to know. Uploaders now publish the size, and a downloader with a bound
-skips over-cap entries before fetching anything.
+rejected each one *after* resolving its data map (DEV-03 run 588). The
+bare-address format gave the downloader no way to know. Uploaders now publish
+the size, and a downloader with a bound skips over-cap entries before fetching
+anything.
+
+The bound is now **unset by default**: ant-client#214 (`ant-cli` 0.3.11-rc.1)
+removed the browser download cap, so a provisioned default made the tooling
+skip files a current bundle fetches perfectly well -- silently, since a skip is
+in no success-rate denominator (INFRA-511). The mechanism stays, for an
+operator pinning a pre-0.3.11 bundle.
 """
 
 import subprocess
@@ -223,12 +229,32 @@ def _wasm_env_cmds(role):
     )
 
 
-class TestWasmDownloaderEnvCarriesTheCap:
-    def test_downloader_gets_ant_cores_browser_cap(self):
-        assert f"MAX_DOWNLOAD_BYTES={WASM_MAX_FILE_BYTES}" in _wasm_env_cmds(ROLE_WASM_DOWNLOAD)
-        assert WASM_MAX_FILE_BYTES == CAP
+class TestWasmDownloaderEnvSetsNoDownloadCap:
+    """INFRA-511: the provisioned default is gone, the mechanism is not.
 
-    def test_uploader_env_carries_it_too_and_ignores_it(self):
-        # One env template for both WASM roles; the uploader never reads it.
-        cmds = _wasm_env_cmds(ROLE_WASM_UPLOAD)
-        assert f"MAX_DOWNLOAD_BYTES={WASM_MAX_FILE_BYTES}" in cmds
+    ant-client#214 removed ant-core's browser DOWNLOAD cap, so a downloader
+    handed `MAX_DOWNLOAD_BYTES` by default skipped multi-GB entries a current
+    bundle fetches -- and a skip is excluded from every success-rate
+    denominator, so the run reported 100% while quietly not doing the work.
+    """
+
+    def test_downloader_env_has_no_download_cap(self):
+        assert "MAX_DOWNLOAD_BYTES" not in _wasm_env_cmds(ROLE_WASM_DOWNLOAD)
+
+    def test_uploader_env_has_none_either(self):
+        # One env template for both WASM roles; neither carries the bound now.
+        assert "MAX_DOWNLOAD_BYTES" not in _wasm_env_cmds(ROLE_WASM_UPLOAD)
+
+    def test_an_over_cap_line_is_eligible_under_the_provisioned_env(self):
+        """The regression this issue exists to guarantee.
+
+        With no bound in the rendered env the downloader resolves
+        `MAX_DOWNLOAD_BYTES` to its `0` default, so a line declaring more than
+        ant-core's old 1 GB upload cap is ATTEMPTED rather than skipped.
+        """
+        cmds = _wasm_env_cmds(ROLE_WASM_DOWNLOAD)
+        assert f"MAX_DOWNLOAD_BYTES={WASM_MAX_FILE_BYTES}" not in cmds
+        # `downloader.sh`'s picker and the WASM harness read the same variable,
+        # and an unset one is unbounded: the 1000 MiB native upload is picked.
+        assert _eligible(0, f"aaa {OVER}\n") == ["aaa"]
+        assert _eligible(None, f"aaa {OVER}\n") == ["aaa"]

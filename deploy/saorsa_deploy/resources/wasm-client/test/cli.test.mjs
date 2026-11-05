@@ -198,7 +198,7 @@ test("a partial upload still exits non-zero", () => {
 });
 
 test("ant-core's size refusal is over_cap, not a network failure", () => {
-  const e = new Error("invalid public file size 1048576000");
+  const e = new Error("browser files are limited to 1000000000 bytes");
   assert.equal(classifyError(e), "over_cap");
   assert.equal(failureResult(e, { elapsed_secs: 0 }).error_kind, "over_cap");
 });
@@ -207,8 +207,17 @@ test("over_cap wins over the substrings the other kinds match", () => {
   // The message contains "size" and could plausibly be caught by a later
   // pattern in a differently-ordered classifier; the order is load-bearing
   // because everything downstream records over_cap as a SKIP, not a failure.
-  const e = new Error("failed to download record: invalid public file size 2000000000");
+  const e = new Error("failed to upload record: browser files are limited to 1000000000 bytes");
   assert.equal(classifyError(e), "over_cap");
+});
+
+test("a manifest size-validation failure is NOT an over-cap skip", () => {
+  // `invalid public file size` is `browser/manifest.rs`'s self-encryption /
+  // MAX_SAFE_JS_INTEGER bounds check, not the 1 GB cap — and over_cap is
+  // recorded as a SKIP, which drops the operation from every success-rate
+  // denominator. It has to count as an ordinary failure (INFRA-511).
+  const e = new Error("invalid public file size 2000000000");
+  assert.notEqual(classifyError(e), "over_cap");
 });
 
 test("the emitted line is a single parseable JSON object", () => {
@@ -272,7 +281,7 @@ test("a success exits 0 and a failure exits non-zero", () => {
 test("an over-cap refusal still exits non-zero", () => {
   // The SKIP classification happens in the calling service, from error_kind —
   // the CLI itself did not succeed, so it must not claim it did.
-  const r = failureResult(new Error("invalid public file size 2000000000"), {
+  const r = failureResult(new Error("browser files are limited to 1000000000 bytes"), {
     elapsed_secs: 1,
   });
   assert.equal(r.error_kind, "over_cap");

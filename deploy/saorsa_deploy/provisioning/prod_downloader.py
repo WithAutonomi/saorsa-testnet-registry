@@ -35,7 +35,6 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
-from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES
 from saorsa_deploy.prod_bootstraps import (
     REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
     render_bootstrap_peers_toml,
@@ -514,7 +513,6 @@ class ProdDownloaderProvisioner:
                 f"ANT_WASM={ANT_WASM_CLI_PATH}\n"
                 f'BOOTSTRAP_MULTIADDRS="{",".join(self.bootstrap_multiaddrs)}"\n'
                 f"WASM_DIR={WASM_CLIENT_DIR}/pkg\n"
-                f"MAX_DOWNLOAD_BYTES={WASM_MAX_FILE_BYTES}\n"
             )
 
         # The peers file is written unconditionally: ant only reads it when

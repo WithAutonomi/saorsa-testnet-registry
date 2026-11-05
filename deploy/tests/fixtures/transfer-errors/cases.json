@@ -137,8 +137,8 @@
     {
       "id": "derived-over-cap",
       "provenance": "derived",
-      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core's browser-path size refusal, as matched by the WASM client's own classifier (`resources/wasm-client/src/classify.ts`, OVER_CAP). Derived: it needs a browser-path upload of an over-cap file to see.",
-      "text": "Error: Upload failed: invalid public file size: 2147483648 bytes exceeds the browser limit of 1000000000 bytes",
+      "source": "DERIVED FROM SOURCE at ant-cli-v0.3.11, not observed. ant-core/src/browser.rs:161 `format!(\"browser files are limited to {MAX_BROWSER_FILE_BYTES} bytes\")`, the UPLOAD cap, also matched by the WASM client's own classifier (`resources/wasm-client/src/classify.ts`, OVER_CAP). Derived: it needs a browser-path upload of an over-cap file to see.",
+      "text": "Error: Upload failed: browser files are limited to 1000000000 bytes",
       "expected_kind": "over_cap"
     },
     {

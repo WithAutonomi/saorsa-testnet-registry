@@ -1242,16 +1242,24 @@ fields and **ignores whatever follows**, so the two producers share one pool
 without either having to know how many fields the other writes — a reader that
 counted fields discarded every native line instead (V2-1629).
 
-ant-core refuses a browser-path file larger than 1,000,000,000 bytes, but only
-after resolving its data map, so a WASM downloader that drew the native 1000 MiB
-uploads from the shared pool spent a fetch on every one to be told
-`invalid public file size 1048576000`.
-Uploaders of both tiers now record the uploaded size beside the address, and
-each downloader parses the first field. A downloader with `MAX_DOWNLOAD_BYTES`
-set (`clients provision` sets it to the browser cap for the WASM roles; `0` or
-unset means no bound) skips over-cap entries before fetching anything. A bare
-line — every list written before this change — is never excluded, because an
-unknown size is not a known-too-big one.
+A pre-0.3.11 ant-core refused a browser-path file larger than 1,000,000,000
+bytes, but only after resolving its data map, so a WASM downloader that drew the
+native 1000 MiB uploads from the shared pool spent a fetch on every one to be
+refused. Uploaders of both tiers now record the uploaded size beside the
+address, and each downloader parses the first field. A downloader with
+`MAX_DOWNLOAD_BYTES` set (`0` or unset means no bound) skips over-cap entries
+before fetching anything. A bare line — every list written before sizes were
+published — is never excluded, because an unknown size is not a known-too-big
+one.
+
+**Nothing provisions that bound any more.** ant-client#214 (`ant-cli`
+0.3.11-rc.1) removed ant-core's browser **download** cap — the cap that remains
+is upload-only — so `clients provision` and the prod downloader provisioner no
+longer write `MAX_DOWNLOAD_BYTES`, and it defaults to `0`. The default was
+suppressing work a current bundle does fine, and doing it as a **skip**, which
+is excluded from every success-rate denominator: a run reported 100% having
+quietly not fetched part of its list. Set the variable by hand (in the unit's
+env file) only when deliberately running a pinned pre-0.3.11 bundle.
 
 **CLI**: `clients infra --wasm-uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:forward_logs=BOOL][:network=PROFILE][:rust_log=SPEC]`
 and `--wasm-downloader provider:region[:vm_size][:clock_skew=DURATION][:forward_logs=BOOL][:network=PROFILE][:rust_log=SPEC]`.

@@ -15,7 +15,6 @@ from saorsa_deploy.client_roles import (
     ROLE_BROWSER_DOWNLOAD,
     ROLE_POINTER,
     ROLE_UPLOAD,
-    WASM_MAX_FILE_BYTES,
     is_browser,
     is_pointer,
     is_upload,
@@ -525,11 +524,6 @@ class AntClientProvisioner:
                 # "auto" default, which needs a merkle wallet for big batches.
                 "PAYMENT_TYPE": env["payment_type"],
                 "RUST_LOG": env["rust_log"],
-                # The address pool is shared with the native tier, whose 1000 MB
-                # uploader publishes files ant-core's browser path cannot
-                # download. Address lines carry the size, so the downloader
-                # skips those instead of fetching a data map to be refused.
-                "MAX_DOWNLOAD_BYTES": WASM_MAX_FILE_BYTES,
             }
             if self.influx_url and self.influx_token:
                 values.update(

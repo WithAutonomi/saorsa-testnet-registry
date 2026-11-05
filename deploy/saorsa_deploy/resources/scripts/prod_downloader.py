@@ -57,10 +57,13 @@ Optional env:
                          identical; only the spawned binary differs.
     ANT_WASM             /path/to/ant-wasm (default /usr/local/bin/ant-wasm).
                          Only used when CLIENT_KIND=wasm.
-    MAX_DOWNLOAD_BYTES   Largest file to attempt, 0 = unbounded. Under
-                         CLIENT_KIND=wasm this is ant-core's browser cap: an
-                         address line declaring more bytes is SKIPPED without
-                         spawning anything.
+    MAX_DOWNLOAD_BYTES   Largest file to attempt, 0 = unbounded (the default,
+                         and what every provisioner now writes). Honoured under
+                         CLIENT_KIND=wasm only: an address line declaring more
+                         bytes is SKIPPED without spawning anything. An
+                         operator bound, not ant-core's -- ant-client#214
+                         removed the browser DOWNLOAD cap, so set it only for a
+                         deliberately pinned pre-0.3.11 bundle.
 
 Address lines are `<address>[ <bytes>]`. The optional size lets an over-cap
 entry be skipped up front instead of paying for a data-map resolution to be
@@ -171,11 +174,17 @@ TRANSFER_ERROR_KINDS = (
 
 #: `(marker, kind)` pairs in match order -- see ORDER IS LOAD-BEARING above.
 TRANSFER_ERROR_MARKERS = (
-    # ant-core refuses a browser-path file above its cap once the data map
-    # resolves. That is a property of the transport and not of the network, and
-    # every consumer records it as a SKIP, so it is tested first and on its
-    # own -- exactly as the WASM client's own classifier does.
-    ("invalid public file size", "over_cap"),
+    # ant-core refuses a browser-path UPLOAD above its cap before the file
+    # reaches the network (`MAX_BROWSER_FILE_BYTES`, `ant-core/src/browser.rs`).
+    # That is a property of the transport and not of the network, and every
+    # consumer records it as a SKIP, so it is tested first and on its own --
+    # exactly as the WASM client's own classifier does. It cannot arise on a
+    # DOWNLOAD: ant-client#214 removed the browser download cap. The marker
+    # used to be `invalid public file size`, which is not the cap at all but
+    # `browser/manifest.rs`'s self-encryption / `MAX_SAFE_JS_INTEGER` bounds
+    # check -- so an ordinary manifest-validation failure was classified as a
+    # skip and dropped from every success-rate denominator (INFRA-511).
+    ("browser files are limited to", "over_cap"),
     # The collapsed native-DOWNLOAD kind. `chunk_get` returns `Ok(None)` when
     # the peer sweep is exhausted, and its retry predicate swallows
     # `Timeout | Network | Protocol` into that exhaustion -- so not-found, a
@@ -862,10 +871,10 @@ def main() -> int:
         max_download_bytes = int(os.environ.get("MAX_DOWNLOAD_BYTES", "0"))
     except ValueError:
         max_download_bytes = 0
-    # The cap is ant-core's BROWSER cap, so it applies to the WASM transport
-    # only. The native client has no such limit, and nothing should be able to
-    # make it skip a file it can download perfectly well — so the value is gated
-    # on the transport here rather than trusted to be absent from the env file.
+    # The bound is a browser-path one, so it applies to the WASM transport only.
+    # The native client has no such limit, and nothing should be able to make it
+    # skip a file it can download perfectly well — so the value is gated on the
+    # transport here rather than trusted to be absent from the env file.
     if not is_wasm:
         max_download_bytes = 0
 

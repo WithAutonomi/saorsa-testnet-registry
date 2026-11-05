@@ -110,8 +110,19 @@ class TestOrdering:
         assert MODULE.classify_transfer_error("partial upload: 3/4 stored") == "quorum"
 
     def test_over_cap_wins_over_everything(self):
-        text = "invalid public file size and also timeout: whatever"
+        text = "browser files are limited to 1000000000 bytes and also timeout: whatever"
         assert MODULE.classify_transfer_error(text) == "over_cap"
+
+    def test_a_manifest_size_validation_failure_is_not_an_over_cap_skip(self):
+        """INFRA-511: `invalid public file size` is not the cap.
+
+        It is `browser/manifest.rs`'s self-encryption / `MAX_SAFE_JS_INTEGER`
+        bounds check, and `over_cap` is recorded as a SKIP -- so matching it
+        dropped an ordinary manifest-validation failure out of every
+        success-rate denominator.
+        """
+        text = "invalid public file size 2000000000"
+        assert MODULE.classify_transfer_error(text) == "other"
 
     def test_insufficient_peers_is_quorum_even_when_it_talks_about_quotes(self):
         """Deliberately unlike the browser classifier; see the block's comment."""
@@ -233,7 +244,7 @@ class TestFailureReason:
 _MARKER_SOURCES = {
     "Chunk not found after": "ant-core/src/data/client/file/native.rs",
     "DataMap chunk not found": "ant-core/src/data/client/data.rs",
-    "invalid public file size": None,
+    "browser files are limited to": "ant-core/src/browser.rs",
     "partial upload:": "ant-core/src/data/error.rs",
 }
 
@@ -271,12 +282,6 @@ class TestTheMarkersStillExistAtThePinnedRef:
 
     @pytest.mark.parametrize("marker", [m for m, _ in MODULE.TRANSFER_ERROR_MARKERS])
     def test_each_marker_is_still_in_the_source(self, marker):
-        if marker in _MARKER_SOURCES and _MARKER_SOURCES[marker] is None:
-            pytest.skip(
-                "ant-core's browser-path size refusal is built from a formatted "
-                "message, not a single literal; the WASM client's own "
-                "classifier is its only definition"
-            )
         hits = self._grep(marker)
         assert hits, f"{marker!r} no longer appears in ant-core/ant-cli at the pinned ref"
         expected_file = _MARKER_SOURCES.get(marker)
