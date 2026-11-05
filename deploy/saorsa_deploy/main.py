@@ -65,6 +65,40 @@ def _add_manifest_args(p, name_help: str = "Override the manifest's deployment n
     )
 
 
+def _add_saorsa_db_wheel_args(p):
+    """Shared `saorsa-db` wheel args for the two in-place script upgrades.
+
+    Both install the host-side service script, so both need the VM's
+    `saorsa-db` wheel to move with it on a `prod-continuous-uploader`. The
+    wheel is normally resolved without help — a workspace build from a
+    checkout, the wheelhouse or the matching GitHub release from a released
+    install — and these are the escape hatch for an operator holding the file.
+    See `saorsa_deploy.registry_client_upgrade`.
+    """
+    p.add_argument(
+        "--saorsa-db-wheel",
+        type=str,
+        default=None,
+        help=(
+            "Path to the saorsa-db wheel to install on the VM, instead of "
+            "resolving one. Also readable from $SAORSA_DB_WHEEL; the flag "
+            "wins. Refused unless its version matches this saorsa-deploy, "
+            "since a release publishes both wheels together."
+        ),
+    )
+    p.add_argument(
+        "--allow-wheel-version-mismatch",
+        action="store_true",
+        help=(
+            "Install a saorsa-db wheel whose version differs from this "
+            "saorsa-deploy anyway, warning loudly. The mismatch is normally a "
+            "refusal: the service script this installs may call a repository "
+            "argument an older wheel does not accept, which raises on the "
+            "service's first operation while it holds a pool claim."
+        ),
+    )
+
+
 def _add_telegraf_fold_args(p):
     """Shared Telegraf-fold args for the node-tier provision commands.
 
@@ -2836,6 +2870,7 @@ def main(argv=None):
             "a cost."
         ),
     )
+    _add_saorsa_db_wheel_args(deployments_upgrade_service_script_parser)
 
     # deployments upgrade-wasm-client
     deployments_upgrade_wasm_client_parser = deployments_subparsers.add_parser(
@@ -2886,6 +2921,7 @@ def main(argv=None):
         default=None,
         help="DigitalOcean droplet size for the build VM (default: c-32).",
     )
+    _add_saorsa_db_wheel_args(deployments_upgrade_wasm_client_parser)
 
     # deployments up
     deployments_up_parser = deployments_subparsers.add_parser(

@@ -76,6 +76,32 @@ _PACKAGE_DIRS = {
 }
 
 
+def default_repo_root() -> Path:
+    """Where this module's own location says the workspace root is.
+
+    One definition, because "is there a workspace to build from" and "build it"
+    have to agree about where they are looking: an installed layout puts this
+    file under `site-packages/`, so the answer is a directory with no `db/` in
+    it, and the caller that checks must be looking at the same one the build
+    would use.
+    """
+    # provisioning/ -> saorsa_deploy/ -> deploy/ -> repo root
+    return Path(__file__).resolve().parents[3]
+
+
+def workspace_has_package(package: str, repo_root: Path | None = None) -> bool:
+    """Whether ``package`` is buildable from ``repo_root`` (a real checkout).
+
+    False from an installed wheel, which has no workspace anywhere in it — not
+    an off-by-one in the parent count, so no amount of walking upwards helps.
+    """
+    package_dir = _PACKAGE_DIRS.get(package)
+    if package_dir is None:
+        return False
+    root = default_repo_root() if repo_root is None else repo_root
+    return (root / package_dir / "pyproject.toml").is_file()
+
+
 def build_workspace_wheel(package: str, repo_root: Path | None = None) -> Path:
     """Build one workspace package's wheel and return its path.
 
@@ -91,8 +117,7 @@ def build_workspace_wheel(package: str, repo_root: Path | None = None) -> Path:
         raise ValueError(f"not a workspace package this builds: {package}") from None
 
     if repo_root is None:
-        # provisioning/ -> saorsa_deploy/ -> deploy/ -> repo root
-        repo_root = Path(__file__).resolve().parents[3]
+        repo_root = default_repo_root()
     if not (repo_root / package_dir / "pyproject.toml").is_file():
         raise FileNotFoundError(
             f"cannot build the {package} wheel: no {package_dir}/pyproject.toml under {repo_root}"

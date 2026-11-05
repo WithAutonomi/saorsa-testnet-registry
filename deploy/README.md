@@ -18,6 +18,21 @@ gh release download v1.0.0 -p '*.whl' -D /tmp/wheels
 uvx --no-sources --find-links /tmp/wheels saorsa-deploy==1.0.0 --version
 ```
 
+**The local wheelhouse: `~/.local/share/saorsa-deploy/wheels`.** The production
+maintenance procedures keep every version they have fetched in that directory
+and install from it with `--find-links`, and the tool now knows the same
+default: it is where `deployments upgrade-service-script` and
+`deployments upgrade-wasm-client` look for the `saorsa-db` wheel a
+`prod-continuous-uploader` VM needs, when they are running from an installed
+wheel with no workspace to build one from. It is the state directory's
+`wheels/` subdirectory, so `SAORSA_DEPLOY_STATE_DIR` moves it, and
+`SAORSA_DEPLOY_WHEELHOUSE` overrides it outright (a scratch directory holding
+one release's wheels, say). Populating it is one command:
+
+```bash
+gh release download v1.14.2 -p '*.whl' -D ~/.local/share/saorsa-deploy/wheels
+```
+
 A PR that changes `deploy/` or `db/` must bump the version and declare the bump
 type in its body; CI's `version-bump` check enforces it. See the repository
 README's "Releasing" section.
@@ -4918,6 +4933,8 @@ uv run saorsa-deploy deployments upgrade-wasm-client \
 | `--repo-owner` | string | `WithAutonomi` | GitHub repository owner |
 | `--ssh-key-path` | string | `~/.ssh/id_rsa` | SSH key used to reach the client VM(s) |
 | `--build-vm-size` | string | `c-32` | DigitalOcean droplet size for the build VM |
+| `--saorsa-db-wheel` | string | resolved | Path to the `saorsa-db` wheel to install on the VM, instead of resolving one (also `$SAORSA_DB_WHEEL`; the flag wins) |
+| `--allow-wheel-version-mismatch` | flag | off | Install a `saorsa-db` wheel whose version differs from this `saorsa-deploy` anyway, warning loudly |
 
 **Scope.** Only `prod-continuous-uploader` and `prod-continuous-downloader` deployments whose `deploy_args.client_kind` is `wasm`. Anything else — another kind, a native deployment, a name the registry does not know — is refused **before anything is built**, with every problem in the invocation listed at once. The one-shot kinds (`prod-downloaders`, `prod-uploaders`) are rebuilt by every `up` and need no in-place upgrade; a testnet's WASM tier is torn down with its testnet. `DATABASE_URL` is required: the kind, the transport and the old build all come from the registry, and the upgrade is recorded there.
 
@@ -4927,7 +4944,7 @@ uv run saorsa-deploy deployments upgrade-wasm-client \
 
 **Why the service script goes with the bundle.** The bundle is the half of the path that *performs* a transfer; the service script is the half that *records* it. Upgrading one without the other leaves the recording half behind, and that is not hypothetical: PROD-WUL-01 was provisioned on 2026-09-26, the `client_build` plumbing landed on 2026-09-27 17:43, and its bundle was upgraded 78 minutes later — so from then on its per-op log on the host carried `client_build` while every single one of its `deployment_prod_upload_results` rows had the column empty, because the script writing those rows was still the one from the day before. Redeploying it is cheap (the unit is being restarted anyway) and makes the pairing unbreakable.
 
-**And the VM's `saorsa-db` wheel goes with it, on a `prod-continuous-uploader`.** That script writes Postgres itself through the `/opt/ant-registry-client` venv, whose wheel was installed at provision time — so a script calling a repository argument that wheel does not accept raises `TypeError` on the service's *first* upload, a successful one included, before the row is written and before the pool claim in hand is resolved. The wheel is rebuilt from this workspace and installed **before** the script, and the registry schema is preflighted with every other refusal — i.e. **before the ~10-minute bundle build**, so a pre-migration registry costs nothing. `deployments upgrade-service-script` does exactly the same, and both read one module (`saorsa_deploy/registry_client_upgrade.py`): a coupling this sharp held in only one of two commands that install the same file is a trap for whoever reaches for the other. A `prod-continuous-downloader` runs `/usr/bin/python3`, imports nothing of ours and gets neither.
+**And the VM's `saorsa-db` wheel goes with it, on a `prod-continuous-uploader`.** That script writes Postgres itself through the `/opt/ant-registry-client` venv, whose wheel was installed at provision time — so a script calling a repository argument that wheel does not accept raises `TypeError` on the service's *first* upload, a successful one included, before the row is written and before the pool claim in hand is resolved. The wheel is resolved from the first of four sources that has the running version of it — an explicit path, a workspace build, the local wheelhouse, this repository's release — and installed **before** the script, and the registry schema is preflighted with every other refusal, i.e. **before the ~10-minute bundle build**, so neither a pre-migration registry nor an unresolvable wheel costs anything. See §"Redeploying a service script in place" for the resolution order and the version check. `deployments upgrade-service-script` does exactly the same, and both read one module (`saorsa_deploy/registry_client_upgrade.py`): a coupling this sharp held in only one of two commands that install the same file is a trap for whoever reaches for the other. A `prod-continuous-downloader` runs `/usr/bin/python3`, imports nothing of ours and gets neither.
 
 **Timing is the operator's.** Run it outside the daily window. Since the cycle is anchored to `daily_at`, a restart **after** the day's cycle no longer triggers one: the service reads the instant its last cycle completed and waits for the next anchor. A restart *before* the day's cycle still leaves that cycle to run at its anchor, on the new bundle. A failure on one deployment is reported and the command carries on with the rest (the alternative is a set left on two builds with nothing recording which is which), exiting non-zero at the end.
 
@@ -5107,6 +5124,8 @@ uv run saorsa-deploy deployments upgrade-service-script --name PROD-DL-01
 | `--name` | string | required | Deployment name (must have client state in S3) |
 | `--ssh-key-path` | string | `~/.ssh/id_rsa` | SSH key used to reach the client VM(s) |
 | `--restart` / `--no-restart` | flag | on | Restart each host's own service after writing the script |
+| `--saorsa-db-wheel` | string | resolved | Path to the `saorsa-db` wheel to install on the VM, instead of resolving one (also `$SAORSA_DB_WHEEL`; the flag wins) |
+| `--allow-wheel-version-mismatch` | flag | off | Install a `saorsa-db` wheel whose version differs from this `saorsa-deploy` anyway, warning loudly |
 
 **Scope: both continuous kinds and both transports.** `prod-continuous-downloader` and `prod-continuous-uploader`, reusing `SCRIPT_BY_KIND` and `provisioning/service_script.py` so there is no second copy of either the script-writing heredoc or the kind map. Anything else is refused by name; the one-shot kinds are rewritten by every `up` and a testnet's client tier dies with its testnet. `DATABASE_URL` is required — the kind, which decides both the script and the unit, comes from the registry.
 
@@ -5117,7 +5136,18 @@ uv run saorsa-deploy deployments upgrade-service-script --name PROD-DL-01
 * the venv's `saorsa-db` was installed at provision time, and neither the operator's CLI nor an `alembic upgrade` touches that remote wheel — so a script calling a repository argument that wheel does not accept raises `TypeError` on the service's **first** operation, including a successful one, before the result is recorded and before the pool claim it is holding is resolved. The wheel is therefore rebuilt from this workspace and installed **before** the script in the same pass, and which wheel went with it is recorded on the event;
 * the columns that argument writes have to exist already, or the same operation dies in the `INSERT` instead. That is checked against the connected registry **before any host is touched**, and a missing column refuses the run naming `cd db && uv run alembic upgrade head`. Checked, never created: a migration is the operator's step.
 
-Both mean the uploader kind must be upgraded **from the repository checkout**, since the wheel is built from this workspace; a missing checkout refuses before anything is touched. The download kinds run `/usr/bin/python3`, import nothing of ours and write no Postgres, so they get neither the wheel nor the schema check.
+The download kinds run `/usr/bin/python3`, import nothing of ours and write no Postgres, so they get neither the wheel nor the schema check.
+
+**Where that wheel comes from — four sources, in order.** It used to be built from this workspace and nowhere else, which made both commands unreachable for the one kind that needs them: every production maintenance procedure runs the tool as a released, version-pinned install from the wheelhouse and explicitly forbids running it from a checkout, so `upgrade-wasm-client` refused in two seconds with the one piece of advice such a run may not take (INFRA-517; it is what abandoned PROD-WUL-01's 2026-11-05 upgrade half-done). The requirement was never "built from a workspace" — it is that the wheel installed on the VM is the **same version** as the `saorsa-deploy` distribution writing the script, since a release publishes `saorsa_deploy-X.Y.Z` and `saorsa_db-X.Y.Z` together. So the wheel is resolved from the first of these that has one:
+
+1. **An explicit path** — `--saorsa-db-wheel PATH` or `$SAORSA_DB_WHEEL`, the escape hatch for an operator holding the file. A path that is not there is a refusal, never a fall-through to a different wheel.
+2. **A workspace build**, exactly as before, when there is a `db/pyproject.toml` to build from. The development flow is unchanged, and this is the one source **exempt** from the version check — a working tree is deliberately allowed to be ahead of any release — so the output says that an unreleased wheel is going onto the VM.
+3. **The local wheelhouse** — the newest `saorsa_db-<running version>-*.whl` under `$SAORSA_DEPLOY_WHEELHOUSE`, defaulting to `~/.local/share/saorsa-deploy/wheels` (see §"Versioning"). Matching the *running* version matters rather than taking the newest file: that directory accumulates every version any run has ever fetched.
+4. **This repository's GitHub release** — `saorsa_db-<version>-py3-none-any.whl` from the `v<version>` tag, downloaded to a temporary directory. Last, because it is the only source needing the network, and the wheelhouse copy of the same artefact is identical.
+
+**The version is checked, not assumed.** Whatever the source bar the workspace, the wheel's own `METADATA` (read out of the archive — a file name is evidence of nothing, and this is also what proves a download is a readable zip of the right distribution) must report the running `saorsa-deploy` version, or the command refuses naming both. `--allow-wheel-version-mismatch` overrides that and warns loudly. With **nothing** resolvable the command still refuses before anything is built or installed, naming every source it tried and what would make each work — and never telling a production procedure to go and find a checkout.
+
+**The source is reported**, as `saorsa-db wheel: saorsa_db-1.14.2-py3-none-any.whl (wheelhouse /home/…/wheels)`, and recorded on the event as `saorsa_db_wheel_source`: a wheelhouse copy, a working-tree build and a release download are all legitimate, so which wheel went onto the VM is only half the answer a maintenance run's results comment needs.
 
 **Timing is warned about, not refused**, and the warning names the deployment's own `daily_at` rather than a generic caution (PROD-WDL-01 is at 02:00, the other three at 00:00). A hard refusal would block an operator fixing a deployment that is already broken. A restart mid-cycle on the **uploader** invokes the claim-resolution handler, which exists for exactly that — it resolves the batch in flight and releases the claims it never started; on the **downloader** it abandons the cycle, which is then re-run at the next anchor.
 

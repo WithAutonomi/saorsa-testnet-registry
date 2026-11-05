@@ -684,6 +684,26 @@ class TestWorkspaceWheelHelper:
         with pytest.raises(ValueError, match="not a workspace package"):
             build_workspace_wheel("saorsa-web")
 
+    def test_whether_there_is_a_workspace_at_all_is_answerable(self, tmp_path):
+        """Asked before building, so the two must agree about where they look.
+
+        `registry_client_upgrade` has to tell "no workspace here" (a released
+        install, which has none anywhere) from "the build failed", and the only
+        way that is safe is for the question and the build to resolve the same
+        root (INFRA-517).
+        """
+        from saorsa_deploy.provisioning.saorsa_db_install import (
+            default_repo_root,
+            workspace_has_package,
+        )
+
+        assert workspace_has_package("saorsa-db")
+        assert workspace_has_package("saorsa-deploy")
+        assert (default_repo_root() / "db" / "pyproject.toml").is_file()
+
+        assert not workspace_has_package("saorsa-db", tmp_path)
+        assert not workspace_has_package("saorsa-web")
+
     def test_an_oversized_wheel_is_refused(self, tmp_path):
         """The tripwire for a build that swept up something that is not source.
 

@@ -789,9 +789,10 @@ the common WASM rules above.)
 - **The VM's `saorsa-db` wheel is redeployed with it too, on the uploader
   kind** — that script writes Postgres through `/opt/ant-registry-client`,
   whose wheel is from provision time, so a new repository argument raises
-  `TypeError` on the service's first upload. The schema is preflighted with
-  every other refusal, i.e. **before the ~10-minute build**. One module with
-  `upgrade-service-script`; see its bullet above.
+  `TypeError` on the service's first upload. The wheel is resolved (four
+  sources, version-checked) and the schema preflighted with every other
+  refusal, i.e. **before the ~10-minute build**. One module with
+  `upgrade-service-script`; see its bullets above.
 - **The host-side service script is redeployed with the bundle.** The bundle is
   the half that *performs* a transfer; `prod_downloader.py` /
   `prod_continuous_uploader.py` is the half that *records* it, so upgrading one
@@ -859,11 +860,30 @@ exists to produce. `upgrade-wasm-client` redeploys the same script but refuses
   `TypeError` on the service's FIRST operation — a successful one included —
   before the row is written and before the pool claim in hand is resolved; and
   the columns it writes must already exist or the same operation dies in the
-  INSERT. So the wheel is rebuilt from this workspace and installed **before**
-  the script in the same pass (recorded on the event), and a missing column
-  refuses the run naming `alembic upgrade head`, **before any host is touched**.
-  Checked, never created. The uploader kind therefore has to be upgraded from
-  the checkout; the download kinds need neither and get neither.
+  INSERT. So the wheel is installed **before** the script in the same pass
+  (recorded on the event, with its source), and a missing column refuses the
+  run naming `alembic upgrade head`, **before any host is touched**. Checked,
+  never created. The download kinds need neither and get neither.
+- **That wheel has FOUR sources, and the invariant is the VERSION, not the
+  workspace** (INFRA-517). It used to be built from this workspace and nowhere
+  else, so both commands refused outright for the one kind that needs them:
+  every production maintenance procedure runs the tool as a released,
+  version-pinned install from the wheelhouse and forbids a checkout, which is
+  what left PROD-WUL-01 split across two releases on 2026-11-05. Resolved in
+  order, first hit winning: an explicit `--saorsa-db-wheel` / `$SAORSA_DB_WHEEL`
+  (a path that is not there refuses, never falls through), a workspace build
+  when there is a `db/pyproject.toml`, the newest
+  `saorsa_db-<running version>-*.whl` under `$SAORSA_DEPLOY_WHEELHOUSE`
+  (default `~/.local/share/saorsa-deploy/wheels`, the state dir's `wheels/` —
+  matching the RUNNING version, since that directory holds every version any
+  run ever fetched), then this repository's `v<version>` release. A release
+  publishes both wheels at one version, so the resolved wheel's own METADATA
+  version **must equal** `importlib.metadata.version("saorsa-deploy")` or the
+  run refuses naming both (`--allow-wheel-version-mismatch` overrides, loudly);
+  a **workspace build is exempt** — a working tree may be ahead of any release
+  — and says so. Nothing resolvable is still a refusal before anything is built
+  or installed, naming every source tried, and **never** advising a checkout.
+  The source is printed and recorded (`saorsa_db_wheel_source`).
 - **Timing is WARNED about, not refused**, naming the deployment's own
   `daily_at` (PROD-WDL-01 is 02:00, the other three 00:00): a hard refusal would
   block an operator fixing a deployment that is already broken. A restart
