@@ -1105,6 +1105,36 @@ def _print_browser_summary(rounds: list[dict], name: str, console: Console) -> N
 # ---------------------------------------------------------------------------
 
 
+def _hot_file_round_boundary(round_id: int, start_ns_values: list[int]):
+    """The round's BOUNDARY, derived rather than taken from the earliest start.
+
+    `start_ns` is a reader's own SCHEDULED start -- `round_id x period +
+    offset` -- so the minimum over a group is the boundary only when an
+    unstaggered reader happens to be in it. A cohort whose indexes begin at 5
+    with a 2 s stagger has its earliest reader at +32 s, and a missing early
+    reader does the same thing, so the column read 08:10:32 for a round that
+    began at 08:10:00.
+
+    The period is recovered from the data instead: `start_ns / 1e9 = round_id x
+    period + offset`, so `floor(secs / round_id) == period` for every offset
+    below `round_id` -- and a round id is an epoch second divided by the period,
+    so it is in the millions while an offset is bounded by the deadline, which
+    the schema holds under the period. The boundary is then `round_id x period`
+    exactly, with no configuration to resolve and nothing to plumb through.
+
+    None when there is nothing to derive from (no starts, or a round id of 0 --
+    only reachable from a hand-written fixture), which the renderer prints as
+    `-` rather than guessing.
+    """
+    if not start_ns_values or round_id <= 0:
+        return None
+    earliest_secs = min(start_ns_values) // 1_000_000_000
+    period = earliest_secs // round_id
+    if period <= 0:
+        return None
+    return datetime.fromtimestamp(round_id * period, tz=timezone.utc)
+
+
 def summarise_hot_file_rounds(points: list[dict]) -> list[dict]:
     """One summary per ``(round_id, extension)``, oldest first.
 
@@ -1149,11 +1179,7 @@ def summarise_hot_file_rounds(points: list[dict]) -> list[dict]:
             {
                 "round_id": round_id,
                 "extension": extension,
-                "boundary": (
-                    datetime.fromtimestamp(min(boundaries) / 1_000_000_000, tz=timezone.utc)
-                    if boundaries
-                    else None
-                ),
+                "boundary": _hot_file_round_boundary(round_id, boundaries),
                 # Distinct (host, instance): one point per reader per round, so
                 # a count of rows would hide a duplicate and a count of readers
                 # would hide a VM that reported nothing.

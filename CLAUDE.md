@@ -2096,7 +2096,12 @@ together.
   says 150 s. One running index allocation over the whole role list, as
   `planned_client_vms` does, so a later schedule group accounts for the earlier
   ones' VMs. Two copies of the formula by necessity (the script imports nothing
-  from the package) and a test pins them together.
+  from the package) and a test pins them together. **The warning is on the
+  DEADLINE, not on `last + deadline` against the period**: the deadline is an
+  absolute offset from the boundary and the service refuses
+  `offset >= download_timeout_secs`, so the sum said nothing — period 600,
+  deadline 100 and a 150 s last start passed silently with six of sixteen
+  readers guaranteed never to start. It now names how many can never run.
 - **A reader whose own start lands past `boundary + download_timeout_secs` does
   not run `ant` at all**, recording `timeout` / `"deadline passed before
   start"`. The deadline is checked BEFORE the spawn and the remaining time is
@@ -2136,7 +2141,12 @@ together.
   average a synchronised cohort's reads of one file with a client's reads of
   random ones. **One point per reader per round of this cohort's parity,
   always**: a round with no point is itself a finding, which only reads that way
-  if a skip is a point.
+  if a skip is a point — so the WHOLE round is guarded, not just the download,
+  and the manifest fetch names `http.client.HTTPException` (a body truncated
+  short of its `Content-Length` raises `IncompleteRead`, which is not an
+  `OSError`, and used to kill the reader thread outright). The live view's
+  `Boundary (UTC)` is DERIVED as `round_id × period` rather than taken from the
+  earliest `start_ns`, which is a reader's staggered start and not the boundary.
 - **`clock_skew` and `network` are refused by name**; `rust_log` is accepted,
   unlike on the browser role, because the transfers run in a Rust process whose
   tracing subscriber there is something to configure — which is also why `ant` is

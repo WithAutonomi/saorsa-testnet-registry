@@ -42,6 +42,7 @@ library only (Ubuntu 24.04's `python3`).
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import socket
@@ -412,7 +413,20 @@ def fetch_hot_files(url: str, timeout: int = 30) -> list[dict]:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             return parse_hot_files(resp.read().decode("utf-8", errors="replace"))
-    except (urllib.error.URLError, socket.timeout, OSError, ValueError) as exc:
+    except (
+        urllib.error.URLError,
+        # A body that stops short of its advertised `Content-Length` raises
+        # `http.client.IncompleteRead`, which is an `HTTPException` and NOT an
+        # `OSError` -- so it escaped this tuple, and with the fetch outside the
+        # round's own guard the reader thread died without emitting its point.
+        # One truncated response then left a permanent hole in that reader's
+        # series, which is the one thing "always one point per reader per round"
+        # exists to prevent.
+        http.client.HTTPException,
+        socket.timeout,
+        OSError,
+        ValueError,
+    ) as exc:
         print(f"WARN: could not read the hot-file selection: {exc}", file=sys.stderr, flush=True)
         return []
 
@@ -841,12 +855,38 @@ def run_download(cfg: Config, round_id: int, instance: int, entry: dict, start_n
 
 
 def run_reader_round(cfg: Config, round_id: int, instance: int) -> None:
-    """One reader's whole round: fetch the selection, wait its turn, download.
+    """One reader's whole round, and the guarantee that it emits a point.
 
-    Any exception around the download is recorded as a `failure` / `other`
-    rather than allowed to kill the thread: a reader that stopped emitting
-    points would read as a reader that never ran.
+    **Every path out of a round writes exactly one point**, which is what makes
+    a missing point a finding rather than an ambiguity. So the whole body is
+    guarded, not just the download: the guard inside
+    :func:`_reader_round_body` keeps the richer fields (the address, the
+    lateness) for the common case, and this one is the backstop for everything
+    else -- the manifest fetch above all, where a body truncated short of its
+    `Content-Length` used to kill the thread outright and leave a permanent hole
+    in that reader's series.
+
+    The arithmetic here cannot raise, so the handler always has a `start_ns` to
+    stamp the point with.
     """
+    start_ns = (
+        boundary_of(round_id, cfg.round_period_secs) + cfg.offset_for(instance)
+    ) * 1_000_000_000
+    try:
+        _reader_round_body(cfg, round_id, instance)
+    except Exception as exc:  # noqa: BLE001 -- a reader must keep emitting points
+        fields = _base_fields(start_ns)
+        fields["status"] = STATUS_FAILURE
+        fields["error_kind"] = KIND_OTHER
+        fields["error_text"] = clip_error_text(f"{type(exc).__name__}: {exc}")
+        try:
+            emit(cfg, round_id, instance, None, fields)
+        except Exception:  # noqa: BLE001 -- nothing left to report it with
+            pass
+
+
+def _reader_round_body(cfg: Config, round_id: int, instance: int) -> None:
+    """Fetch the selection, wait this reader's turn, download, emit."""
     boundary = boundary_of(round_id, cfg.round_period_secs)
     offset = cfg.offset_for(instance)
     scheduled = boundary + offset

@@ -251,6 +251,19 @@ def manifest_client_tiers(manifest: Manifest):
     return manifest.clients
 
 
+def reader_offset_secs(client_index: int, instance: int, instances: int, stagger: int) -> int:
+    """One reader's start offset from the round boundary.
+
+    ``((k − 1) × instances + (i − 1)) × stagger``, mirroring
+    ``reader_offset_secs`` in ``resources/scripts/hot_file_reader.py``. The two
+    cannot be shared (that file is copied verbatim onto a VM and imports nothing
+    from this package) and a test pins them together.
+    """
+    if stagger <= 0:
+        return 0
+    return ((max(client_index, 1) - 1) * instances + (max(instance, 1) - 1)) * stagger
+
+
 def last_hot_file_reader_offset_secs(max_client_index: int, instances: int, stagger: int) -> int:
     """The offset of the last reader on the highest-indexed VM of a cohort.
 
@@ -330,11 +343,25 @@ def hot_file_stagger_notes(
             f"{parity}, stagger {stagger}s — the last reader starts {last}s "
             f"after the boundary"
         )
-        if last + deadline > period:
+        # Compared with the DEADLINE, not with `last + deadline` against the
+        # period. The deadline is an absolute offset from the boundary -- the
+        # service refuses `offset >= download_timeout_secs` outright -- so it is
+        # not an extra download duration added to each start. The old sum said
+        # nothing: with period 600, deadline 100 and a 150 s last start,
+        # `150 + 100 <= 600` passed silently while six of the sixteen readers
+        # were guaranteed never to start at all.
+        stranded = sum(
+            1
+            for index in indexes
+            for i in range(1, instances + 1)
+            if reader_offset_secs(index, i, instances, stagger) >= deadline
+        )
+        if stranded:
             note += (
-                f"; that plus the {deadline}s deadline exceeds the round "
-                f"({last + deadline}s > {period}s), so the last readers may "
-                f"not overlap the first"
+                f"; the {deadline}s deadline is an absolute offset from the "
+                f"boundary, so {stranded} of the {len(indexes) * instances} "
+                f"readers start at or past it, can never run and will record a "
+                f"timeout every round"
             )
         notes.append(note)
     return notes

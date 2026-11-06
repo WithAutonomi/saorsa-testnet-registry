@@ -2082,13 +2082,28 @@ boundary + ((k − 1) × instances + (i − 1)) × start_stagger_secs
 so a cohort of 4 VMs × 4 readers with a 2 s stagger starts one reader every 2 s
 for 30 s with no coordinator at all. **The arithmetic is not checked** — a
 deliberately long stagger over a long round is a legitimate shape — so `clients
-plan` and `deployments plan` print the last reader's offset and say so when that
-plus the deadline exceeds the round:
+plan` and `deployments plan` print the last reader's offset:
 
 ```
 hot-file readers: 2 VM(s) x 4 reader(s) (client_index 1..2), round 600s,
 parity even, stagger 2s — the last reader starts 14s after the boundary
 ```
+
+and warn when any reader's start reaches the **deadline**, naming how many can
+never run:
+
+```
+… stagger 10s — the last reader starts 150s after the boundary; the 100s
+deadline is an absolute offset from the boundary, so 6 of the 16 readers start
+at or past it, can never run and will record a timeout every round
+```
+
+**The deadline is an absolute offset from the boundary, not an extra download
+duration added to each start**, and the service refuses `offset >=
+download_timeout_secs` outright. Comparing `last_offset + deadline` against the
+period therefore said nothing: with period 600, deadline 100 and a 150 s last
+start, `150 + 100 <= 600` passed silently while six of the sixteen readers were
+guaranteed never to start.
 
 **The printed offset is derived from the ALLOCATED `client_index`**, not from how
 many VMs the cohort has: an extension's indexes continue from whatever the
@@ -2104,6 +2119,11 @@ groups occupy ahead of it.
 1. GET the hot-file manifest over unsigned HTTPS. Absent or unparseable → one
    point `status=skipped`, `error_kind=no_hot_files`, and no process started.
    The rounds before the operator selects are part of the series, not failures.
+   A body that stops short of its `Content-Length` counts as unparseable:
+   `http.client.IncompleteRead` is an `HTTPException` rather than an `OSError`,
+   so it needed naming. **And the whole round is guarded, not just the
+   download** — every path out of a round writes exactly one point, which is
+   what makes a missing point a finding rather than an ambiguity.
 2. Sleep to its own start, recording `started_late_ms` (clamped at 0 — a reader
    cannot start early). **A start the stagger has put at or past the round's own
    deadline is refused before the sleep**, recording `failure` / `timeout` /
@@ -2265,6 +2285,15 @@ the live view resolves it per host from the recorded role config and the live
 client tiers, exactly as `record-results` does, before it emits the JSON and
 before it summarises. A registry or S3 failure is a warning saying the rounds
 are not split by cohort, not a refusal: this is a read-only diagnostic.
+
+**The `Boundary (UTC)` column is derived, not read off the earliest start.**
+`start_ns` is a reader's own scheduled start, offset included, so the minimum
+over a round is the boundary only when an unstaggered reader happens to be in
+it — a cohort whose indexes begin at 5 with a 2 s stagger starts at +32 s, and a
+missing early reader does the same thing. The period is recovered from the data
+instead (`floor(start_secs / round_id)` is exact for any offset below the round
+id, and a round id is in the millions while an offset is bounded by the
+deadline) and the boundary is `round_id × period`.
 
 `print-recorded-results` gains a "Hot-file reads" section with the same
 per-round table out of Postgres, plus "reads reporting a swarm", which is the

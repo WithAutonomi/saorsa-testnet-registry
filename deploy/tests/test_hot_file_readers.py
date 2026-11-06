@@ -614,7 +614,9 @@ class TestExtensionPlan:
         )
         assert "(client_index 5..8)" in note
         assert "the last reader starts 310s after the boundary" in note
-        assert "610s > 600s" in note
+        # Compared with the DEADLINE, not with `last + deadline` against the
+        # period: two of these sixteen readers start at or past 300s.
+        assert "2 of the 16 readers start at or past it" in note
 
     def test_a_later_schedule_group_accounts_for_the_earlier_one_s_vms(self):
         # Indexes are allocated with one running offset over the whole role
@@ -672,9 +674,91 @@ class TestExtensionPlan:
                 ]
             )
         )
-        # Indexes 1..10, so ((10-1) x 4 + 3) x 10 = 390s, + 300s = 690s > 600s.
+        # Indexes 1..10, so ((10-1) x 4 + 3) x 10 = 390s, past the 300s deadline.
         assert "the last reader starts 390s after the boundary" in note
-        assert "690s > 600s" in note
+        assert "start at or past it" in note
+
+    def test_the_warning_is_on_the_deadline_not_on_last_plus_deadline(self):
+        """The deadline is an ABSOLUTE offset from the boundary.
+
+        The service refuses `offset >= download_timeout_secs`, so it is not an
+        extra download duration added to each start. Summing them said nothing:
+        with period 600, deadline 100 and a 150 s last start, `150 + 100 <= 600`
+        passed silently while six of the sixteen readers could never run.
+        """
+        (note,) = hot_file_stagger_notes(
+            self._extension(
+                [
+                    {
+                        "provider": "digital_ocean",
+                        "region": "l",
+                        "count": 4,
+                        "instances": 4,
+                        "start_stagger_secs": 10,
+                        "round_period_secs": 600,
+                        "download_timeout_secs": 100,
+                    }
+                ]
+            )
+        )
+        assert "the last reader starts 150s after the boundary" in note
+        # Offsets 100, 110, 120, 130, 140, 150 are all at or past the deadline.
+        assert "6 of the 16 readers start at or past it" in note
+        assert "can never run" in note
+
+    def test_a_cohort_within_its_deadline_gets_no_warning(self):
+        # The last reader at 30s against a 300s deadline: every reader runs.
+        (note,) = hot_file_stagger_notes(
+            self._extension(
+                [
+                    {
+                        "provider": "digital_ocean",
+                        "region": "l",
+                        "count": 4,
+                        "instances": 4,
+                        "start_stagger_secs": 2,
+                    }
+                ]
+            )
+        )
+        assert "start at or past it" not in note
+
+    def test_the_plan_s_stranded_count_matches_the_service_s_refusal(self):
+        """The plan's count and the service's guard must agree exactly.
+
+        Two copies of one rule — the plan counts what the reader refuses — so a
+        disagreement means the plan is describing a cohort that behaves
+        differently.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("hot_file_reader", SCRIPT)
+        service = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(service)
+
+        instances, stagger, deadline = 4, 10, 100
+        indexes = [1, 2, 3, 4]
+        expected = sum(
+            1
+            for k in indexes
+            for i in range(1, instances + 1)
+            if service.reader_offset_secs(k, i, instances, stagger) >= deadline
+        )
+        (note,) = hot_file_stagger_notes(
+            self._extension(
+                [
+                    {
+                        "provider": "digital_ocean",
+                        "region": "l",
+                        "count": len(indexes),
+                        "instances": instances,
+                        "start_stagger_secs": stagger,
+                        "download_timeout_secs": deadline,
+                    }
+                ]
+            )
+        )
+        assert f"{expected} of the {len(indexes) * instances} readers" in note
 
     def test_a_cohort_with_no_stagger_reports_zero(self):
         (note,) = hot_file_stagger_notes(
@@ -1666,6 +1750,79 @@ class TestDeadline:
         # Reader 2 still reports, every round, so its impossibility is visible.
         assert all(f["error_kind"] == hfr.KIND_TIMEOUT for _, i, f in emitted if i == 2)
 
+    def test_a_truncated_manifest_response_still_records_the_round(self, hfr, tmp_path):
+        """A body that stops short of its `Content-Length`.
+
+        `http.client.IncompleteRead` is an `HTTPException`, not an `OSError`, so
+        it escaped the fetch's except tuple — and with the fetch outside the
+        round's guard the reader thread died emitting nothing, leaving a
+        permanent hole in that reader's series. Driven against a real socket
+        server, as the reviewer's probe was.
+        """
+        import socket as _socket
+        import threading as _threading
+
+        server = _socket.socket()
+        server.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+
+        def _serve():
+            try:
+                conn, _ = server.accept()
+                conn.recv(4096)
+                # Advertises 1,000 bytes and sends ten, then closes.
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n" + b'{"files":[')
+                conn.close()
+            except OSError:
+                pass
+
+        thread = _threading.Thread(target=_serve, daemon=True)
+        thread.start()
+        try:
+            cfg = _config(hfr, HOT_FILES_URL=f"http://127.0.0.1:{port}/hot.json")
+            cfg.sink = MagicMock(enabled=False)
+            emitted = []
+            with patch.object(hfr, "emit", side_effect=lambda c, r, i, idx, f: emitted.append(f)):
+                hfr.run_reader_round(cfg, 3000000, 1)
+        finally:
+            server.close()
+            thread.join(timeout=5)
+
+        # One point, always: a round with none is the one thing that must not
+        # happen, because a missing point is read as a finding.
+        (fields,) = emitted
+        assert fields["status"] == hfr.STATUS_SKIPPED
+        assert fields["error_kind"] == hfr.KIND_NO_HOT_FILES
+
+    def test_the_fetch_swallows_an_http_body_read_failure(self, hfr):
+        import http.client
+
+        with patch.object(
+            hfr.urllib.request,
+            "urlopen",
+            side_effect=http.client.IncompleteRead(b"{", 990),
+        ):
+            assert hfr.fetch_hot_files("https://example/hot.json") == []
+
+    def test_anything_at_all_around_a_round_still_records_a_point(self, hfr):
+        # The backstop: the inner guard covers the download, this one covers
+        # the fetch, the sleep and the emit path, so no exception can turn a
+        # round into silence.
+        cfg = _config(hfr)
+        cfg.sink = MagicMock(enabled=False)
+        emitted = []
+        with (
+            patch.object(hfr, "fetch_hot_files", side_effect=RuntimeError("boom")),
+            patch.object(hfr, "emit", side_effect=lambda c, r, i, idx, f: emitted.append(f)),
+        ):
+            hfr.run_reader_round(cfg, 3000000, 1)
+        (fields,) = emitted
+        assert fields["status"] == hfr.STATUS_FAILURE
+        assert fields["error_kind"] == hfr.KIND_OTHER
+        assert "RuntimeError: boom" in fields["error_text"]
+
     def test_an_overrun_round_emits_one_skip_per_reader(self, hfr):
         cfg = _config(hfr)
         cfg.sink = MagicMock(enabled=False)
@@ -1913,6 +2070,68 @@ class TestHotFileRoundSummary:
 
         (row,) = summarise_hot_file_rounds([_summary_point(start_ns=6_000_000_000_000)])
         assert row["boundary"] == datetime.fromtimestamp(6000, tz=timezone.utc)
+
+    def test_the_boundary_is_derived_not_taken_from_the_earliest_start(self):
+        """`start_ns` is a reader's SCHEDULED start, offset included.
+
+        So the minimum over a group is the boundary only when an unstaggered
+        reader happens to be in it. A cohort whose indexes begin at 5 with a 2 s
+        stagger has its earliest reader at +32 s, and the column read 08:10:32
+        for a round that began at 08:10:00. A missing early reader did the same.
+        """
+        from saorsa_deploy.cmd.print_file_ops import summarise_hot_file_rounds
+
+        period, round_id = 600, 3011502
+        boundary = round_id * period
+
+        def _reader(offset, instance):
+            return _summary_point(
+                round_id=round_id,
+                instance=instance,
+                extension="control",
+                start_ns=(boundary + offset) * 1_000_000_000,
+            )
+
+        expected = datetime.fromtimestamp(boundary, tz=timezone.utc)
+        # Indexes from 5, four instances, 2 s stagger: offsets 32, 34, 36, 38.
+        (row,) = summarise_hot_file_rounds(
+            [_reader(32, 1), _reader(34, 2), _reader(36, 3), _reader(38, 4)]
+        )
+        assert row["boundary"] == expected
+        # And with only the LAST reader reporting, which is the same defect.
+        (row,) = summarise_hot_file_rounds([_reader(38, 4)])
+        assert row["boundary"] == expected
+        # An unstaggered cohort (the default) is unchanged.
+        (row,) = summarise_hot_file_rounds([_reader(0, 1)])
+        assert row["boundary"] == expected
+
+    def test_a_round_with_no_starts_shows_no_boundary(self):
+        # None rather than a guess; the renderer prints `-`.
+        from saorsa_deploy.cmd.print_file_ops import summarise_hot_file_rounds
+
+        (row,) = summarise_hot_file_rounds(
+            [{"round_id": 5, "host": "h", "instance": 1, "status": "skipped"}]
+        )
+        assert row["boundary"] is None
+
+    def test_the_browser_summary_s_boundary_is_untouched(self):
+        # The browser harness stamps `start_ns` AS the round boundary (it has no
+        # stagger), so its derivation must stay exactly as it was.
+        from saorsa_deploy.cmd.print_file_ops import summarise_browser_rounds
+
+        (row,) = summarise_browser_rounds(
+            [
+                {
+                    "round_id": 2987191,
+                    "host": "h",
+                    "instance": 1,
+                    "status": "success",
+                    "total_ms": 1,
+                    "start_ns": 2987191 * 600 * 1_000_000_000,
+                }
+            ]
+        )
+        assert row["boundary"] == datetime.fromtimestamp(2987191 * 600, tz=timezone.utc)
 
     def test_the_live_handler_labels_each_host_with_its_extension(self):
         """The live view must split by cohort, not pool them.
