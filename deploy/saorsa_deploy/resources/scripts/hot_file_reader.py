@@ -848,8 +848,32 @@ def run_reader_round(cfg: Config, round_id: int, instance: int) -> None:
     points would read as a reader that never ran.
     """
     boundary = boundary_of(round_id, cfg.round_period_secs)
-    scheduled = boundary + cfg.offset_for(instance)
+    offset = cfg.offset_for(instance)
+    scheduled = boundary + offset
     start_ns = scheduled * 1_000_000_000
+
+    # An IMPOSSIBLE start is refused before the sleep, not after it. A stagger
+    # long enough to put a reader's start at or past its own round deadline is a
+    # start that can never run -- and sleeping to it anyway blocked the whole
+    # cohort: `main` joins every reader thread, so one reader waiting until
+    # boundary + 720 s of a 600 s round held the loop past the NEXT round's
+    # boundary and every reader, including the ones that finished on time, took
+    # a `round_overrun` skip for a round they could have run. The arithmetic is
+    # deterministic, so this fires on the first round and costs no clock read.
+    #
+    # A long stagger is deliberately allowed (`clients plan` warns rather than
+    # refusing), so the answer is to record THIS reader's timeout and leave the
+    # others alone.
+    if offset >= cfg.download_timeout_secs:
+        fields = _base_fields(start_ns)
+        fields["status"] = STATUS_FAILURE
+        fields["error_kind"] = KIND_TIMEOUT
+        fields["error_text"] = (
+            f"start offset {offset}s is at or past the {cfg.download_timeout_secs}s deadline"
+        )
+        emit(cfg, round_id, instance, None, fields)
+        return
+
     files = fetch_hot_files(cfg.hot_files_url)
     index = hot_file_index_for(round_id, len(files))
     if index is None:

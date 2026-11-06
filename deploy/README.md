@@ -2017,10 +2017,20 @@ start offset is derived from it.
 | -- | -- | -- |
 | `instances` | 4 | outside 1..8 |
 | `round_period_secs` | 600 | below 120 |
-| `download_timeout_secs` | 300 | `>= round_period_secs` |
+| `download_timeout_secs` | 300 | below 1, or `>= round_period_secs` |
 | `round_parity` | `all` | anything but `even` / `odd` / `all` |
 | `start_stagger_secs` | 0 | negative |
 | `count` | 1 | below 1 |
+
+A **non-positive `download_timeout_secs` is refused in its own right**, before
+the relationship check it would otherwise pass: `0 < 120`, so `(0, 120)`
+validated — and a falsy recorded value then took the 300 s default on the VM,
+giving an effective `(300, 120)` the validator would have refused, whose
+downloads read inside the other cohort's rounds. The other half of that
+guarantee is that **a recorded knob is defaulted only when ABSENT, never when
+falsy**, so defaulting cannot invent a value the validated spec did not carry.
+`start_stagger_secs` is why the distinction is not academic: 0 is both its
+default and a legitimate explicit setting.
 
 **`clock_skew` and `network` are not fields, and the spec parser rejects the
 tokens by name.** What is measured is *when* each reader read and what its swarm
@@ -2095,7 +2105,15 @@ groups occupy ahead of it.
    point `status=skipped`, `error_kind=no_hot_files`, and no process started.
    The rounds before the operator selects are part of the series, not failures.
 2. Sleep to its own start, recording `started_late_ms` (clamped at 0 — a reader
-   cannot start early).
+   cannot start early). **A start the stagger has put at or past the round's own
+   deadline is refused before the sleep**, recording `failure` / `timeout` /
+   `"start offset Ns is at or past the Ms deadline"`: sleeping to it anyway
+   blocked the whole cohort, because the round loop joins every reader thread —
+   one reader waiting until boundary + 720 s of a 600 s round held the loop past
+   the NEXT boundary, and every reader, including the ones that finished on
+   time, took a `round_overrun` skip for a round it could have run. A long
+   stagger is deliberately allowed, so one impossible start reports its own
+   timeout and leaves the others alone.
 3. Run `ant -v [--bootstrap …] --evm-network arbitrum-sepolia --json file
    download <address> -o <dir>/<round>-<i>`, with `RUST_LOG` exported when set
    and **removed** when not (an empty `RUST_LOG` is an empty EnvFilter, which

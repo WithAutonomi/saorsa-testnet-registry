@@ -473,19 +473,31 @@ class AntClientProvisioner:
         Every key here must reach `/etc/ant-client.env` as its upper-cased name
         -- the reader script reads them from the environment and nothing else
         tells it what to do.
+
+        **A recorded value is defaulted only when it is ABSENT, never when it is
+        falsy.** `or` let a recorded `0` take the 300 s default, so a spec the
+        validator had accepted as `(timeout 0, period 120)` ran on the VM as
+        `(300, 120)` -- an effective pair the validator would have refused, and
+        one whose downloads read inside the next cohort's rounds. Both input
+        paths now reject a non-positive timeout, so this is the second half of
+        the same guarantee rather than the only one: defaulting cannot invent a
+        value the validated spec did not carry. `start_stagger_secs` shows why
+        the distinction is not academic -- 0 is its legitimate default AND a
+        legitimate explicit setting.
         """
+
+        def _value(key: str, default):
+            recorded = client.get(key)
+            return default if recorded is None else recorded
+
         return {
-            "instances": client.get("instances") or HOT_FILE_DEFAULT_INSTANCES,
-            "round_period_secs": (
-                client.get("round_period_secs") or HOT_FILE_DEFAULT_ROUND_PERIOD_SECS
+            "instances": _value("instances", HOT_FILE_DEFAULT_INSTANCES),
+            "round_period_secs": _value("round_period_secs", HOT_FILE_DEFAULT_ROUND_PERIOD_SECS),
+            "download_timeout_secs": _value(
+                "download_timeout_secs", HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS
             ),
-            "download_timeout_secs": (
-                client.get("download_timeout_secs") or HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS
-            ),
-            "round_parity": client.get("round_parity") or HOT_FILE_PARITY_ALL,
-            "start_stagger_secs": (
-                client.get("start_stagger_secs") or HOT_FILE_DEFAULT_START_STAGGER_SECS
-            ),
+            "round_parity": _value("round_parity", HOT_FILE_PARITY_ALL),
+            "start_stagger_secs": _value("start_stagger_secs", HOT_FILE_DEFAULT_START_STAGGER_SECS),
         }
 
     def _pointer_env(self, client: dict) -> dict:

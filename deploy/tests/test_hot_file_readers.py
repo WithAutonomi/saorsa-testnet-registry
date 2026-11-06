@@ -170,6 +170,20 @@ class TestSpecParsing:
                 "digital_ocean:lon1:round_period_secs=300:download_timeout_secs=300"
             )
 
+    @pytest.mark.parametrize("bad", [0, -1])
+    def test_a_nonpositive_timeout_is_refused(self, bad):
+        """It PASSES the relationship check, which is the trap.
+
+        `0 < 120`, so `(0, 120)` validated -- and a falsy recorded value then
+        took the 300 s default on the VM, giving an effective `(300, 120)` the
+        validator would have refused. A download running 300 s of a 120 s round
+        reads inside the other cohort's rounds.
+        """
+        with pytest.raises(ValueError, match="download_timeout_secs must be >= 1"):
+            parse_hot_file_reader_spec(
+                f"digital_ocean:lon1:round_period_secs=120:download_timeout_secs={bad}"
+            )
+
     def test_a_negative_stagger_is_refused(self):
         with pytest.raises(ValueError, match="start_stagger_secs must be >= 0"):
             parse_hot_file_reader_spec("digital_ocean:lon1:start_stagger_secs=-1")
@@ -293,6 +307,23 @@ class TestSchema:
                             **READERS["hot_file_readers"][0],
                             "round_period_secs": 300,
                             "download_timeout_secs": 300,
+                        }
+                    ]
+                }
+            )
+
+    @pytest.mark.parametrize("bad", [0, -1])
+    def test_a_nonpositive_timeout_is_refused(self, bad):
+        # See the spec-parser twin: a non-positive value passes the
+        # `< round_period_secs` check, and defaulting then made it 300.
+        with pytest.raises(ValidationError, match="download_timeout_secs must be >= 1"):
+            _manifest(
+                {
+                    "hot_file_readers": [
+                        {
+                            **READERS["hot_file_readers"][0],
+                            "round_period_secs": 120,
+                            "download_timeout_secs": bad,
                         }
                     ]
                 }
@@ -760,6 +791,38 @@ class TestProvisioning:
     def test_the_env_file_names_the_testnet_so_the_point_can_be_tagged(self):
         _, _, _, script = self._script()
         assert "TESTNET_NAME=DEV-01" in script
+
+    def test_a_recorded_knob_is_defaulted_only_when_ABSENT(self):
+        """`or` let a recorded `0` take a non-zero default.
+
+        So a spec validated as `(timeout 0, period 120)` ran on the VM as
+        `(300, 120)` — a pair the validator would have refused. Both input paths
+        now reject a non-positive timeout, and this is the second half of the
+        same guarantee: defaulting cannot invent a value the spec did not carry.
+        """
+        env = AntClientProvisioner._hot_file_env(
+            {"round_period_secs": 120, "download_timeout_secs": 0, "round_parity": "even"}
+        )
+        assert env["download_timeout_secs"] == 0
+        assert env["round_period_secs"] == 120
+        # Absent still takes the default, which is what the key is for.
+        assert AntClientProvisioner._hot_file_env({})["download_timeout_secs"] == 300
+
+    def test_a_zero_stagger_is_carried_not_defaulted(self):
+        # Why the distinction is not academic: 0 is both the default AND a
+        # legitimate explicit setting for this one knob.
+        assert (
+            AntClientProvisioner._hot_file_env({"start_stagger_secs": 0})["start_stagger_secs"] == 0
+        )
+
+    def test_the_recorded_role_config_applies_the_same_rule(self):
+        from saorsa_deploy.hot_file_records import hot_file_config_entry
+
+        entry = hot_file_config_entry(
+            "DEV-01", "swarm", {"region": "lon1", "client_index": 1, "start_stagger_secs": 0}
+        )
+        assert entry["start_stagger_secs"] == 0
+        assert entry["round_period_secs"] == 600
 
     def test_a_non_reader_client_gets_the_inert_defaults(self):
         # The case block is one shape, so these are emitted for every role.
@@ -1486,6 +1549,122 @@ class TestDeadline:
         (fields,) = emitted
         assert fields["status"] == hfr.STATUS_SKIPPED
         assert fields["error_kind"] == hfr.KIND_NO_HOT_FILES
+
+    def test_an_impossible_start_is_refused_without_sleeping(self, hfr):
+        """A stagger that puts a start at or past its own deadline.
+
+        Sleeping to it anyway blocked the whole cohort: `main` joins every
+        reader thread, so one reader waiting until boundary + 720 s of a 600 s
+        round held the loop past the NEXT boundary and every reader — including
+        the ones that finished on time — took a `round_overrun` skip for a round
+        they could have run. A long stagger is deliberately allowed, so the
+        answer is to record THIS reader's timeout and leave the others alone.
+        """
+        # `CLIENT_INDEX=1` so the offsets are the reviewer's 0 and 720; the
+        # shared `_config` helper is index 3, which only makes them larger.
+        cfg = _config(hfr, CLIENT_INDEX="1", INSTANCES="2", START_STAGGER_SECS="720")
+        cfg.sink = MagicMock(enabled=False)
+        assert cfg.offset_for(2) == 720
+        assert cfg.download_timeout_secs == 420
+
+        emitted = []
+        slept = []
+        with (
+            patch.object(hfr, "emit", side_effect=lambda c, r, i, idx, f: emitted.append(f)),
+            patch.object(hfr.time, "sleep", side_effect=lambda d: slept.append(d)),
+            patch.object(hfr, "fetch_hot_files", side_effect=AssertionError("fetched")),
+            patch.object(subprocess, "Popen", side_effect=AssertionError("spawned")),
+        ):
+            hfr.run_reader_round(cfg, 1000, 2)
+        (fields,) = emitted
+        assert fields["status"] == hfr.STATUS_FAILURE
+        assert fields["error_kind"] == hfr.KIND_TIMEOUT
+        assert "start offset 720s is at or past the 420s deadline" in fields["error_text"]
+        # The point of the fix: no sleep, so it cannot hold the cohort's loop.
+        assert slept == []
+
+    def test_a_possible_start_is_not_refused(self, hfr):
+        # The guard is on the OFFSET against the deadline, so an ordinary
+        # stagger still runs: 2s offset against a 420s deadline.
+        cfg = _config(hfr)
+        cfg.sink = MagicMock(enabled=False)
+        emitted = []
+        with (
+            patch.object(hfr, "emit", side_effect=lambda c, r, i, idx, f: emitted.append(f)),
+            patch.object(hfr, "fetch_hot_files", return_value=[{"address": "ab", "bytes": 1}]),
+            patch.object(
+                hfr,
+                "run_download",
+                side_effect=lambda c, r, i, e, s: {
+                    **hfr._base_fields(s),
+                    "status": hfr.STATUS_SUCCESS,
+                },
+            ),
+            patch.object(hfr.time, "sleep", return_value=None),
+        ):
+            hfr.run_reader_round(cfg, 1000, 1)
+        assert emitted[0]["status"] == hfr.STATUS_SUCCESS
+
+    def test_an_impossible_start_suppresses_no_other_reader_s_rounds(self, hfr):
+        """Driven through the real `main` on a simulated clock.
+
+        The reviewer's reproduction: two instances, period 600, deadline 300,
+        stagger 720. Reader 2's start can never run; reader 1 must keep every
+        round, and nothing may emit `round_overrun`.
+        """
+
+        class _Stop(Exception):
+            pass
+
+        clock = {"t": 1.0}
+        emitted = []
+
+        def _sleep(seconds):
+            clock["t"] += max(0.0, seconds)
+
+        def _sleep_until(when):
+            if when > clock["t"]:
+                clock["t"] = when
+            if clock["t"] > 2400:
+                raise _Stop()
+
+        def _download(cfg, round_id, instance, entry, start_ns):
+            clock["t"] += 5
+            return {**hfr._base_fields(start_ns), "status": hfr.STATUS_SUCCESS}
+
+        env = {
+            "TESTNET_NAME": "DEV-03",
+            "REGION": "lon1",
+            "CLIENT_INDEX": "1",
+            "INSTANCES": "2",
+            "ROUND_PERIOD_SECS": "600",
+            "DOWNLOAD_TIMEOUT_SECS": "300",
+            "ROUND_PARITY": "all",
+            "START_STAGGER_SECS": "720",
+            "ANT": "/bin/true",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(hfr.time, "time", side_effect=lambda: clock["t"]),
+            patch.object(hfr.time, "sleep", side_effect=_sleep),
+            patch.object(hfr, "sleep_until", side_effect=_sleep_until),
+            patch.object(hfr, "fetch_hot_files", return_value=[{"address": "ab", "bytes": 1}]),
+            patch.object(hfr, "run_download", side_effect=_download),
+            patch.object(
+                hfr, "emit", side_effect=lambda c, r, i, idx, f: emitted.append((r, i, f))
+            ),
+            patch.object(subprocess, "Popen", side_effect=AssertionError("spawned")),
+        ):
+            with pytest.raises(_Stop):
+                hfr.main()
+
+        assert hfr.KIND_ROUND_OVERRUN not in {f["error_kind"] for _, _, f in emitted}
+        ran = sorted(r for r, i, f in emitted if i == 1 and f["status"] == hfr.STATUS_SUCCESS)
+        # Consecutive: not one of reader 1's rounds was suppressed.
+        assert ran == list(range(ran[0], ran[0] + len(ran)))
+        assert len(ran) >= 3
+        # Reader 2 still reports, every round, so its impossibility is visible.
+        assert all(f["error_kind"] == hfr.KIND_TIMEOUT for _, i, f in emitted if i == 2)
 
     def test_an_overrun_round_emits_one_skip_per_reader(self, hfr):
         cfg = _config(hfr)

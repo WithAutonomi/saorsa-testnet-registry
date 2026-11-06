@@ -2102,7 +2102,20 @@ together.
   start"`. The deadline is checked BEFORE the spawn and the remaining time is
   never floored upwards: spawning anyway left a download transferring inside the
   NEXT round, which on a parity-split deployment is the other cohort's, so its
-  reads joined their swarm — and it reported `success`.
+  reads joined their swarm — and it reported `success`. A start the STAGGER has
+  put past the deadline is refused one step earlier still, **before the sleep**:
+  the round loop joins every reader thread, so one reader sleeping to
+  boundary + 720 s of a 600 s round held the loop past the next boundary and
+  cost every reader — the punctual ones included — a `round_overrun` skip. One
+  impossible start reports its own timeout and leaves the others alone.
+- **`download_timeout_secs` below 1 is refused in its own right**, at the
+  manifest and in the spec parser, because it PASSES the
+  `< round_period_secs` check: `(0, 120)` validated and then ran as `(300, 120)`
+  on the VM, since a falsy recorded value took the default. The other half is
+  that a recorded knob is **defaulted only when ABSENT, never when falsy**, so
+  defaulting cannot invent a value the validated spec did not carry —
+  `start_stagger_secs`, whose 0 is both default and legitimate setting, is why
+  that distinction is not academic.
 - **A released `ant` prints no `swarm` at all, and that is not a failure** —
   it is half the comparison. `swarm_present` is the field that makes a zero
   readable: without it a released binary's zero `records_from_peers` would be

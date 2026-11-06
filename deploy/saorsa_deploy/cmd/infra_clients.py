@@ -563,6 +563,16 @@ def parse_hot_file_reader_spec(spec: str) -> dict:
         if "download_timeout_secs" in options
         else HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS
     )
+    # Before the relationship check, which a non-positive value passes: see the
+    # same guard in the manifest model. A `0` reached the VM as the 300 s
+    # default and could then outlast a 120 s round.
+    if download_timeout < 1:
+        raise ValueError(
+            f"Invalid hot-file reader spec '{spec}': download_timeout_secs must "
+            f"be >= 1, got {download_timeout}. There is no 'unlimited' "
+            f"deadline: the whole point of it is that every reader has finished "
+            f"before the next round is due."
+        )
     if download_timeout >= round_period:
         raise ValueError(
             f"Invalid hot-file reader spec '{spec}': download_timeout_secs "

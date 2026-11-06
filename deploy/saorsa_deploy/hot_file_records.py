@@ -68,6 +68,19 @@ def client_hostname(deployment: str, extension: str | None, client: dict) -> str
     )
 
 
+def _value(client: dict, key: str, default):
+    """A recorded knob, defaulted only when ABSENT -- never when falsy.
+
+    The same rule `AntClientProvisioner._hot_file_env` applies, and for the same
+    reason: `or` let a recorded `0` take a non-zero default, which makes the
+    registry describe a schedule the VM was never given. `start_stagger_secs`
+    shows why the distinction is not academic -- 0 is both its default and a
+    legitimate explicit setting.
+    """
+    recorded = client.get(key)
+    return default if recorded is None else recorded
+
+
 def hot_file_config_entry(deployment: str, extension: str | None, client: dict) -> dict:
     """One reader VM's recorded role config.
 
@@ -82,16 +95,16 @@ def hot_file_config_entry(deployment: str, extension: str | None, client: dict) 
         "extension": extension,
         "region": client.get("region"),
         "client_index": client.get("client_index"),
-        "instances": client.get("instances") or HOT_FILE_DEFAULT_INSTANCES,
-        "round_period_secs": (
-            client.get("round_period_secs") or HOT_FILE_DEFAULT_ROUND_PERIOD_SECS
+        "instances": _value(client, "instances", HOT_FILE_DEFAULT_INSTANCES),
+        "round_period_secs": _value(
+            client, "round_period_secs", HOT_FILE_DEFAULT_ROUND_PERIOD_SECS
         ),
-        "download_timeout_secs": (
-            client.get("download_timeout_secs") or HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS
+        "download_timeout_secs": _value(
+            client, "download_timeout_secs", HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS
         ),
-        "round_parity": client.get("round_parity") or HOT_FILE_PARITY_ALL,
-        "start_stagger_secs": (
-            client.get("start_stagger_secs") or HOT_FILE_DEFAULT_START_STAGGER_SECS
+        "round_parity": _value(client, "round_parity", HOT_FILE_PARITY_ALL),
+        "start_stagger_secs": _value(
+            client, "start_stagger_secs", HOT_FILE_DEFAULT_START_STAGGER_SECS
         ),
     }
 

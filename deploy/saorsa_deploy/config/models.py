@@ -822,6 +822,19 @@ class HotFileReader(_Base):
                 f"clients.hot_file_readers: round_period_secs must be >= "
                 f"{HOT_FILE_MIN_ROUND_PERIOD_SECS}, got {self.round_period_secs}."
             )
+        # Checked BEFORE the relationship below, and the reason is that a
+        # non-positive value PASSES it: 0 < 120, so `(0, 120)` validated -- and
+        # a falsy recorded value then took the 300 s default on the VM, giving
+        # an effective `(300, 120)` that the validator would have refused. A
+        # download running on for 300 s of a 120 s round reads inside the other
+        # cohort's rounds, which is the isolation the parity exists for.
+        if self.download_timeout_secs < 1:
+            raise ValueError(
+                f"clients.hot_file_readers: download_timeout_secs must be >= 1, "
+                f"got {self.download_timeout_secs}. There is no "
+                f"'unlimited' deadline: the whole point of it is that every "
+                f"reader has finished before the next round is due."
+            )
         if self.download_timeout_secs >= self.round_period_secs:
             raise ValueError(
                 f"clients.hot_file_readers: download_timeout_secs "
