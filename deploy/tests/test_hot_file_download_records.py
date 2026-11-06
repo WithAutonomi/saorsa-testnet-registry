@@ -367,6 +367,94 @@ def test_the_snapshot_carries_the_sha256(repo):
     assert files[0]["sha256"] == "b1" * 32
 
 
+def test_a_replaced_selection_is_captured(repo):
+    """`clients select-hot-files --replace` changes what every reader fetches.
+
+    Returning early on "something is already recorded" meant the replacement was
+    never captured, so rows describing the new address sat beside metadata
+    describing the old one — and the new file's sha256 and source were lost at
+    teardown.
+    """
+    deployment = _deployment(repo)
+    _record(repo, deployment, [_point()], hot_files=_HOT_FILES)
+    replacement = {
+        "deployment": "DEV-03",
+        "selected_at": "2027-01-15T11:00:00Z",
+        "size_bytes": 52428800,
+        "files": [
+            {
+                "index": 0,
+                "address": "c2" * 32,
+                "bytes": 52428800,
+                "source_key": "upload-fra1-2.txt",
+                "line": 9,
+                "sha256": "d3" * 32,
+            }
+        ],
+    }
+    deployment = repo.get_by_name(deployment.name)
+    _record(repo, deployment, [_point()], hot_files=replacement)
+
+    recorded = repo.get_by_name(deployment.name).deploy_args["hot_file_readers_hot_files"]
+    # The CURRENT selection, because rows written after the replacement record
+    # that address.
+    assert [f["address"] for f in recorded["files"]] == ["c2" * 32]
+    assert recorded["files"][0]["sha256"] == "d3" * 32
+    # And the one it replaced, because rows written BEFORE it record that
+    # address and would otherwise have no bytes, sha256 or source at all.
+    superseded = recorded["superseded_files"]
+    assert [f["address"] for f in superseded] == ["a0" * 32]
+    assert superseded[0]["sha256"] == "b1" * 32
+
+
+def test_a_third_selection_carries_both_of_its_predecessors(repo):
+    from saorsa_deploy.hot_file_records import merge_hot_file_selection
+
+    def _doc(address, digest):
+        return {
+            "deployment": "DEV-03",
+            "files": [{"index": 0, "address": address, "bytes": 1, "sha256": digest}],
+        }
+
+    first = merge_hot_file_selection(None, _doc("aa", "11"))
+    second = merge_hot_file_selection(first, _doc("bb", "22"))
+    third = merge_hot_file_selection(second, _doc("cc", "33"))
+    assert [f["address"] for f in third["files"]] == ["cc"]
+    assert sorted(f["address"] for f in third["superseded_files"]) == ["aa", "bb"]
+
+
+def test_an_unchanged_selection_is_byte_identical_to_the_live_document(repo):
+    # So the common case writes what it always did, with no `superseded_files`
+    # key appearing on a run that never replaced anything.
+    from saorsa_deploy.hot_file_records import merge_hot_file_selection
+
+    assert merge_hot_file_selection(_HOT_FILES, _HOT_FILES) == _HOT_FILES
+    assert "superseded_files" not in merge_hot_file_selection(None, _HOT_FILES)
+
+
+def test_an_unchanged_selection_writes_nothing_on_a_later_pass(repo):
+    # One S3 GET per pass is the cost of noticing a replacement; a registry
+    # write per pass would not be.
+    deployment = _deployment(repo)
+    _record(repo, deployment, [_point()], hot_files=_HOT_FILES)
+    deployment = repo.get_by_name(deployment.name)
+    with patch("saorsa_deploy.registry.record_deploy_args_update") as update:
+        _record(repo, deployment, [_point()], hot_files=_HOT_FILES)
+    assert update.call_count == 0
+
+
+def test_a_replacement_updates_the_key_the_browser_role_used(repo):
+    # A deployment running both cohorts has ONE selection, snapshotted by
+    # whichever role's pass reached it first. The replacement must land on that
+    # same key rather than opening a second copy that can drift.
+    deployment = _deployment(repo, browser_hot_files=_HOT_FILES)
+    replacement = {**_HOT_FILES, "files": [{"index": 0, "address": "c2" * 32, "bytes": 1}]}
+    _record(repo, deployment, [_point()], hot_files=replacement)
+    deploy_args = repo.get_by_name(deployment.name).deploy_args
+    assert "hot_file_readers_hot_files" not in deploy_args
+    assert [f["address"] for f in deploy_args["browser_hot_files"]["files"]] == ["c2" * 32]
+
+
 def test_a_selection_already_gone_leaves_an_earlier_snapshot_alone(repo):
     deployment = _deployment(repo)
     _record(repo, deployment, [_point()], hot_files=_HOT_FILES)

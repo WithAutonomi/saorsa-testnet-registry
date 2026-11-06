@@ -209,6 +209,26 @@ def recorded_hot_file_config(deploy_args: dict | None) -> list[dict]:
     return [e for e in entries if isinstance(e, dict)]
 
 
+def round_periods_by_extension(entries: list[dict]) -> dict:
+    """``extension -> round_period_secs`` from the recorded role config.
+
+    The period is a property of the COHORT, not of a VM: every reader derives
+    its round id from the wall clock, so two VMs on different periods are not
+    one cohort at all. Entries that disagree within one extension therefore
+    yield NOTHING for it rather than a guess -- the same rule
+    `browser_records.round_period_from_config` applies, and the reason a
+    consumer that cannot resolve the period must say so instead of inferring
+    one.
+    """
+    seen: dict = {}
+    for entry in entries:
+        period = entry.get("round_period_secs")
+        if not period:
+            continue
+        seen.setdefault(entry.get("extension"), set()).add(int(period))
+    return {key: values.pop() for key, values in seen.items() if len(values) == 1}
+
+
 def extension_by_host_from_config(entries: list[dict]) -> dict[str, str]:
     """hostname -> extension name from the RECORDED role config.
 
@@ -245,8 +265,63 @@ def resolve_extension_by_host(
     return out
 
 
+#: Key inside a snapshot holding entries from EARLIER selections whose address
+#: the current one no longer carries. A row records the `address` it fetched, so
+#: a `--replace` that changed the selection must not take the previous files'
+#: bytes / sha256 / source with it.
+SUPERSEDED_FILES_KEY = "superseded_files"
+
+
+def _files_by_address(document: dict | None) -> dict:
+    """Every file a snapshot knows about -- current and superseded -- by address."""
+    out: dict = {}
+    if not isinstance(document, dict):
+        return out
+    for key in ("files", SUPERSEDED_FILES_KEY):
+        for entry in document.get(key) or []:
+            if isinstance(entry, dict) and entry.get("address"):
+                out[str(entry["address"])] = entry
+    return out
+
+
+def merge_hot_file_selection(recorded: dict | None, live: dict) -> dict:
+    """The live selection, carrying forward the files it replaced.
+
+    `clients select-hot-files --replace` changes the object every reader fetches
+    mid-run, so the snapshot has to track the CURRENT selection -- rows written
+    after a replacement record the new address, and without it their bytes,
+    sha256 and source are unresolvable after teardown. But the rows written
+    BEFORE it record the old address, so the replaced entries cannot simply be
+    dropped either.
+
+    So: ``files`` is always the live selection (what the readers are reading
+    now) and :data:`SUPERSEDED_FILES_KEY` accumulates every entry an earlier
+    snapshot knew that the live one does not, keyed by ADDRESS rather than by
+    index -- a replacement reuses index 0 for a different file, so an index is
+    not an identity. The key is omitted entirely when nothing has been
+    superseded, so an unchanged selection's snapshot is byte-identical to the
+    live document and the common case writes the same thing it always did.
+    """
+    merged = dict(live)
+    live_addresses = {
+        str(e["address"])
+        for e in live.get("files") or []
+        if isinstance(e, dict) and e.get("address")
+    }
+    carried = [
+        entry
+        for address, entry in sorted(_files_by_address(recorded).items())
+        if address not in live_addresses
+    ]
+    if carried:
+        merged[SUPERSEDED_FILES_KEY] = carried
+    else:
+        merged.pop(SUPERSEDED_FILES_KEY, None)
+    return merged
+
+
 def snapshot_hot_files(deployment: str, deploy_args: dict | None, console=None) -> dict | None:
-    """Copy the hot-file selection into ``deploy_args`` -- unless it is there already.
+    """Copy the hot-file selection into ``deploy_args``, keeping what it replaces.
 
     **The selection does not survive the deployment.** It lives at
     ``addresses/<deployment>/browser-hot-files.json``, and the deployment's own
@@ -254,23 +329,31 @@ def snapshot_hot_files(deployment: str, deploy_args: dict | None, console=None) 
     beside outlive it by design. So it is snapshotted in the same pass that
     records them.
 
-    One copy, not two: when the BROWSER role has already snapshotted the same
-    document under its own key, nothing is written here. Both roles read the one
-    object, and two copies of it in ``deploy_args`` could only ever drift.
+    **Every pass reads the live object**, because `--replace` can change it
+    mid-run: returning early on "something is already recorded" meant the
+    replacement was never captured, so rows describing the new address sat
+    beside metadata describing the old one and the new file's sha256 was lost at
+    teardown. The two are merged instead -- see
+    :func:`merge_hot_file_selection`.
 
-    Best-effort and deliberately only ever ADDITIVE: a selection that has
-    already gone (or an S3 error) leaves whatever was recorded earlier in place,
-    because a snapshot taken while the cohort was running is the answer and
-    there is no later chance to take one.
+    The write is skipped when the merge changes nothing, so an unchanged
+    selection still costs one S3 GET and no registry write per pass.
+
+    A selection that has already gone (or an S3 error) leaves whatever was
+    recorded in place: a snapshot taken while the cohort was running is the
+    answer, and there is no later chance to take one.
     """
     from saorsa_deploy.hot_files import load_hot_files
     from saorsa_deploy.registry import record_deploy_args_update
 
-    # Either key counts -- see :func:`recorded_hot_files`. That is what makes
-    # this a no-op when the browser role has already snapshotted the same
-    # document, and what makes a second `record-results` pass a no-op too.
-    if recorded_hot_files(deploy_args) is not None:
-        return None
+    # Whichever key holds it -- see :func:`recorded_hot_files`. A deployment
+    # running both cohorts has one selection, snapshotted by whichever role's
+    # pass reached it first, and this writes back under that same key so the two
+    # roles cannot end up with two copies that drift.
+    recorded = recorded_hot_files(deploy_args)
+    key = HOT_FILE_HOT_FILES_KEY
+    if isinstance(deploy_args, dict) and isinstance(deploy_args.get(BROWSER_HOT_FILES_KEY), dict):
+        key = BROWSER_HOT_FILES_KEY
     try:
         document = load_hot_files(deployment)
     except Exception as e:  # noqa: BLE001 -- a results pass must not fail on it
@@ -283,14 +366,20 @@ def snapshot_hot_files(deployment: str, deploy_args: dict | None, console=None) 
         return None
     if not document or not isinstance(document.get("files"), list):
         return None
-    record_deploy_args_update(deployment, {HOT_FILE_HOT_FILES_KEY: document})
+
+    merged = merge_hot_file_selection(recorded, document)
+    if merged == recorded:
+        return recorded
+    record_deploy_args_update(deployment, {key: merged})
     if console is not None:
+        superseded = len(merged.get(SUPERSEDED_FILES_KEY) or [])
+        carried = f", carrying {superseded} superseded file(s)" if superseded else ""
+        verb = "Updated" if recorded is not None else "Snapshotted"
         console.print(
-            f"  Snapshotted the hot-file selection "
-            f"({len(document['files'])} file(s)) into "
-            f"deploy_args.{HOT_FILE_HOT_FILES_KEY}"
+            f"  {verb} the hot-file selection "
+            f"({len(merged['files'])} file(s){carried}) into deploy_args.{key}"
         )
-    return document
+    return merged
 
 
 def recorded_hot_files(deploy_args: dict | None) -> dict | None:

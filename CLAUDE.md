@@ -2144,9 +2144,26 @@ together.
   if a skip is a point — so the WHOLE round is guarded, not just the download,
   and the manifest fetch names `http.client.HTTPException` (a body truncated
   short of its `Content-Length` raises `IncompleteRead`, which is not an
-  `OSError`, and used to kill the reader thread outright). The live view's
-  `Boundary (UTC)` is DERIVED as `round_id × period` rather than taken from the
-  earliest `start_ns`, which is a reader's staggered start and not the boundary.
+  `OSError`, and used to kill the reader thread outright).
+- **Publishing is asynchronous, and that is a SCHEDULING property.** Points go
+  to a bounded queue drained by one background thread, because a synchronous
+  POST put InfluxDB's latency inside the round loop: a 30 s write with a 120 s
+  period and eight readers carried a round past the next boundary, the catch-up
+  wrote eight more points sequentially, and the loop fell further behind every
+  pass — 40 overrun points and not one download after round 1. A full queue
+  DROPS with a throttled warning rather than waiting (a missing point is a
+  smaller lie than a round that never ran), and the catch-up is capped
+  (`OVERRUN_EMIT_LIMIT`) for the same reason, reporting the rest as a count.
+- **A log record is written WHOLE**, message and newline in one locked `write`.
+  `print()` splits them, so another reader thread landed between: eight threads
+  over 800 records produced 106 merged lines and 121 blank ones. One line per
+  download is a contract the forwarded log and `grep` both depend on.
+- The live view's `Boundary (UTC)` is `round_id × period` from the **recorded**
+  period, never the earliest `start_ns` (a reader's staggered start) and never
+  `floor(start_secs / round_id)` — that is the period only while every offset is
+  below the round id, and a daily round with a 7,200 s stagger is not. An
+  unresolvable period prints `-`. `--summary` is one row per COHORT: a branch
+  cohort at 100% and a control at 0% pooled read "50%" with neither named.
 - **`clock_skew` and `network` are refused by name**; `rust_log` is accepted,
   unlike on the browser role, because the transfers run in a Rust process whose
   tracing subscriber there is something to configure — which is also why `ant` is
@@ -2172,9 +2189,12 @@ together.
   provisioning `control` would erase the swarm cohort's schedule — and the
   COALESCE does not cover that, since it protects a row that already HAS an
   extension, not the first write of one that never did. The hot-file selection
-  is snapshotted into `deploy_args.hot_file_readers_hot_files`, **skipped when
-  the browser role already recorded the same document** under
-  `browser_hot_files`.
+  is snapshotted into `deploy_args.hot_file_readers_hot_files` (or
+  `browser_hot_files`, when that role snapshotted it first). **Every pass reads
+  the live object**, because `select-hot-files --replace` changes it mid-run and
+  rows written afterwards record the new address; the entries it replaced are
+  carried under `superseded_files`, keyed by ADDRESS rather than index, because
+  the earlier rows still need their bytes and sha256.
 - `deployments print-downloads --hot-file` is the live Influx view (one row per
   round AND extension, unlike the browser view's — pooling two cohorts would
   average the two arms), mutually exclusive with `--browser`. **The extension is

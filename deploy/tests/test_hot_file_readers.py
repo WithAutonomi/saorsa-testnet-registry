@@ -13,6 +13,7 @@ arithmetic, and the "everything else is unchanged" guards.
 import importlib.util
 import json
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2065,13 +2066,16 @@ class TestHotFileRoundSummary:
         )
         assert row["error_kinds"] == {"timeout": 2, "unknown": 1}
 
-    def test_the_boundary_comes_from_start_ns(self):
+    def test_the_boundary_is_round_id_times_the_resolved_period(self):
         from saorsa_deploy.cmd.print_file_ops import summarise_hot_file_rounds
 
-        (row,) = summarise_hot_file_rounds([_summary_point(start_ns=6_000_000_000_000)])
+        # round 10 x a 600 s period.
+        (row,) = summarise_hot_file_rounds(
+            [_summary_point(start_ns=6_000_000_000_000)], {None: 600}
+        )
         assert row["boundary"] == datetime.fromtimestamp(6000, tz=timezone.utc)
 
-    def test_the_boundary_is_derived_not_taken_from_the_earliest_start(self):
+    def test_the_boundary_ignores_the_stagger(self):
         """`start_ns` is a reader's SCHEDULED start, offset included.
 
         So the minimum over a group is the boundary only when an unstaggered
@@ -2093,26 +2097,161 @@ class TestHotFileRoundSummary:
             )
 
         expected = datetime.fromtimestamp(boundary, tz=timezone.utc)
+        periods = {"control": period}
         # Indexes from 5, four instances, 2 s stagger: offsets 32, 34, 36, 38.
         (row,) = summarise_hot_file_rounds(
-            [_reader(32, 1), _reader(34, 2), _reader(36, 3), _reader(38, 4)]
+            [_reader(32, 1), _reader(34, 2), _reader(36, 3), _reader(38, 4)], periods
         )
         assert row["boundary"] == expected
         # And with only the LAST reader reporting, which is the same defect.
-        (row,) = summarise_hot_file_rounds([_reader(38, 4)])
+        (row,) = summarise_hot_file_rounds([_reader(38, 4)], periods)
         assert row["boundary"] == expected
         # An unstaggered cohort (the default) is unchanged.
-        (row,) = summarise_hot_file_rounds([_reader(0, 1)])
+        (row,) = summarise_hot_file_rounds([_reader(0, 1)], periods)
         assert row["boundary"] == expected
 
-    def test_a_round_with_no_starts_shows_no_boundary(self):
-        # None rather than a guess; the renderer prints `-`.
+    def test_a_daily_round_whose_offsets_exceed_the_round_id(self):
+        """Why the period is RESOLVED rather than inferred from the round id.
+
+        `floor(start_secs / round_id)` is the period only while every offset is
+        below the round id, and nothing guarantees that. A daily round
+        (`round_period_secs=86400`) has round ids in the twenty thousands, so a
+        7,200 s stagger puts offsets far above one — and the inference reported
+        05:46:03 for a 00:00:00 boundary.
+        """
         from saorsa_deploy.cmd.print_file_ops import summarise_hot_file_rounds
 
+        period, round_id = 86400, 20763
+        boundary = round_id * period
+
+        def _reader(offset, instance):
+            return _summary_point(
+                round_id=round_id,
+                instance=instance,
+                extension="control",
+                start_ns=(boundary + offset) * 1_000_000_000,
+            )
+
+        # client_index 2, four instances, stagger 7200 -> offsets 28800, 36000.
         (row,) = summarise_hot_file_rounds(
-            [{"round_id": 5, "host": "h", "instance": 1, "status": "skipped"}]
+            [_reader(28800, 1), _reader(36000, 2)], {"control": period}
         )
+        assert row["boundary"] == datetime.fromtimestamp(boundary, tz=timezone.utc)
+
+    def test_an_unresolved_period_shows_no_boundary(self):
+        # A dash is a worse reading than a time but a better one than a wrong
+        # time, and the recorded role config exists so this is answerable.
+        from saorsa_deploy.cmd.print_file_ops import summarise_hot_file_rounds
+
+        (row,) = summarise_hot_file_rounds([_summary_point()])
         assert row["boundary"] is None
+        (row,) = summarise_hot_file_rounds([_summary_point()], {"other": 600})
+        assert row["boundary"] is None
+
+    def test_the_period_is_resolved_per_cohort_and_disagreement_is_unknown(self):
+        from saorsa_deploy.hot_file_records import round_periods_by_extension
+
+        assert round_periods_by_extension(
+            [
+                {"extension": "branch", "round_period_secs": 600},
+                {"extension": "branch", "round_period_secs": 600},
+                {"extension": "control", "round_period_secs": 86400},
+                {"extension": None, "round_period_secs": 600},
+            ]
+        ) == {"branch": 600, "control": 86400, None: 600}
+        # Two periods inside one cohort is not one cohort; no guess is made.
+        assert (
+            round_periods_by_extension(
+                [
+                    {"extension": "split", "round_period_secs": 600},
+                    {"extension": "split", "round_period_secs": 900},
+                ]
+            )
+            == {}
+        )
+
+    def test_the_cohort_totals_are_never_pooled(self):
+        """A branch cohort at 100% and a control at 0% average to a lie.
+
+        `--summary` reported "50% completion, 50% peer-fed" with neither cohort
+        named, which deletes the comparison the role exists for — only the
+        per-round table above it was split.
+        """
+        from saorsa_deploy.cmd.print_file_ops import hot_file_cohort_totals
+
+        def _round(extension, ok, fail, peer_fed):
+            return {
+                "round_id": 1,
+                "extension": extension,
+                "success": ok,
+                "failure": fail,
+                "skipped": 0,
+                "readers": ok + fail,
+                "readers_with_peer_records": peer_fed,
+                "records_from_peers": peer_fed * 10,
+                "bytes_from_peers": peer_fed * 100,
+                "records_served": 0,
+            }
+
+        branch, control = hot_file_cohort_totals(
+            [_round("branch", 4, 0, 4), _round("control", 0, 4, 0)]
+        )
+        assert branch["label"] == "branch"
+        assert branch["success"] == 4 and branch["attempted"] == 4
+        assert branch["readers_with_peer_records"] == 4
+        assert control["label"] == "control"
+        assert control["success"] == 0 and control["attempted"] == 4
+        assert control["readers_with_peer_records"] == 0
+
+    def test_the_deployment_s_own_tier_is_labelled_in_the_totals(self):
+        from saorsa_deploy.cmd.print_file_ops import hot_file_cohort_totals
+
+        (cohort,) = hot_file_cohort_totals(
+            [
+                {
+                    "round_id": 1,
+                    "extension": None,
+                    "success": 1,
+                    "failure": 0,
+                    "skipped": 0,
+                    "readers": 1,
+                    "readers_with_peer_records": 1,
+                    "records_from_peers": 1,
+                    "bytes_from_peers": 1,
+                    "records_served": 0,
+                }
+            ]
+        )
+        assert cohort["label"] == "deployment"
+
+    def test_the_rendered_summary_names_both_cohorts(self):
+        from rich.console import Console
+
+        from saorsa_deploy.cmd.print_file_ops import _print_hot_file_summary
+
+        def _round(extension, ok, fail, peer_fed):
+            return {
+                "round_id": 1,
+                "extension": extension,
+                "success": ok,
+                "failure": fail,
+                "skipped": 0,
+                "readers": ok + fail,
+                "readers_with_peer_records": peer_fed,
+                "records_from_peers": peer_fed * 10,
+                "bytes_from_peers": peer_fed * 100,
+                "records_served": 0,
+            }
+
+        console = Console(record=True, width=200)
+        _print_hot_file_summary(
+            [_round("branch", 4, 0, 4), _round("control", 0, 4, 0)], "DEV-03", console
+        )
+        text = console.export_text()
+        assert "branch" in text and "control" in text
+        assert "100.00%" in text and "0.00%" in text
+        # And never the pooled figure the two used to average to.
+        assert "50.00%" not in text
 
     def test_the_browser_summary_s_boundary_is_untouched(self):
         # The browser harness stamps `start_ns` AS the round boundary (it has no
@@ -2328,3 +2467,232 @@ def test_a_deployment_without_readers_renders_exactly_as_before():
     block = json.dumps(_clients_block(clients))
     assert "Hot-file readers" not in block
     assert "Native (QUIC)" not in block
+
+
+# --------------------------------------------------------------------------- #
+# the reader service: publishing must not move the schedule
+# --------------------------------------------------------------------------- #
+class TestPublishingIsOffTheSchedule:
+    """Metrics latency must not be able to move a round boundary.
+
+    Every emit used to POST synchronously, so InfluxDB's latency was inside the
+    round loop: a 30 s write with a 120 s period and eight readers carried a
+    round past the next boundary, the catch-up then wrote eight more points
+    sequentially, and the loop fell further behind on every pass — 40 overrun
+    points and not one download after the first round.
+    """
+
+    def test_a_write_does_not_wait_for_the_post(self, hfr):
+        import time as _time
+
+        sink = hfr.InfluxSink("http://influx", "token", "ant", "testnet-metrics")
+        posted = []
+
+        def _slow(line):
+            _time.sleep(0.4)
+            posted.append(line)
+
+        with patch.object(hfr.InfluxSink, "_post", side_effect=_slow):
+            started = _time.time()
+            for instance in range(8):
+                sink.write(f"hot_file_download,host=h instance={instance}i")
+            elapsed = _time.time() - started
+            # Eight writes against a 0.4 s POST: synchronously that is 3.2 s.
+            assert elapsed < 0.2, elapsed
+            assert sink.drain(timeout=30)
+        assert len(posted) == 8
+
+    def test_a_backlog_drops_rather_than_blocks(self, hfr):
+        import time as _time
+
+        sink = hfr.InfluxSink("http://influx", "token", "ant", "b")
+        with patch.object(hfr.InfluxSink, "_post", side_effect=lambda line: _time.sleep(60)):
+            started = _time.time()
+            for _ in range(hfr.INFLUX_QUEUE_SIZE + 50):
+                sink.write("x")
+            # A reader that cannot publish drops the point rather than waiting:
+            # a missing point is a smaller lie than a round that never ran.
+            assert _time.time() - started < 5
+            assert sink._dropped >= 40
+
+    def test_a_disabled_sink_starts_no_thread(self, hfr):
+        sink = hfr.InfluxSink("", "", "ant", "b")
+        sink.write("x")
+        assert sink._worker is None
+
+    def test_the_publisher_survives_a_failing_post(self, hfr):
+        calls = []
+
+        def _boom(line):
+            calls.append(line)
+            raise RuntimeError("influx is down")
+
+        sink = hfr.InfluxSink("http://influx", "token", "ant", "b")
+        with patch.object(hfr.InfluxSink, "_post", side_effect=_boom):
+            sink.write("a")
+            sink.write("b")
+            assert sink.drain(timeout=30)
+        # Both were attempted: a failed write must not kill the publisher and
+        # strand every later point behind it.
+        assert len(calls) == 2
+
+
+class TestCatchUpIsBounded:
+    def test_the_catch_up_emits_at_most_the_cap(self, hfr):
+        # Emitting a point for every missed round is work proportional to the
+        # lateness, which is what let a slow InfluxDB push the loop further
+        # behind on every pass.
+        # `ROUND_PARITY="all"` so the missed rounds are consecutive; the
+        # parity's own effect on the catch-up has a test of its own below.
+        cfg = _config(hfr, INSTANCES="2", ROUND_PERIOD_SECS="120", ROUND_PARITY="all")
+        cfg.sink = MagicMock(enabled=False)
+        emitted = []
+        now = 1_000_000 * 120 + 5
+        with (
+            patch.object(hfr.time, "time", return_value=now),
+            patch.object(hfr, "emit", side_effect=lambda c, r, i, idx, f: emitted.append((r, i))),
+        ):
+            # Twenty rounds behind.
+            resumed = hfr._resynchronise(cfg, 999_980)
+        rounds = sorted({r for r, _ in emitted})
+        assert len(rounds) == hfr.OVERRUN_EMIT_LIMIT
+        # The most recent missed rounds are the informative ones.
+        assert rounds == [999_999, 1_000_000]
+        # Two readers each.
+        assert len(emitted) == hfr.OVERRUN_EMIT_LIMIT * 2
+        # And the loop returns to the present rather than catching up.
+        assert resumed == 1_000_001
+
+    def test_no_missed_rounds_emits_nothing(self, hfr):
+        cfg = _config(hfr, ROUND_PERIOD_SECS="120")
+        cfg.sink = MagicMock(enabled=False)
+        with (
+            patch.object(hfr.time, "time", return_value=1_000_000 * 120 - 10),
+            patch.object(hfr, "emit", side_effect=AssertionError("emitted")),
+        ):
+            assert hfr._resynchronise(cfg, 1_000_000) == 1_000_000
+
+    def test_the_parity_still_decides_which_missed_rounds_count(self, hfr):
+        cfg = _config(hfr, INSTANCES="1", ROUND_PERIOD_SECS="120", ROUND_PARITY="even")
+        cfg.sink = MagicMock(enabled=False)
+        emitted = []
+        with (
+            patch.object(hfr.time, "time", return_value=1_000_000 * 120 + 5),
+            patch.object(hfr, "emit", side_effect=lambda c, r, i, idx, f: emitted.append(r)),
+        ):
+            hfr._resynchronise(cfg, 999_990)
+        assert all(r % 2 == 0 for r in emitted), emitted
+
+    def test_downloads_continue_while_the_publisher_is_slow(self, hfr):
+        """Driven through the real `main` on a simulated clock.
+
+        The reviewer's shape: period 120, deadline 119, eight readers. Before,
+        the loop recorded downloads for round 1 and then only overruns.
+        """
+
+        class _Stop(Exception):
+            pass
+
+        clock = {"t": 1.0}
+        events = []
+
+        def _sleep_until(when):
+            if when > clock["t"]:
+                clock["t"] = when
+            if clock["t"] > 1500:
+                raise _Stop()
+
+        def _download(cfg, round_id, instance, entry, start_ns):
+            clock["t"] += 1
+            return {**hfr._base_fields(start_ns), "status": hfr.STATUS_SUCCESS}
+
+        env = {
+            "TESTNET_NAME": "DEV-03",
+            "REGION": "lon1",
+            "CLIENT_INDEX": "1",
+            "INSTANCES": "8",
+            "ROUND_PERIOD_SECS": "120",
+            "DOWNLOAD_TIMEOUT_SECS": "119",
+            "ROUND_PARITY": "all",
+            "START_STAGGER_SECS": "0",
+            "ANT": "/bin/true",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(hfr.time, "time", side_effect=lambda: clock["t"]),
+            patch.object(
+                hfr.time, "sleep", side_effect=lambda d: clock.update(t=clock["t"] + max(0, d))
+            ),
+            patch.object(hfr, "sleep_until", side_effect=_sleep_until),
+            patch.object(hfr, "fetch_hot_files", return_value=[{"address": "ab", "bytes": 1}]),
+            patch.object(hfr, "run_download", side_effect=_download),
+            patch.object(
+                hfr, "emit", side_effect=lambda c, r, i, idx, f: events.append((r, f["status"]))
+            ),
+        ):
+            with pytest.raises(_Stop):
+                hfr.main()
+
+        ran = sorted({r for r, status in events if status == hfr.STATUS_SUCCESS})
+        assert len(ran) >= 10
+        assert ran == list(range(ran[0], ran[0] + len(ran)))
+
+
+# --------------------------------------------------------------------------- #
+# the forwarded log: one line per download
+# --------------------------------------------------------------------------- #
+def test_a_log_record_is_written_whole(hfr, tmp_path):
+    """`print()` writes the message and the newline separately.
+
+    So another reader thread could land between them: eight threads over 800
+    records produced 106 merged lines and 121 blank ones, including a line
+    carrying seven download records. One line per download is a contract both
+    the forwarded log and `grep` depend on.
+    """
+    import io
+    import re
+    import threading as _threading
+
+    path = tmp_path / "hot-file-reader.stdout.log"
+    path.write_text("")
+    real = io.StringIO()
+    original = hfr.sys.stdout
+    hfr.sys.stdout = hfr._ForwardingStream(real, str(path))
+    try:
+
+        def _work(reader):
+            for i in range(100):
+                hfr._log(
+                    f"round=3000000 instance={reader} status=success kind=- "
+                    f"total_ms=1 records_from_peers=0 bytes_from_peers=0 "
+                    f"address=deadbeef{reader}{i:03d}"
+                )
+
+        threads = [_threading.Thread(target=_work, args=(n,)) for n in range(1, 9)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        hfr.sys.stdout = original
+
+    lines = path.read_text().splitlines()
+    assert len(lines) == 800
+    assert not [line for line in lines if not line.strip()]
+    assert not [line for line in lines if len(re.findall(r"round=3000000", line)) > 1]
+    # Every record recoverable, which is what the contract is for.
+    assert len(set(re.findall(r"address=(\S+)", "\n".join(lines)))) == 800
+
+
+def test_nothing_in_the_script_uses_print(hfr):
+    # `_log` and `_warn` assemble the whole record and write it once; a stray
+    # `print()` would reintroduce the split write.
+    source = SCRIPT.read_text()
+    code = [
+        line
+        for line in source.splitlines()
+        if not line.lstrip().startswith("#") and not line.lstrip().startswith("#:")
+    ]
+    assert not [line for line in code if re.search(r"(?<![\w.])print\(", line)], [
+        line for line in code if re.search(r"(?<![\w.])print\(", line)
+    ]

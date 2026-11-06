@@ -45,6 +45,7 @@ import hashlib
 import http.client
 import json
 import os
+import queue
 import socket
 import subprocess
 import sys
@@ -341,22 +342,102 @@ def build_line(tags: dict, fields: dict) -> str:
     return f"{MEASUREMENT},{tag_part} {field_part}" if tag_part else f"{MEASUREMENT} {field_part}"
 
 
+#: Missed rounds this service will emit `round_overrun` points for in one
+#: catch-up pass. Bounded so the catch-up is O(1) however far behind the loop
+#: finds itself: emitting a point for every round since the last one it ran is
+#: work proportional to the lateness, which is the thing that made the loop fall
+#: further behind each pass. The most recent missed rounds are the informative
+#: ones; the rest are counted in a single log line.
+OVERRUN_EMIT_LIMIT = 2
+
+#: Points waiting to be posted. Bounded, because an unbounded queue against a
+#: slow InfluxDB is a memory leak with extra steps; at eight readers a round
+#: this is many rounds' worth of slack.
+INFLUX_QUEUE_SIZE = 2048
+
+#: Warn on the first dropped point and every Nth after it.
+INFLUX_DROP_WARN_EVERY = 100
+
+
 class InfluxSink:
-    """Posts points, and never lets a metrics failure stop the workload."""
+    """Posts points from a background thread, and never blocks the workload.
+
+    **The write is asynchronous, and that is a scheduling property rather than
+    an optimisation.** Every emit used to POST synchronously, so InfluxDB's
+    latency was inside the round loop: a 30 s write with a 120 s period and
+    eight readers carried a round past the next boundary, the catch-up then
+    wrote eight more points sequentially, and the loop fell further behind on
+    every pass -- 40 overrun points and not one download after the first round,
+    in a simulated-clock probe through `main`. A reader's job is to read at its
+    boundary; publishing what it read must not be able to move that boundary.
+
+    The thread is a daemon and the queue is bounded: a reader that cannot
+    publish drops the point with a warning rather than waiting, because a
+    missing point is a smaller lie than a round that never ran. The service is
+    `Restart=on-failure` and runs forever, so there is no clean-shutdown path
+    whose queue would need draining.
+    """
 
     def __init__(self, url: str, token: str, org: str, bucket: str):
         self.url = url.rstrip("/")
         self.token = token
         self.org = org
         self.bucket = bucket
+        self._queue: "queue.Queue[str]" = queue.Queue(maxsize=INFLUX_QUEUE_SIZE)
+        self._worker: "threading.Thread | None" = None
+        self._worker_lock = threading.Lock()
+        self._dropped = 0
 
     @property
     def enabled(self) -> bool:
         return bool(self.url and self.token)
 
     def write(self, line: str) -> None:
+        """Hand a point to the publisher. Never blocks and never raises."""
         if not self.enabled:
             return
+        self._ensure_worker()
+        try:
+            self._queue.put_nowait(line)
+        except queue.Full:
+            self._dropped += 1
+            # Throttled: a backlog drops a point per emit, and a warning per
+            # drop would bury the reader's own download lines in its own log.
+            if self._dropped == 1 or self._dropped % INFLUX_DROP_WARN_EVERY == 0:
+                _warn(
+                    f"InfluxDB is not keeping up; dropping points "
+                    f"({self._dropped} so far). The rounds still ran."
+                )
+
+    def drain(self, timeout: float = 30.0) -> bool:
+        """Wait for the queue to empty. For tests; the service never calls it."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._queue.unfinished_tasks == 0:
+                return True
+            time.sleep(0.01)
+        return self._queue.unfinished_tasks == 0
+
+    def _ensure_worker(self) -> None:
+        with self._worker_lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._worker = threading.Thread(
+                target=self._publish_forever, name="influx-publisher", daemon=True
+            )
+            self._worker.start()
+
+    def _publish_forever(self) -> None:
+        while True:
+            line = self._queue.get()
+            try:
+                self._post(line)
+            except Exception as exc:  # noqa: BLE001 -- the publisher must not die
+                _warn(f"Influx write failed: {exc}")
+            finally:
+                self._queue.task_done()
+
+    def _post(self, line: str) -> None:
         target = (
             f"{self.url}/api/v2/write?org={urllib.parse.quote(self.org)}"
             f"&bucket={urllib.parse.quote(self.bucket)}&precision=ns"
@@ -374,7 +455,7 @@ class InfluxSink:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 resp.read()
         except (urllib.error.URLError, socket.timeout, OSError) as exc:
-            print(f"WARN: Influx write failed: {exc}", file=sys.stderr, flush=True)
+            _warn(f"Influx write failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +508,7 @@ def fetch_hot_files(url: str, timeout: int = 30) -> list[dict]:
         OSError,
         ValueError,
     ) as exc:
-        print(f"WARN: could not read the hot-file selection: {exc}", file=sys.stderr, flush=True)
+        _warn(f"could not read the hot-file selection: {exc}")
         return []
 
 
@@ -675,8 +756,33 @@ class Config:
 # ---------------------------------------------------------------------------
 
 
+#: Serialises a whole log record -- message AND newline -- into one `write`.
+#: `print()` calls `write` twice (the text, then the end), so another reader
+#: thread could land between them: eight threads over 800 records produced 106
+#: merged lines and 121 blank ones, including a line carrying seven download
+#: records. One line per download is a contract both the forwarded log and
+#: `grep` depend on, so the record is assembled first and written once.
+_LOG_LOCK = threading.Lock()
+
+
+def _write_line(stream, message: str) -> None:
+    """Write one complete line to `stream`, atomically with respect to callers."""
+    with _LOG_LOCK:
+        try:
+            stream.write(f"{message}\n")
+            stream.flush()
+        except (OSError, ValueError):
+            # A closed or broken stream must not take a reader down with it.
+            pass
+
+
 def _log(message: str) -> None:
-    print(f"[{time.strftime('%H:%M:%S', time.gmtime())}] {message}", flush=True)
+    _write_line(sys.stdout, f"[{time.strftime('%H:%M:%S', time.gmtime())}] {message}")
+
+
+def _warn(message: str) -> None:
+    """A warning, written whole for the same reason :func:`_log` is."""
+    _write_line(sys.stderr, f"WARN: {message}")
 
 
 def _point_log(round_id: int, instance: int, fields: dict) -> None:
@@ -961,6 +1067,41 @@ def sleep_until(when: float) -> None:
         time.sleep(delay)
 
 
+def _resynchronise(cfg: Config, round_id: int) -> int:
+    """The next round to run, having accounted for any the loop has missed.
+
+    Rounds whose boundary has already gone by cannot be run, so they are
+    reported as `round_overrun` -- but **at most
+    :data:`OVERRUN_EMIT_LIMIT` of them**, and the loop always returns to the
+    present. Emitting a point for every missed round is work proportional to
+    how late the service is, which is what let a slow InfluxDB push the loop
+    further behind on every pass until it stopped reading altogether. The most
+    recent missed rounds are the ones worth a point; the rest are a count.
+
+    Returns the first round whose boundary is still ahead, so the caller's next
+    `sleep_until` moves forward rather than catching up.
+    """
+    now = time.time()
+    missed = []
+    while boundary_of(round_id, cfg.round_period_secs) <= now:
+        if is_our_round(round_id, cfg.round_parity):
+            missed.append(round_id)
+        round_id += 1
+    if not missed:
+        return round_id
+    emitted = missed[-OVERRUN_EMIT_LIMIT:]
+    for missed_round in emitted:
+        emit_overrun(cfg, missed_round)
+    unreported = len(missed) - len(emitted)
+    if unreported:
+        _log(
+            f"rounds={missed[0]}..{emitted[0] - 1} overrun=unreported "
+            f"count={unreported} (catch-up is capped at "
+            f"{OVERRUN_EMIT_LIMIT} round(s) so it cannot itself fall behind)"
+        )
+    return round_id
+
+
 def main() -> int:
     if _env_bool("FORWARD_LOGS"):
         install_log_forwarding()
@@ -998,12 +1139,7 @@ def main() -> int:
             thread.start()
         for thread in threads:
             thread.join()
-        round_id += 1
-        # Whole rounds whose boundary has already gone by while this one ran.
-        while boundary_of(round_id, cfg.round_period_secs) <= time.time():
-            if is_our_round(round_id, cfg.round_parity):
-                emit_overrun(cfg, round_id)
-            round_id += 1
+        round_id = _resynchronise(cfg, round_id + 1)
 
 
 if __name__ == "__main__":

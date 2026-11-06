@@ -1105,37 +1105,33 @@ def _print_browser_summary(rounds: list[dict], name: str, console: Console) -> N
 # ---------------------------------------------------------------------------
 
 
-def _hot_file_round_boundary(round_id: int, start_ns_values: list[int]):
-    """The round's BOUNDARY, derived rather than taken from the earliest start.
+def _hot_file_round_boundary(round_id: int, period_secs):
+    """The round's BOUNDARY: ``round_id x period``, from the RESOLVED period.
 
-    `start_ns` is a reader's own SCHEDULED start -- `round_id x period +
-    offset` -- so the minimum over a group is the boundary only when an
-    unstaggered reader happens to be in it. A cohort whose indexes begin at 5
-    with a 2 s stagger has its earliest reader at +32 s, and a missing early
-    reader does the same thing, so the column read 08:10:32 for a round that
-    began at 08:10:00.
+    Not from the earliest `start_ns`, which is a reader's own SCHEDULED start:
+    the minimum over a group is the boundary only when an unstaggered reader
+    happens to be in it, so a cohort whose indexes begin at 5 with a 2 s
+    stagger read 08:10:32 for a round that began at 08:10:00, and a missing
+    early reader did the same.
 
-    The period is recovered from the data instead: `start_ns / 1e9 = round_id x
-    period + offset`, so `floor(secs / round_id) == period` for every offset
-    below `round_id` -- and a round id is an epoch second divided by the period,
-    so it is in the millions while an offset is bounded by the deadline, which
-    the schema holds under the period. The boundary is then `round_id x period`
-    exactly, with no configuration to resolve and nothing to plumb through.
+    And not from `floor(start_secs / round_id)` either, which this used to
+    infer. That is the period only while every offset is smaller than the round
+    id, and nothing guarantees it: a daily round (`round_period_secs=86400`)
+    has round ids in the twenty thousands, so a 7,200 s stagger puts offsets
+    far above one -- and the inference then reported 05:46:03 for a 00:00:00
+    boundary.
 
-    None when there is nothing to derive from (no starts, or a round id of 0 --
-    only reachable from a hand-written fixture), which the renderer prints as
-    `-` rather than guessing.
+    ``None`` when the period could not be resolved, which the renderer prints as
+    `-`. A dash is a worse reading than a time but a better one than a wrong
+    time, and the recorded role config is written at `clients provision` time
+    precisely so this is answerable.
     """
-    if not start_ns_values or round_id <= 0:
+    if not period_secs or round_id <= 0:
         return None
-    earliest_secs = min(start_ns_values) // 1_000_000_000
-    period = earliest_secs // round_id
-    if period <= 0:
-        return None
-    return datetime.fromtimestamp(round_id * period, tz=timezone.utc)
+    return datetime.fromtimestamp(round_id * int(period_secs), tz=timezone.utc)
 
 
-def summarise_hot_file_rounds(points: list[dict]) -> list[dict]:
+def summarise_hot_file_rounds(points: list[dict], periods: dict | None = None) -> list[dict]:
     """One summary per ``(round_id, extension)``, oldest first.
 
     Pure, so the renderer below is testable without an InfluxDB.
@@ -1166,7 +1162,6 @@ def summarise_hot_file_rounds(points: list[dict]) -> list[dict]:
     out: list[dict] = []
     for round_id, extension in sorted(grouped, key=lambda k: (k[0], k[1] or "")):
         rows = grouped[(round_id, extension)]
-        boundaries = [p["start_ns"] for p in rows if p.get("start_ns") is not None]
         successes = [p for p in rows if p.get("status") == "success"]
         failures = [p for p in rows if p.get("status") == "failure"]
         skipped = [p for p in rows if p.get("status") == "skipped"]
@@ -1179,7 +1174,7 @@ def summarise_hot_file_rounds(points: list[dict]) -> list[dict]:
             {
                 "round_id": round_id,
                 "extension": extension,
-                "boundary": _hot_file_round_boundary(round_id, boundaries),
+                "boundary": _hot_file_round_boundary(round_id, (periods or {}).get(extension)),
                 # Distinct (host, instance): one point per reader per round, so
                 # a count of rows would hide a duplicate and a count of readers
                 # would hide a VM that reported nothing.
@@ -1207,35 +1202,47 @@ def summarise_hot_file_rounds(points: list[dict]) -> list[dict]:
     return out
 
 
-def _label_hot_file_extensions(name: str, points: list[dict], console: Console) -> None:
-    """Stamp each hot-file point with the extension its host belongs to, in place.
+def _label_hot_file_extensions(name: str, points: list[dict], console: Console) -> dict:
+    """Stamp each point with its host's extension; return the period per cohort.
 
-    The Influx point does not carry it -- the extension is a property of the VM,
-    resolved from the recorded role config and the live client tiers, exactly as
-    `record-results` resolves it. Without this every live row read `None` and
-    the two cohorts of a parity-split run were POOLED into one row per round,
-    which is the one thing the `--hot-file` view exists to keep apart.
+    Neither is on the Influx point. The extension is a property of the VM and
+    the period a property of the cohort, so both come from the recorded role
+    config and the live client tiers, exactly as `record-results` resolves the
+    extension. Without the extension every live row read `None` and the two
+    cohorts of a parity-split run were POOLED into one row per round, which is
+    the one thing the `--hot-file` view exists to keep apart; without the period
+    the round's BOUNDARY cannot be computed at all (see
+    :func:`_hot_file_round_boundary`).
 
     Best-effort: this is a read-only diagnostic, so a registry or S3 failure
-    leaves the points unlabelled and says so, rather than refusing to print the
-    rounds. Unlabelled then means "could not resolve", and the Extension column
-    is simply absent -- which is also how the deployment's own tier renders.
+    leaves the points unlabelled, returns no periods and says so, rather than
+    refusing to print the rounds. Unlabelled then means "could not resolve", the
+    Extension column is simply absent -- which is also how the deployment's own
+    tier renders -- and the boundary prints as `-`.
     """
     try:
-        from saorsa_deploy.hot_file_records import resolve_extension_by_host
+        from saorsa_deploy.hot_file_records import (
+            recorded_hot_file_config,
+            resolve_extension_by_host,
+            round_periods_by_extension,
+        )
         from saorsa_deploy.registry import read_deploy_args
 
-        by_host = resolve_extension_by_host(read_deploy_args(name), _client_tiers(name), name)
+        deploy_args = read_deploy_args(name)
+        by_host = resolve_extension_by_host(deploy_args, _client_tiers(name), name)
+        periods = round_periods_by_extension(recorded_hot_file_config(deploy_args))
     except Exception as e:  # noqa: BLE001 -- a read-only print must still print
         console.print(
             f"[yellow]Warning: could not resolve which extension each reader VM "
-            f"belongs to ({e}); the rounds below are not split by cohort.[/yellow]"
+            f"belongs to, nor the cohort's round period ({e}); the rounds below "
+            f"are not split by cohort and have no boundary.[/yellow]"
         )
-        return
+        return {}
     for point in points:
         extension = by_host.get(point.get("host"))
         if extension:
             point["extension"] = extension
+    return periods
 
 
 def _run_hot_file_rounds(args, console: Console) -> None:
@@ -1263,8 +1270,9 @@ def _run_hot_file_rounds(args, console: Console) -> None:
     # BEFORE the JSON is emitted and before the rounds are summarised: both read
     # `extension` off the point, so labelling afterwards would leave the JSON
     # consumer and the table disagreeing about the same run.
+    periods: dict = {}
     if points:
-        _label_hot_file_extensions(args.name, points, console)
+        periods = _label_hot_file_extensions(args.name, points, console)
 
     # Bound to a name, not inlined into the call: the warning needs it too.
     # Rounds expire exactly as file operations do.
@@ -1295,7 +1303,7 @@ def _run_hot_file_rounds(args, console: Console) -> None:
         )
         return
 
-    rounds = summarise_hot_file_rounds(points)
+    rounds = summarise_hot_file_rounds(points, periods)
     if args.recent:
         rounds = rounds[-10:]
 
@@ -1357,32 +1365,84 @@ def _hot_file_rounds_table(rounds: list[dict], name: str) -> Table:
     return table
 
 
+def hot_file_cohort_totals(rounds: list[dict]) -> list[dict]:
+    """Totals PER COHORT, never pooled, oldest-named extension first.
+
+    Pooling them is the one thing this view must not do: a branch cohort at 100%
+    with every read peer-fed and a released control at 0% with none average to
+    "50% completion, 50% peer-fed" and no cohort named at all -- which is the
+    comparison the whole role exists for, deleted. `--summary` printed exactly
+    that, because only the per-round table above it was split.
+
+    The deployment's own tier (extension ``None``) is labelled ``deployment``,
+    since it is a cohort like any other here.
+    """
+    by_extension: dict = {}
+    for entry in rounds:
+        by_extension.setdefault(entry.get("extension"), []).append(entry)
+
+    out: list[dict] = []
+    for extension in sorted(by_extension, key=lambda e: (e is not None, e or "")):
+        group = by_extension[extension]
+        attempted = sum(r["success"] + r["failure"] for r in group)
+        readers = sum(r["readers"] for r in group)
+        peer_fed = sum(r["readers_with_peer_records"] for r in group)
+        out.append(
+            {
+                "extension": extension,
+                "label": extension or "deployment",
+                "rounds": len({r["round_id"] for r in group}),
+                "reads": attempted + sum(r["skipped"] for r in group),
+                "attempted": attempted,
+                "success": sum(r["success"] for r in group),
+                "skipped": sum(r["skipped"] for r in group),
+                "readers": readers,
+                "readers_with_peer_records": peer_fed,
+                "records_from_peers": sum(r["records_from_peers"] for r in group),
+                "bytes_from_peers": sum(r["bytes_from_peers"] for r in group),
+                "records_served": sum(r["records_served"] for r in group),
+            }
+        )
+    return out
+
+
 def _print_hot_file_summary(rounds: list[dict], name: str, console: Console) -> None:
-    attempted = sum(r["success"] + r["failure"] for r in rounds)
-    ok = sum(r["success"] for r in rounds)
-    readers = sum(r["readers"] for r in rounds)
-    peer_fed = sum(r["readers_with_peer_records"] for r in rounds)
-    table = Table(show_header=False, title=f"{name} — hot-file cohort totals")
-    table.add_column("Metric")
-    table.add_column("Value", justify="right")
-    table.add_row("Rounds", f"{len({r['round_id'] for r in rounds}):,}")
-    table.add_row("Reads", f"{attempted + sum(r['skipped'] for r in rounds):,}")
+    cohorts = hot_file_cohort_totals(rounds)
+    table = Table(title=f"{name} — hot-file cohort totals")
+    table.add_column("Cohort")
+    table.add_column("Rounds", justify="right")
+    table.add_column("Reads", justify="right")
     # The completion rate excludes skips, exactly as the browser view's does.
-    table.add_row("Completion", f"{100.0 * ok / attempted:.2f}%" if attempted else "n/a")
-    table.add_row("Skipped", f"{sum(r['skipped'] for r in rounds):,}")
-    table.add_row(
-        "Reads fed by a peer",
-        f"{peer_fed:,}/{readers:,}" + (f" = {100.0 * peer_fed / readers:.2f}%" if readers else ""),
-    )
-    table.add_row("Records from peers", f"{sum(r['records_from_peers'] for r in rounds):,}")
-    table.add_row("Bytes from peers", f"{sum(r['bytes_from_peers'] for r in rounds):,}")
-    table.add_row("Records served", f"{sum(r['records_served'] for r in rounds):,}")
+    table.add_column("Completion", justify="right")
+    table.add_column("Skipped", justify="right")
+    table.add_column("Peer-fed", justify="right")
+    table.add_column("Recs/peers", justify="right")
+    table.add_column("Bytes/peers", justify="right")
+    table.add_column("Recs served", justify="right")
+    for cohort in cohorts:
+        attempted = cohort["attempted"]
+        readers = cohort["readers"]
+        peer_fed = cohort["readers_with_peer_records"]
+        table.add_row(
+            cohort["label"],
+            f"{cohort['rounds']:,}",
+            f"{cohort['reads']:,}",
+            f"{100.0 * cohort['success'] / attempted:.2f}%" if attempted else "n/a",
+            f"{cohort['skipped']:,}",
+            f"{peer_fed:,}/{readers:,}"
+            + (f" = {100.0 * peer_fed / readers:.1f}%" if readers else ""),
+            f"{cohort['records_from_peers']:,}",
+            f"{cohort['bytes_from_peers']:,}",
+            f"{cohort['records_served']:,}",
+        )
     console.print(table)
     console.print(
-        "[dim]A cohort running a RELEASED `ant` reports no swarm at all "
-        "(`swarm_present=0`), so its peer figures are zero by construction — "
-        "not a swarm that formed and shared nothing. The persisted view, which "
-        "survives teardown, is `deployments print-recorded-results --id`.[/dim]"
+        "[dim]One row per cohort, never pooled: a branch cohort and a released "
+        "control averaged together describe neither. A cohort running a RELEASED "
+        "`ant` reports no swarm at all (`swarm_present=0`), so its peer figures "
+        "are zero by construction — not a swarm that formed and shared nothing. "
+        "The persisted view, which survives teardown, is `deployments "
+        "print-recorded-results --id`.[/dim]"
     )
 
 

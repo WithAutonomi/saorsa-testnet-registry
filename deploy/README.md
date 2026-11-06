@@ -2181,6 +2181,20 @@ groups occupy ahead of it.
    `/var/log/ant-hot-file-reader/`; a success's are deleted, as
    `downloader.sh` does.
 
+**Publishing is asynchronous, and that is a scheduling property rather than an
+optimisation.** Points go to a bounded queue drained by one background thread,
+because a synchronous POST put InfluxDB's latency inside the round loop: a 30 s
+write with a 120 s period and eight readers carried a round past the next
+boundary, the catch-up wrote eight more points sequentially, and the loop fell
+further behind every pass — 40 overrun points and not one download after the
+first round. A reader's job is to read at its boundary, and publishing what it
+read must not be able to move that boundary. A full queue **drops** the point
+with a throttled warning rather than waiting: a missing point is a smaller lie
+than a round that never ran. For the same reason the catch-up is capped
+(`OVERRUN_EMIT_LIMIT`) — emitting a point for every missed round is work
+proportional to the lateness — and reports the rest as a count, always
+returning the loop to the present.
+
 A reader whose previous download is still running when the next round comes due
 emits one `skipped` / `round_overrun` point. That cannot happen while
 `download_timeout_secs < round_period_secs`, which is enforced in the schema and
@@ -2255,10 +2269,18 @@ snapshotted into the registry beside the rows they describe:
   already HAS an extension, not the first write of one that never did. Live wins
   on a hostname in both, since a re-provision is how a VM's own schedule
   changes.
-- **The hot-file selection**, into `deploy_args.hot_file_readers_hot_files` —
-  additive, and **skipped entirely when the browser role has already snapshotted
-  the same document** under `browser_hot_files`. Both cohorts read the one
-  object, and two copies of it could only ever drift.
+- **The hot-file selection**, into `deploy_args.hot_file_readers_hot_files` (or
+  `browser_hot_files` when the browser role snapshotted it first — both cohorts
+  read the one object, and two copies of it could only ever drift). **Every pass
+  reads the live object**, because `clients select-hot-files --replace` can
+  change it mid-run: rows written afterwards record the new address, and without
+  capturing it their bytes, sha256 and source are unresolvable once the prefix
+  is gone. The rows written BEFORE it record the old address, so the replaced
+  entries are carried forward under `superseded_files`, keyed by ADDRESS rather
+  than by index — a replacement reuses index 0 for a different file. The key is
+  absent when nothing has been superseded, and a merge that changes nothing
+  writes nothing. A selection that has already gone, or an S3 failure, leaves
+  what was recorded in place.
 
 #### Reading the results
 
@@ -2280,20 +2302,28 @@ deployment, and a row pooling them would average the two arms of the comparison.
 "Peer-fed" counts READERS, not records — one reader served by a peer a thousand
 times is not a thousand readers the swarm reached.
 
+**`--summary` is one row per cohort, never pooled.** A branch cohort at 100%
+with every read peer-fed and a released control at 0% with none average to "50%
+completion, 50% peer-fed" with neither named, which is the comparison the role
+exists for, deleted. The deployment's own tier is labelled `deployment`.
+
 The extension is **not on the Influx point** — it is a property of the VM — so
 the live view resolves it per host from the recorded role config and the live
 client tiers, exactly as `record-results` does, before it emits the JSON and
 before it summarises. A registry or S3 failure is a warning saying the rounds
 are not split by cohort, not a refusal: this is a read-only diagnostic.
 
-**The `Boundary (UTC)` column is derived, not read off the earliest start.**
-`start_ns` is a reader's own scheduled start, offset included, so the minimum
-over a round is the boundary only when an unstaggered reader happens to be in
-it — a cohort whose indexes begin at 5 with a 2 s stagger starts at +32 s, and a
-missing early reader does the same thing. The period is recovered from the data
-instead (`floor(start_secs / round_id)` is exact for any offset below the round
-id, and a round id is in the millions while an offset is bounded by the
-deadline) and the boundary is `round_id × period`.
+**The `Boundary (UTC)` column is `round_id × period`, from the RESOLVED
+period.** `start_ns` is a reader's own scheduled start, offset included, so the
+minimum over a round is the boundary only when an unstaggered reader happens to
+be in it — a cohort whose indexes begin at 5 with a 2 s stagger starts at +32 s,
+and a missing early reader does the same thing. Nor is the period inferred from
+the round id: `floor(start_secs / round_id)` is the period only while every
+offset is below the round id, which nothing guarantees — a daily round
+(`round_period_secs: 86400`) has round ids in the twenty thousands, so a 7,200 s
+stagger puts offsets far above one. It comes from the recorded role config
+instead, per cohort, and a period the config cannot settle (two values inside
+one extension) prints `-` rather than a wrong time.
 
 `print-recorded-results` gains a "Hot-file reads" section with the same
 per-round table out of Postgres, plus "reads reporting a swarm", which is the
@@ -2312,6 +2342,13 @@ at 1 GiB like the other native roles, and `forward_logs: true` ships them to
 `telegraf-ant-clients-<name>`. Appends are serialised: four reader threads emit
 concurrently and two interleaved writes would cut a line in half, which telegraf
 drops silently.
+
+Each record is assembled and written in **one** `write`, under a lock:
+`print()` writes the message and the newline separately, so another reader
+thread could land between them — eight threads over 800 records produced 106
+merged lines and 121 blank ones, including a line carrying seven download
+records. One line per download is a contract both the forwarded log and `grep`
+depend on.
 
 One grep-able line per download, carrying the same keys as the point:
 
