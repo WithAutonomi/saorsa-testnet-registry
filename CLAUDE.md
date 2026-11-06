@@ -2089,7 +2089,20 @@ together.
   sharing as soon as it finishes — overlapping them in time is the whole point.
   **The arithmetic is not checked** (a long stagger over a long round is
   legitimate), so `clients plan` / `deployments plan` print the last reader's
-  offset and warn when that plus the deadline exceeds the round.
+  offset and warn when that plus the deadline exceeds the round. That offset is
+  keyed on the **highest ALLOCATED `client_index`**, never on the cohort's VM
+  count: an extension's indexes continue from the deployment's own, so a second
+  four-VM cohort is 5..8 and its last reader starts at 310 s where a VM count
+  says 150 s. One running index allocation over the whole role list, as
+  `planned_client_vms` does, so a later schedule group accounts for the earlier
+  ones' VMs. Two copies of the formula by necessity (the script imports nothing
+  from the package) and a test pins them together.
+- **A reader whose own start lands past `boundary + download_timeout_secs` does
+  not run `ant` at all**, recording `timeout` / `"deadline passed before
+  start"`. The deadline is checked BEFORE the spawn and the remaining time is
+  never floored upwards: spawning anyway left a download transferring inside the
+  NEXT round, which on a parity-split deployment is the other cohort's, so its
+  reads joined their swarm — and it reported `success`.
 - **A released `ant` prints no `swarm` at all, and that is not a failure** —
   it is half the comparison. `swarm_present` is the field that makes a zero
   readable: without it a released binary's zero `records_from_peers` would be
@@ -2116,6 +2129,13 @@ together.
   tracing subscriber there is something to configure — which is also why `ant` is
   invoked with `-v` (it gates the subscriber behind it), and why the result is
   the last stdout line that PARSES as JSON rather than the last line outright.
+- **`error_kind` is classified from the final `Error:` BLOCK, never from the
+  whole `-v` stream.** Everything from the last `Error: ` line to the end of
+  stderr, so a cause on a continuation line survives while the tracing stream
+  stays out of it: classifying the stream matched the startup banner, and a run
+  that logged `Connected to autonomi network` and then died of `No space left on
+  device` came out as `connection`. `error_text` is unchanged — stderr's last
+  2,000 characters, banner and all, because that is what an operator reads.
 - **Rows go in their own table** (`deployment_hot_file_download_records`,
   revision `c3f8d41b6e92`), recorded in the SAME `record-results` pass as the
   file ops. Not more rows in `deployment_download_records`: pooling them would
@@ -2123,12 +2143,23 @@ together.
   failures into the native hard floors `deployments compare` gates on.
   `extension` **COALESCEs** on upsert, as the browser table's does — it comes
   from state teardown deletes, and a re-run after `clients down` would otherwise
-  merge the branch cohort and the control. The hot-file selection is snapshotted
-  into `deploy_args.hot_file_readers_hot_files`, **skipped when the browser role
-  already recorded the same document** under `browser_hot_files`.
+  merge the branch cohort and the control. The role config behind it is
+  **merged by hostname across provisions, not replaced**: the live scan sees
+  only the tiers standing now, so provisioning `swarm`, tearing it down and then
+  provisioning `control` would erase the swarm cohort's schedule — and the
+  COALESCE does not cover that, since it protects a row that already HAS an
+  extension, not the first write of one that never did. The hot-file selection
+  is snapshotted into `deploy_args.hot_file_readers_hot_files`, **skipped when
+  the browser role already recorded the same document** under
+  `browser_hot_files`.
 - `deployments print-downloads --hot-file` is the live Influx view (one row per
   round AND extension, unlike the browser view's — pooling two cohorts would
-  average the two arms), mutually exclusive with `--browser`;
+  average the two arms), mutually exclusive with `--browser`. **The extension is
+  not on the Influx point**, so the live path resolves it per host from the
+  recorded config and the live tiers before it emits JSON and before it
+  summarises, exactly as `record-results` does; a failure to resolve warns that
+  the rounds are not split and prints them anyway, because this is a read-only
+  diagnostic.
   `print-recorded-results` gains a "Hot-file reads" section; `slack-post`
   renders the tier under `_Hot-file readers (native):_`. **No gate**: a swarm
   figure has no calibration yet, and gating it would need one nobody has.

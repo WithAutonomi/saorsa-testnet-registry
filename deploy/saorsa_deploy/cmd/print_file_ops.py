@@ -1181,6 +1181,37 @@ def summarise_hot_file_rounds(points: list[dict]) -> list[dict]:
     return out
 
 
+def _label_hot_file_extensions(name: str, points: list[dict], console: Console) -> None:
+    """Stamp each hot-file point with the extension its host belongs to, in place.
+
+    The Influx point does not carry it -- the extension is a property of the VM,
+    resolved from the recorded role config and the live client tiers, exactly as
+    `record-results` resolves it. Without this every live row read `None` and
+    the two cohorts of a parity-split run were POOLED into one row per round,
+    which is the one thing the `--hot-file` view exists to keep apart.
+
+    Best-effort: this is a read-only diagnostic, so a registry or S3 failure
+    leaves the points unlabelled and says so, rather than refusing to print the
+    rounds. Unlabelled then means "could not resolve", and the Extension column
+    is simply absent -- which is also how the deployment's own tier renders.
+    """
+    try:
+        from saorsa_deploy.hot_file_records import resolve_extension_by_host
+        from saorsa_deploy.registry import read_deploy_args
+
+        by_host = resolve_extension_by_host(read_deploy_args(name), _client_tiers(name), name)
+    except Exception as e:  # noqa: BLE001 -- a read-only print must still print
+        console.print(
+            f"[yellow]Warning: could not resolve which extension each reader VM "
+            f"belongs to ({e}); the rounds below are not split by cohort.[/yellow]"
+        )
+        return
+    for point in points:
+        extension = by_host.get(point.get("host"))
+        if extension:
+            point["extension"] = extension
+
+
 def _run_hot_file_rounds(args, console: Console) -> None:
     creds = _resolve_influx(args, console)
     if creds is None:
@@ -1202,6 +1233,12 @@ def _run_hot_file_rounds(args, console: Console) -> None:
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
         sys.exit(1)
+
+    # BEFORE the JSON is emitted and before the rounds are summarised: both read
+    # `extension` off the point, so labelling afterwards would leave the JSON
+    # consumer and the table disagreeing about the same run.
+    if points:
+        _label_hot_file_extensions(args.name, points, console)
 
     # Bound to a name, not inlined into the call: the warning needs it too.
     # Rounds expire exactly as file operations do.
@@ -1245,8 +1282,14 @@ def _run_hot_file_rounds(args, console: Console) -> None:
 
 
 def _hot_file_rounds_table(rounds: list[dict], name: str) -> Table:
+    # Distinct round IDS, not rows: a row is one (round, extension) pair, so
+    # counting rows reported a parity-split run's rounds as twice what they are.
     table = Table(
-        title=f"{name} — hot-file reader rounds ({len(rounds)} round(s))",
+        title=(
+            f"{name} — hot-file reader rounds "
+            f"({len({r['round_id'] for r in rounds})} round(s), "
+            f"{len(rounds)} row(s))"
+        ),
         title_style="bold",
     )
     table.add_column("Round", justify="right")

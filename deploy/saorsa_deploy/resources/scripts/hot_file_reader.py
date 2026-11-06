@@ -277,15 +277,20 @@ def reader_offset_secs(client_index: int, instance: int, instances: int, stagger
     return ((max(client_index, 1) - 1) * instances + (max(instance, 1) - 1)) * stagger
 
 
-def last_reader_offset_secs(vms: int, instances: int, stagger: int) -> int:
-    """The offset of the LAST reader in a cohort of ``vms`` VMs.
+def last_reader_offset_secs(max_client_index: int, instances: int, stagger: int) -> int:
+    """The offset of the last reader on the HIGHEST-indexed VM of a cohort.
 
     What `clients plan` prints, so an operator can see at a glance whether the
-    cohort's starts still fit inside a round.
+    cohort's starts still fit inside a round. Keyed on the highest allocated
+    ``client_index``, NOT on how many VMs the cohort has: an extension's indexes
+    continue from whatever the deployment already uses, so a second cohort of
+    four VMs is indexes 5..8 and its last reader starts far later than a
+    first cohort's would. Counting VMs instead printed 150 s for a schedule
+    whose last reader actually starts at 310 s.
     """
-    if stagger <= 0 or vms <= 0 or instances <= 0:
+    if stagger <= 0 or max_client_index <= 0 or instances <= 0:
         return 0
-    return (vms * instances - 1) * stagger
+    return reader_offset_secs(max_client_index, instances, instances, stagger)
 
 
 # ---------------------------------------------------------------------------
@@ -482,16 +487,46 @@ def swarm_fields(result: dict | None) -> dict:
     return out
 
 
+def error_block(stderr_text: str) -> str:
+    """The final ``Error:`` block of a stderr stream, or ``""``.
+
+    **Everything from the LAST ``Error: `` line to the end of stderr**, which is
+    the rule `transfer_errors.py` applies for the same reason:
+    ``eprintln!("Error: {e:#}")`` does not promise one physical line, and an
+    error whose Display carries newlines prints several -- so taking the first
+    line alone drops the cause beneath it.
+
+    Separating the block out at all is what this role needs beyond that rule.
+    `ant` is invoked with ``-v`` so that the role's `rust_log` option has
+    something to configure, so stderr is a whole tracing stream with the error
+    at its foot. Classifying the stream matched the startup banner: a run that
+    logged ``Connected to autonomi network`` and then failed with
+    ``Error: I/O error: No space left on device`` came out as `connection`,
+    which attributes a full local disk to the network.
+
+    ``""`` when nothing on stderr announced itself as an error -- the caller
+    then classifies nothing and lands on `other`, which is the honest answer
+    for a child that failed without saying why.
+    """
+    marker = "Error: "
+    lines = (stderr_text or "").splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].lstrip().startswith(marker):
+            return "\n".join(lines[index:])
+    return ""
+
+
 def classify_failure(stderr_text: str) -> str:
     """`error_kind` for a non-zero `ant file download` exit.
 
-    Matched as lower-cased SUBSTRINGS of the whole stderr block, and the ORDER
-    IS LOAD-BEARING in the same way `transfer_errors.py`'s is: a quorum
-    shortfall's sentence can carry "connect" inside it, and ant-core's
-    chunk-exhaustion sentence contains "not found" while sitting inside a longer
-    error. The narrowest claim wins.
+    Applied to the final ``Error:`` BLOCK (see :func:`error_block`), never to
+    the whole ``-v`` stream. Matched as lower-cased SUBSTRINGS, and the ORDER IS
+    LOAD-BEARING in the same way `transfer_errors.py`'s is: a quorum shortfall's
+    sentence can carry "connect" inside it, and ant-core's chunk-exhaustion
+    sentence contains "not found" while sitting inside a longer error. The
+    narrowest claim wins.
     """
-    text = (stderr_text or "").lower()
+    text = error_block(stderr_text).lower()
     if "not found" in text:
         return KIND_NOT_FOUND
     if "payment" in text:
@@ -706,6 +741,19 @@ def run_download(cfg: Config, round_id: int, instance: int, entry: dict, start_n
     os.makedirs(cfg.download_dir, exist_ok=True)
     os.makedirs(cfg.log_dir, exist_ok=True)
 
+    # The deadline is checked BEFORE the spawn, and the remaining time is never
+    # floored upwards. A reader whose own staggered start lands at or past
+    # `boundary + download_timeout_secs` must not run at all: `ant` would still
+    # be transferring inside the NEXT round, which on a parity-split deployment
+    # is the other cohort's, and its reads would join their swarm. (Spawning and
+    # then granting `max(1.0, ...)` did exactly that, and reported success.)
+    remaining = deadline - time.time()
+    if remaining <= 0:
+        fields["status"] = STATUS_FAILURE
+        fields["error_kind"] = KIND_TIMEOUT
+        fields["error_text"] = "deadline passed before start"
+        return fields
+
     timed_out = False
     started = time.time()
     with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
@@ -716,7 +764,7 @@ def run_download(cfg: Config, round_id: int, instance: int, entry: dict, start_n
             env=cfg.child_env(),
         )
         try:
-            proc.wait(timeout=max(1.0, deadline - time.time()))
+            proc.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
             timed_out = True
             proc.terminate()

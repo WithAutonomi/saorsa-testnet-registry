@@ -591,3 +591,112 @@ def test_the_migration_revises_the_previous_head_and_reuses_the_status_enum():
 
 def test_the_migration_lists_the_same_counters_as_the_model():
     assert set(_migration()._SWARM_COUNTERS) == set(SWARM_COUNTER_COLUMNS)
+
+
+# ---------------------------------------------------------------------------
+# the recorded role config survives a later provision
+# ---------------------------------------------------------------------------
+
+
+def _record_config(repo, deployment, tiers, console=None):
+    """Drive `record_hot_file_config` over a scripted client-tier scan."""
+    from saorsa_deploy.hot_file_records import record_hot_file_config
+
+    with (
+        patch(
+            "saorsa_deploy.hot_file_records.client_tiers_with_extensions",
+            return_value=tiers,
+        ),
+        patch("saorsa_deploy.registry.get_repository", return_value=repo),
+    ):
+        return record_hot_file_config(deployment.name, console)
+
+
+def _recorded(repo, deployment):
+    from saorsa_deploy.hot_file_records import HOT_FILE_CONFIG_KEY
+
+    return repo.get_by_name(deployment.name).deploy_args.get(HOT_FILE_CONFIG_KEY) or []
+
+
+def test_a_later_provision_does_not_erase_an_earlier_cohort(repo):
+    """The live scan sees only the tiers standing NOW.
+
+    Provision a `swarm` extension, tear it down, then provision `control`:
+    replacing the recorded list outright took the swarm cohort's hostnames,
+    extension and schedule with it — which is the one thing this document exists
+    to survive. A `record-results` pass that then first reached the swarm
+    cohort's still-retained Influx points could resolve no extension for them,
+    and the upsert's COALESCE does not help: it protects a row that already HAS
+    one, not the first write of a row that never did.
+    """
+    deployment = _deployment(repo)
+    _record_config(repo, deployment, [("swarm", {"clients": [_reader_client()]})])
+    assert [e["extension"] for e in _recorded(repo, deployment)] == ["swarm"]
+
+    _record_config(
+        repo,
+        deployment,
+        [("control", {"clients": [_reader_client(region="fra1", index=2, parity="odd")]})],
+    )
+    kept = _recorded(repo, deployment)
+    assert sorted(e["extension"] for e in kept) == ["control", "swarm"]
+    # The schedule, not merely the name: it is what says when each reader was due.
+    swarm = next(e for e in kept if e["extension"] == "swarm")
+    assert swarm["round_parity"] == "even"
+    assert swarm["start_stagger_secs"] == 2
+    assert swarm["client_index"] == 1
+
+
+def test_a_torn_down_cohort_s_rows_still_resolve_their_extension(repo):
+    # The consequence the merge exists for: `record-results` reaching the swarm
+    # cohort's retained points after it was torn down and `control` provisioned.
+    deployment = _deployment(repo)
+    _record_config(repo, deployment, [("swarm", {"clients": [_reader_client()]})])
+    _record_config(
+        repo,
+        deployment,
+        [("control", {"clients": [_reader_client(region="fra1", index=2, parity="odd")]})],
+    )
+    deployment = repo.get_by_name(deployment.name)
+    _record(
+        repo, deployment, [_point(host="DEV-03-swarm-ant-client-hot-file-read-lon1-1")], tiers=[]
+    )
+    (row,) = repo.list_hot_file_download_records_for_deployment(deployment.id)
+    assert row.extension == "swarm"
+
+
+def test_a_re_provision_of_the_same_vm_takes_the_new_schedule(repo):
+    # Live wins on a hostname present in both: a re-provision is how a VM's own
+    # schedule changes.
+    deployment = _deployment(repo)
+    _record_config(repo, deployment, [("swarm", {"clients": [_reader_client()]})])
+    changed = {**_reader_client(), "round_period_secs": 900, "start_stagger_secs": 5}
+    _record_config(repo, deployment, [("swarm", {"clients": [changed]})])
+    (entry,) = _recorded(repo, deployment)
+    assert entry["round_period_secs"] == 900
+    assert entry["start_stagger_secs"] == 5
+
+
+def test_an_unreadable_registry_falls_back_to_the_live_scan(repo):
+    # Which is what the behaviour was before it merged at all, so a miss costs
+    # no more than it did.
+    deployment = _deployment(repo)
+    with patch("saorsa_deploy.registry.read_deploy_args", return_value=None):
+        _record_config(repo, deployment, [("swarm", {"clients": [_reader_client()]})])
+    assert [e["extension"] for e in _recorded(repo, deployment)] == ["swarm"]
+
+
+def test_a_deployment_with_no_readers_records_nothing(repo):
+    deployment = _deployment(repo)
+    assert _record_config(repo, deployment, []) == []
+    assert _recorded(repo, deployment) == []
+
+
+def test_the_merge_is_sorted_so_repeated_provisions_write_identical_bytes():
+    from saorsa_deploy.hot_file_records import merge_hot_file_config
+
+    recorded = [{"hostname": "b", "extension": "z"}, {"hostname": "a", "extension": "a"}]
+    live = [{"hostname": "c", "extension": "m"}]
+    once = merge_hot_file_config(recorded, live)
+    assert once == merge_hot_file_config(once, live)
+    assert [e["extension"] for e in once] == ["a", "m", "z"]

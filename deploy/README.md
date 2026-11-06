@@ -2072,14 +2072,22 @@ boundary + ((k − 1) × instances + (i − 1)) × start_stagger_secs
 so a cohort of 4 VMs × 4 readers with a 2 s stagger starts one reader every 2 s
 for 30 s with no coordinator at all. **The arithmetic is not checked** — a
 deliberately long stagger over a long round is a legitimate shape — so `clients
-plan` and `deployments plan` print the last reader's offset,
-`(VMs × instances − 1) × start_stagger_secs`, and say so when that plus the
-deadline exceeds the round:
+plan` and `deployments plan` print the last reader's offset and say so when that
+plus the deadline exceeds the round:
 
 ```
-hot-file readers: 2 VM(s) x 4 reader(s), round 600s, parity even, stagger 2s —
-the last reader starts 14s after the boundary
+hot-file readers: 2 VM(s) x 4 reader(s) (client_index 1..2), round 600s,
+parity even, stagger 2s — the last reader starts 14s after the boundary
 ```
+
+**The printed offset is derived from the ALLOCATED `client_index`**, not from how
+many VMs the cohort has: an extension's indexes continue from whatever the
+deployment already uses, so a second cohort of four VMs is indexes 5..8 and its
+last reader starts at `((8−1) × 4 + 3) × stagger` — 310 s at a 10 s stagger,
+which overruns a 600 s round once the 300 s deadline is added. Indexes are
+allocated with one running offset over the whole role list, exactly as the VM
+list above it is, so a later schedule group accounts for the VMs the earlier
+groups occupy ahead of it.
 
 #### What one reader does in a round
 
@@ -2099,7 +2107,13 @@ the last reader starts 14s after the boundary
 4. Kill it at `boundary + download_timeout_secs` (SIGTERM, SIGKILL after 5 s) →
    `failure` / `timeout` / `"deadline"`. The deadline is measured from the round
    BOUNDARY, not from this reader's staggered start: what it is for is that
-   every reader has finished before the next round is due.
+   every reader has finished before the next round is due. **A reader whose own
+   start already lands at or past it does not run `ant` at all** — the deadline
+   is checked before the spawn and the remaining time is never floored upwards —
+   recording `failure` / `timeout` / `"deadline passed before start"` instead.
+   Spawning anyway would leave a download transferring inside the NEXT round,
+   which on a parity-split deployment is the other cohort's, and its reads would
+   join their swarm.
 5. On exit 0, parse the **last line of stdout that parses as a JSON object** —
    scanned backwards, because `-v` can put a tracing line after the record and
    taking the final line outright would turn every success into "no json
@@ -2108,14 +2122,23 @@ the last reader starts 14s after the boundary
    `sha256` giving `verify_status` 0 / 1 / 2, and a **mismatch is its own kind**
    (`verify`) because a download that fails is availability while one that
    returns different bytes is correctness. The file is then deleted.
-6. On a non-zero exit, `error_kind` comes from stderr as a lower-cased substring
-   match — `not found` → `not_found`, `payment`, `quorum`,
-   `connect`/`dial`/`channel` → `connection`, else `other` — over the whole
-   stderr BLOCK rather than its first line, and **order is load-bearing** as it
-   is in `transfer_errors.py`. `error_text` is stderr's last 2,000 characters
-   (the tail: `ant`'s last words are the error). **The swarm counters of a
-   failure are still recorded** — a reader fed by a peer and then failing says
-   something different from one that never reached the swarm.
+6. On a non-zero exit, `error_kind` comes from a lower-cased substring match —
+   `not found` → `not_found`, `payment`, `quorum`,
+   `connect`/`dial`/`channel` → `connection`, else `other` — and **order is
+   load-bearing** as it is in `transfer_errors.py`. It is applied to the
+   **final `Error:` block**: everything from the last `Error: ` line to the end
+   of stderr, which keeps a cause on a continuation line
+   (`eprintln!("Error: {e:#}")` does not promise one physical line) while
+   keeping the `-v` tracing stream out of it. Classifying the whole stream
+   matched the startup banner — a run that logged `Connected to autonomi
+   network` and then died of `Error: I/O error: No space left on device` came
+   out as `connection`, attributing a full local disk to the network. Stderr
+   that announced no error at all classifies as `other`, which is the honest
+   answer for a child that failed without saying why. `error_text` is
+   unchanged: stderr's last 2,000 characters, banner and all, because that is
+   what an operator reads. **The swarm counters of a failure are still
+   recorded** — a reader fed by a peer and then failing says something
+   different from one that never reached the swarm.
 7. Write the point. A FAILED download's `ant` stdout/stderr are kept under
    `/var/log/ant-hot-file-reader/`; a success's are deleted, as
    `downloader.sh` does.
@@ -2186,7 +2209,14 @@ snapshotted into the registry beside the rows they describe:
   branch cohort and the released control into one. `clients provision` records
   that config (hostname, extension, region, `client_index`, `instances`,
   `round_period_secs`, `download_timeout_secs`, `round_parity`,
-  `start_stagger_secs`), rebuilt from every client tier on each pass.
+  `start_stagger_secs`), **merged by hostname with whatever is already
+  recorded** rather than replacing it: the scan sees only the tiers standing
+  now, so provisioning a `swarm` extension, tearing it down and then
+  provisioning `control` would otherwise take the swarm cohort's schedule with
+  it — and the COALESCE does not cover that, because it protects a row that
+  already HAS an extension, not the first write of one that never did. Live wins
+  on a hostname in both, since a re-provision is how a VM's own schedule
+  changes.
 - **The hot-file selection**, into `deploy_args.hot_file_readers_hot_files` —
   additive, and **skipped entirely when the browser role has already snapshotted
   the same document** under `browser_hot_files`. Both cohorts read the one
@@ -2211,6 +2241,12 @@ the browser view's: the whole point of the role is two cohorts on one
 deployment, and a row pooling them would average the two arms of the comparison.
 "Peer-fed" counts READERS, not records — one reader served by a peer a thousand
 times is not a thousand readers the swarm reached.
+
+The extension is **not on the Influx point** — it is a property of the VM — so
+the live view resolves it per host from the recorded role config and the live
+client tiers, exactly as `record-results` does, before it emits the JSON and
+before it summarises. A registry or S3 failure is a warning saying the rounds
+are not split by cohort, not a refusal: this is a read-only diagnostic.
 
 `print-recorded-results` gains a "Hot-file reads" section with the same
 per-round table out of Postgres, plus "reads reporting a swarm", which is the

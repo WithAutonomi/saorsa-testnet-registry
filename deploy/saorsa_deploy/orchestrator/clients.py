@@ -251,26 +251,62 @@ def manifest_client_tiers(manifest: Manifest):
     return manifest.clients
 
 
-def hot_file_stagger_notes(manifest: Manifest) -> list[str]:
+def last_hot_file_reader_offset_secs(max_client_index: int, instances: int, stagger: int) -> int:
+    """The offset of the last reader on the highest-indexed VM of a cohort.
+
+    The service's own formula with ``i = instances``:
+    ``((k − 1) × instances + (instances − 1)) × stagger``. Keyed on the highest
+    allocated ``client_index``, NOT on how many VMs the cohort has — an
+    extension's indexes CONTINUE from whatever the deployment already uses, so a
+    second cohort of four VMs is indexes 5..8 and its last reader starts far
+    later than a first cohort's would.
+
+    Mirrors ``last_reader_offset_secs`` in
+    ``resources/scripts/hot_file_reader.py``; the two cannot be shared (that
+    file is copied verbatim onto a VM and imports nothing from this package) and
+    a test pins them together. A plan that describes a schedule the VMs do not
+    run is worse than no plan: counting VMs printed 150 s for a cohort whose
+    last reader actually starts at 310 s, which is the figure an operator sizes
+    the stagger against.
+    """
+    if stagger <= 0 or max_client_index <= 0 or instances <= 0:
+        return 0
+    return ((max_client_index - 1) * instances + (instances - 1)) * stagger
+
+
+def hot_file_stagger_notes(
+    manifest: Manifest, base_indexes: dict[str, int] | None = None
+) -> list[str]:
     """One line per hot-file reader cohort, naming the LAST reader's offset.
 
-    `(VMs in the role x instances - 1) x start_stagger_secs`. Printed because
-    the arithmetic is not checked anywhere: the operator sizes the cohort, and a
-    stagger that walks the last reader's start past the round's own deadline is
-    a cohort whose later readers never overlap the earlier ones -- which is the
-    one thing the stagger exists to arrange. Refusing it would be wrong (a
-    deliberately long stagger over a long round is a legitimate shape), so it is
-    said out loud instead.
+    Printed because the arithmetic is not checked anywhere: the operator sizes
+    the cohort, and a stagger that walks the last reader's start past the
+    round's own deadline is a cohort whose later readers never overlap the
+    earlier ones -- which is the one thing the stagger exists to arrange.
+    Refusing it would be wrong (a deliberately long stagger over a long round is
+    a legitimate shape), so it is said out loud instead.
 
     Grouped by ``(round_period_secs, download_timeout_secs, round_parity,
-    start_stagger_secs)``, not per entry: the offset is a property of the
-    COHORT, and two entries that agree on the schedule are one cohort however
-    many regions they span.
+    start_stagger_secs, instances)``, not per entry: the schedule is a property
+    of the COHORT, and two entries that agree on it are one cohort however many
+    regions they span.
+
+    **Indexes are allocated exactly as :func:`planned_client_vms` allocates
+    them** — one running offset over every entry in the role's list, continuing
+    from ``base_indexes``, so a group's highest index accounts for the VMs other
+    groups in the same manifest occupy ahead of it as well as for the
+    deployment's existing readers. ``base_indexes`` is ``None`` on a deployment
+    manifest (its own tier always starts at 1) and on a ``clients plan`` whose
+    deployment state could not be read, which is the case that already prints a
+    note saying the indexes shown are probably wrong.
 
     Pure, so `clients plan` and `deployments plan` print the same line.
     """
     entries = getattr(manifest_client_tiers(manifest), "hot_file_readers", None) or []
-    cohorts: dict[tuple, list] = {}
+    base = dict(base_indexes or {}).get(ROLE_HOT_FILE_READ, 0)
+
+    cohorts: dict[tuple, list[int]] = {}
+    offset = 0
     for entry in entries:
         key = (
             entry.round_period_secs,
@@ -279,17 +315,20 @@ def hot_file_stagger_notes(manifest: Manifest) -> list[str]:
             entry.start_stagger_secs,
             entry.instances,
         )
-        cohorts.setdefault(key, []).append(entry)
+        for _ in range(entry.count):
+            offset += 1
+            cohorts.setdefault(key, []).append(base + offset)
 
     notes: list[str] = []
-    for key in cohorts:
+    for key, indexes in cohorts.items():
         period, deadline, parity, stagger, instances = key
-        vms = sum(e.count for e in cohorts[key])
-        last = (vms * instances - 1) * stagger
+        highest = max(indexes)
+        last = last_hot_file_reader_offset_secs(highest, instances, stagger)
         note = (
-            f"hot-file readers: {vms} VM(s) x {instances} reader(s), round "
-            f"{period}s, parity {parity}, stagger {stagger}s — the last "
-            f"reader starts {last}s after the boundary"
+            f"hot-file readers: {len(indexes)} VM(s) x {instances} reader(s) "
+            f"(client_index {min(indexes)}..{highest}), round {period}s, parity "
+            f"{parity}, stagger {stagger}s — the last reader starts {last}s "
+            f"after the boundary"
         )
         if last + deadline > period:
             note += (

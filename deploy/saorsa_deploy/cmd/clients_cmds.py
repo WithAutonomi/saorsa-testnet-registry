@@ -167,7 +167,10 @@ def _print_vm_plan(console: Console, manifest, base_indexes, note: str | None) -
             f"{vm['provider']}:{vm['region']} ({vm['vm_size']}) "
             f"role={vm['role']} client_index={vm['client_index']}"
         )
-    for stagger_note in hot_file_stagger_notes(manifest):
+    # The same `base_indexes` the VM list above was planned from: an extension's
+    # reader indexes continue from the deployment's own, and the last reader's
+    # offset is derived from the highest of them.
+    for stagger_note in hot_file_stagger_notes(manifest, base_indexes):
         console.print(f"  [cyan]{stagger_note}[/cyan]")
     if note:
         console.print(f"  [yellow]{note}[/yellow]")

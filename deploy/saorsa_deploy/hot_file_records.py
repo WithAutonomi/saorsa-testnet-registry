@@ -121,26 +121,67 @@ def collect_hot_file_config(deployment: str, tiers: list[tuple[str | None, dict]
     return entries
 
 
+def merge_hot_file_config(recorded: list[dict], live: list[dict]) -> list[dict]:
+    """Historical entries plus the live scan, keyed by hostname, live winning.
+
+    **A later provision must not erase a cohort that has already gone.** The
+    scan only sees the tiers that exist NOW, so provisioning a `swarm`
+    extension, tearing it down and then provisioning `control` would replace
+    the recorded list outright and take the swarm cohort's hostnames,
+    extension and schedule with it — which is the one thing this document
+    exists to survive. A `record-results` pass that first reaches the swarm
+    cohort's still-retained Influx points could then resolve no extension for
+    them, and the upsert's COALESCE does not help: it protects a row that
+    already HAS one, not the first write of a row that never did.
+
+    Live wins on a hostname that appears in both, because a re-provision is how
+    a VM's own schedule changes. Sorted on the same key
+    :func:`collect_hot_file_config` sorts on, so repeated provisions of an
+    unchanged cohort write identical bytes.
+    """
+    by_hostname: dict[str, dict] = {}
+    for entry in recorded:
+        hostname = entry.get("hostname")
+        if hostname:
+            by_hostname[hostname] = entry
+    for entry in live:
+        hostname = entry.get("hostname")
+        if hostname:
+            by_hostname[hostname] = entry
+    merged = list(by_hostname.values())
+    merged.sort(key=lambda e: (e.get("extension") or "", e.get("hostname") or ""))
+    return merged
+
+
 def record_hot_file_config(deployment: str, console=None) -> list[dict]:
     """Persist the hot-file tier's role config into ``deploy_args``.
 
+    MERGED with whatever is already recorded (see :func:`merge_hot_file_config`),
+    not replaced: the live scan sees only the tiers standing now, and a cohort
+    that has been torn down is exactly the one whose facts have to survive.
+
     Best-effort, like every other `record_deploy_args_update` call in a provision
     pass: without ``DATABASE_URL`` there is no registry to write to and client
-    provisioning must not fail over it.
+    provisioning must not fail over it. A registry that cannot be read falls
+    back to the live scan alone -- which is what the behaviour was, so a miss
+    costs no more than it did.
 
-    Writes nothing when the deployment has no reader VMs, so an ordinary
-    testnet's ``deploy_args`` is untouched.
+    Writes nothing when neither the scan nor the record holds a reader VM, so an
+    ordinary testnet's ``deploy_args`` is untouched.
     """
-    from saorsa_deploy.registry import record_deploy_args_update
+    from saorsa_deploy.registry import read_deploy_args, record_deploy_args_update
 
-    entries = collect_hot_file_config(deployment, client_tiers_with_extensions(deployment))
+    live = collect_hot_file_config(deployment, client_tiers_with_extensions(deployment))
+    entries = merge_hot_file_config(recorded_hot_file_config(read_deploy_args(deployment)), live)
     if not entries:
         return []
     record_deploy_args_update(deployment, {HOT_FILE_CONFIG_KEY: entries})
     if console is not None:
+        kept = len(entries) - len(live)
+        kept_note = f" ({kept} from an earlier provision)" if kept > 0 else ""
         console.print(
-            f"  Recorded hot-file reader role config for {len(entries)} VM(s) "
-            f"(deploy_args.{HOT_FILE_CONFIG_KEY})"
+            f"  Recorded hot-file reader role config for {len(entries)} VM(s)"
+            f"{kept_note} (deploy_args.{HOT_FILE_CONFIG_KEY})"
         )
     return entries
 

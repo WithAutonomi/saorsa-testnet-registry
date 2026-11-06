@@ -551,9 +551,81 @@ class TestExtensionPlan:
                 ]
             )
         )
-        # (4 VMs x 4 readers - 1) x 2s = 30s, and 30 + 300 < 600, so no warning.
+        # Indexes 1..4, so the last reader is ((4-1) x 4 + 3) x 2 = 30s, and
+        # 30 + 300 < 600, so no warning.
+        assert "(client_index 1..4)" in note
         assert "the last reader starts 30s after the boundary" in note
         assert "exceeds the round" not in note
+
+    def test_the_offset_is_derived_from_the_ALLOCATED_indexes(self):
+        """An extension's indexes CONTINUE from the deployment's own.
+
+        Counting VMs instead printed 150s for the reviewer's case -- four
+        existing reader VMs, four more with four readers and a 10 s stagger --
+        where the service's own formula puts the last reader at 310s, and
+        therefore omitted the warning that 310 + 300 overruns a 600 s round.
+        The offset an operator sizes the stagger against has to be the one the
+        VMs will actually run.
+        """
+        (note,) = hot_file_stagger_notes(
+            self._extension(
+                [
+                    {
+                        "provider": "digital_ocean",
+                        "region": "l",
+                        "count": 4,
+                        "instances": 4,
+                        "start_stagger_secs": 10,
+                    }
+                ]
+            ),
+            {ROLE_HOT_FILE_READ: 4},
+        )
+        assert "(client_index 5..8)" in note
+        assert "the last reader starts 310s after the boundary" in note
+        assert "610s > 600s" in note
+
+    def test_a_later_schedule_group_accounts_for_the_earlier_one_s_vms(self):
+        # Indexes are allocated with one running offset over the whole role
+        # list, exactly as `planned_client_vms` allocates them, so the odd
+        # cohort's indexes continue past the even cohort's.
+        even, odd = hot_file_stagger_notes(
+            self._extension(
+                [
+                    {
+                        "provider": "digital_ocean",
+                        "region": "l",
+                        "count": 2,
+                        "instances": 4,
+                        "round_parity": "even",
+                        "start_stagger_secs": 2,
+                    },
+                    {
+                        "provider": "digital_ocean",
+                        "region": "f",
+                        "count": 2,
+                        "instances": 4,
+                        "round_parity": "odd",
+                        "start_stagger_secs": 2,
+                    },
+                ]
+            )
+        )
+        assert "(client_index 1..2)" in even
+        assert "the last reader starts 14s after the boundary" in even
+        assert "(client_index 3..4)" in odd
+        assert "the last reader starts 30s after the boundary" in odd
+
+    def test_the_planned_indexes_and_the_note_s_indexes_agree(self):
+        # Two derivations of one allocation; a plan whose VM list and whose
+        # schedule note disagree describes two different cohorts.
+        manifest = self._extension(
+            [{"provider": "digital_ocean", "region": "l", "count": 3, "start_stagger_secs": 1}]
+        )
+        base = {ROLE_HOT_FILE_READ: 5}
+        indexes = [v["client_index"] for v in planned_client_vms(manifest, base)]
+        (note,) = hot_file_stagger_notes(manifest, base)
+        assert f"(client_index {min(indexes)}..{max(indexes)})" in note
 
     def test_the_plan_warns_when_the_starts_outrun_the_round(self):
         (note,) = hot_file_stagger_notes(
@@ -569,7 +641,7 @@ class TestExtensionPlan:
                 ]
             )
         )
-        # (10 x 4 - 1) x 10 = 390s, + 300s deadline = 690s > 600s.
+        # Indexes 1..10, so ((10-1) x 4 + 3) x 10 = 390s, + 300s = 690s > 600s.
         assert "the last reader starts 390s after the boundary" in note
         assert "690s > 600s" in note
 
@@ -804,10 +876,24 @@ class TestRoundArithmetic:
         assert [hfr.reader_offset_secs(k, i, 4, 0) for k in (1, 2) for i in (1, 2)] == [0] * 4
 
     def test_the_last_offset_matches_what_the_plan_prints(self, hfr):
-        # The script's own arithmetic and `clients plan`'s have to agree, or the
-        # plan describes a schedule the VMs do not run.
-        assert hfr.last_reader_offset_secs(4, 4, 2) == 30
-        assert hfr.reader_offset_secs(4, 4, 4, 2) == 30
+        """The script's arithmetic and the orchestrator's must agree.
+
+        Two copies by necessity -- the script is copied verbatim onto a VM and
+        imports nothing from the package -- so they are pinned together here. A
+        plan that describes a schedule the VMs do not run is worse than no plan.
+        """
+        from saorsa_deploy.orchestrator.clients import last_hot_file_reader_offset_secs
+
+        for index, instances, stagger in [(4, 4, 2), (8, 4, 10), (1, 1, 0), (3, 2, 5)]:
+            assert hfr.last_reader_offset_secs(index, instances, stagger) == (
+                last_hot_file_reader_offset_secs(index, instances, stagger)
+            ), (index, instances, stagger)
+
+    def test_the_last_offset_is_keyed_on_the_index_not_the_vm_count(self, hfr):
+        # The reviewer's case: a cohort of four VMs at indexes 5..8 has its last
+        # reader at 310s, not at the 150s a VM count gives.
+        assert hfr.last_reader_offset_secs(8, 4, 10) == 310
+        assert hfr.reader_offset_secs(8, 4, 4, 10) == 310
 
 
 # --------------------------------------------------------------------------- #
@@ -967,6 +1053,50 @@ class TestErrorClassification:
     def test_the_whole_block_is_matched_not_its_first_line(self, hfr):
         # `eprintln!("Error: {e:#}")` does not promise one physical line.
         assert hfr.classify_failure("Error: upload failed\nDetails: payment error") == "payment"
+
+    def test_the_verbose_startup_stream_is_not_classified(self, hfr):
+        """Only the final `Error:` block, never the whole `-v` stream.
+
+        `ant` is invoked with `-v` so the role's `rust_log` has something to
+        configure, so stderr is a tracing stream with the error at its foot.
+        Classifying the stream matched the startup banner: a run that logged
+        "Connected to autonomi network" and then died of a full disk came out as
+        `connection`, which attributes a local disk failure to the network.
+        """
+        stderr = (
+            "2026-11-06T08:00:00Z INFO Connected to autonomi network\n"
+            "2026-11-06T08:00:01Z DEBUG dialled 12 peers, channel open\n"
+            "Error: I/O error: No space left on device\n"
+        )
+        assert hfr.classify_failure(stderr) == hfr.KIND_OTHER
+
+    def test_the_block_is_the_LAST_error_to_the_end_of_stderr(self, hfr):
+        stderr = (
+            "INFO connecting\n"
+            "Error: transient: dial failed\n"
+            "INFO retrying\n"
+            "Error: payment error: RPC Request failed\n"
+            "Details: nonce too low\n"
+        )
+        assert hfr.error_block(stderr) == (
+            "Error: payment error: RPC Request failed\nDetails: nonce too low"
+        )
+        assert hfr.classify_failure(stderr) == hfr.KIND_PAYMENT
+
+    def test_stderr_that_announced_no_error_classifies_as_other(self, hfr):
+        # The honest answer for a child that failed without saying why -- and
+        # the banner must not stand in for one.
+        assert hfr.error_block("INFO connected to peer\n") == ""
+        assert hfr.classify_failure("INFO connected to peer\n") == hfr.KIND_OTHER
+
+    def test_the_error_text_still_keeps_the_whole_stderr_tail(self, hfr):
+        # The classifier narrowed; `error_text` did not. The issue asks for the
+        # last 2,000 characters of stderr and that is still what is recorded,
+        # banner and all, because it is what an operator reads.
+        stderr = "INFO banner\n" * 10 + "Error: quorum not reached\n"
+        kept = hfr.clip_error_text(stderr)
+        assert "INFO banner" in kept
+        assert kept.endswith("Error: quorum not reached\n")
 
     def test_the_error_text_keeps_the_tail(self, hfr):
         # `ant`'s last words are the error; the head of a `-v` run is a banner.
@@ -1234,6 +1364,43 @@ class TestDeadline:
         assert fields["status"] == hfr.STATUS_FAILURE
         assert fields["error_kind"] == hfr.KIND_TIMEOUT
         assert fields["error_text"] == "deadline"
+
+    def test_an_expired_round_spawns_nothing_at_all(self, hfr, tmp_path):
+        """A reader whose own start lands past the deadline must not run `ant`.
+
+        Spawning anyway (and granting `max(1.0, remaining)`) let a download run
+        on into the NEXT round -- which on a parity-split deployment is the
+        other cohort's, so its reads would join their swarm and contaminate the
+        branch/control comparison. With period 600, deadline 300, two instances
+        and a 600 s stagger, reader 2 is exactly that case, and it reported
+        `success`.
+        """
+        import time as _time
+
+        cfg = _config(hfr)
+        cfg.download_dir = str(tmp_path / "dl")
+        cfg.log_dir = str(tmp_path / "logs")
+        # A round whose boundary + deadline is already in the past.
+        round_id = hfr.round_id_at(_time.time(), cfg.round_period_secs) - 2
+        cfg.command = lambda address, out: ["sh", "-c", f"printf 'x' > {out}"]
+        with patch.object(subprocess, "Popen", side_effect=AssertionError("spawned")):
+            fields = hfr.run_download(
+                cfg,
+                round_id,
+                1,
+                {"address": "deadbeef", "bytes": 1, "sha256": None},
+                round_id * cfg.round_period_secs * 1_000_000_000,
+            )
+        assert fields["status"] == hfr.STATUS_FAILURE
+        assert fields["error_kind"] == hfr.KIND_TIMEOUT
+        assert fields["error_text"] == "deadline passed before start"
+
+    def test_the_remaining_time_is_never_floored_upwards(self, hfr, tmp_path):
+        # `max(1.0, deadline - now)` handed an already-expired download another
+        # second, which is how one came back `success` past its own deadline.
+        source = SCRIPT.read_text()
+        assert "max(1.0, deadline" not in source
+        assert "proc.wait(timeout=remaining)" in source
 
     def test_a_size_mismatch_is_a_failure_naming_what_came_back(self, hfr, tmp_path):
         payload = json.dumps({**RELEASED_RESULT, "size": 4})
@@ -1567,6 +1734,139 @@ class TestHotFileRoundSummary:
 
         (row,) = summarise_hot_file_rounds([_summary_point(start_ns=6_000_000_000_000)])
         assert row["boundary"] == datetime.fromtimestamp(6000, tz=timezone.utc)
+
+    def test_the_live_handler_labels_each_host_with_its_extension(self):
+        """The live view must split by cohort, not pool them.
+
+        The Influx point does not carry `extension` -- it is a property of the
+        VM -- so without resolving it every live row read `None` and two
+        cohorts reporting the same round came out as ONE row with their figures
+        added together. On a parity-split run that is the whole comparison
+        averaged away.
+        """
+        from types import SimpleNamespace
+
+        from rich.console import Console
+
+        from saorsa_deploy.cmd import print_file_ops as pfo
+
+        swarm = "DEV-03-swarm-ant-client-hot-file-read-lon1-1"
+        control = "DEV-03-control-ant-client-hot-file-read-fra1-2"
+
+        def _point(host, records):
+            return {
+                "_time": None,
+                "host": host,
+                "region": "lon1",
+                "round_id": 3000000,
+                "instance": 1,
+                "hot_file_index": 0,
+                "status": "success",
+                "error_kind": None,
+                "error_text": None,
+                "address": "ab",
+                "file_size": 1,
+                "total_ms": 1000,
+                "client_elapsed_ms": 900,
+                "start_ns": 3000000 * 600 * 1_000_000_000,
+                "started_late_ms": 0,
+                "verify_status": 2,
+                "swarm_present": 1,
+                "swarm_rooms": [],
+                "records_from_peers": records,
+                "bytes_from_peers": records * 10,
+                "records_served": 0,
+            }
+
+        tiers = [
+            (
+                "swarm",
+                {"clients": [{"role": "hot-file-read", "region": "lon1", "client_index": 1}]},
+            ),
+            (
+                "control",
+                {"clients": [{"role": "hot-file-read", "region": "fra1", "client_index": 2}]},
+            ),
+        ]
+        args = SimpleNamespace(
+            name="DEV-03",
+            json_out=None,
+            window="-1h",
+            recent=False,
+            summary=False,
+            browser=False,
+            hot_file=True,
+        )
+        console = Console(record=True, width=260)
+        with (
+            patch.object(
+                pfo, "_resolve_influx", return_value=("http://i", "t", "ant", "testnet-metrics")
+            ),
+            patch.object(
+                pfo,
+                "fetch_hot_file_download_points",
+                return_value=[_point(swarm, 7), _point(control, 0)],
+            ),
+            patch.object(pfo, "_client_tiers", return_value=tiers),
+            patch("saorsa_deploy.registry.read_deploy_args", return_value=None),
+            patch.object(pfo, "_resolve_retention", return_value=None),
+            patch.object(pfo, "_resolve_deployment_start", return_value=None),
+        ):
+            pfo._run_hot_file_rounds(args, console)
+        text = console.export_text()
+        assert "Extension" in text
+        assert "swarm" in text and "control" in text
+        # One row per (round, extension): two rows for the one round, not one.
+        assert len([line for line in text.splitlines() if "3000000" in line]) == 2
+        # And the title counts ROUNDS, not rows -- counting rows reported a
+        # parity-split run's rounds as twice what they are.
+        assert "1 round(s), 2 row(s)" in text
+
+    def test_the_live_handler_still_prints_when_the_extension_cannot_be_resolved(self):
+        # A read-only diagnostic must not refuse over a registry or S3 failure:
+        # it says the rounds are not split and prints them anyway.
+        from types import SimpleNamespace
+
+        from rich.console import Console
+
+        from saorsa_deploy.cmd import print_file_ops as pfo
+
+        args = SimpleNamespace(
+            name="DEV-03",
+            json_out=None,
+            window="-1h",
+            recent=False,
+            summary=False,
+            browser=False,
+            hot_file=True,
+        )
+        console = Console(record=True, width=260)
+        with (
+            patch.object(
+                pfo, "_resolve_influx", return_value=("http://i", "t", "ant", "testnet-metrics")
+            ),
+            patch.object(
+                pfo,
+                "fetch_hot_file_download_points",
+                return_value=[
+                    {
+                        "host": "h1",
+                        "round_id": 10,
+                        "instance": 1,
+                        "status": "success",
+                        "total_ms": 1000,
+                        "start_ns": 6_000_000_000_000,
+                    }
+                ],
+            ),
+            patch.object(pfo, "_client_tiers", side_effect=RuntimeError("no state")),
+            patch.object(pfo, "_resolve_retention", return_value=None),
+            patch.object(pfo, "_resolve_deployment_start", return_value=None),
+        ):
+            pfo._run_hot_file_rounds(args, console)
+        text = console.export_text()
+        assert "not split by cohort" in text
+        assert "hot-file reader rounds" in text
 
     def test_browser_and_hot_file_together_are_refused(self):
         from types import SimpleNamespace
