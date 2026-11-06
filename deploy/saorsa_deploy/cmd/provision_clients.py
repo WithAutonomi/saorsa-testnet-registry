@@ -13,6 +13,7 @@ from saorsa_deploy.client_roles import (
     is_wasm,
 )
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
+from saorsa_deploy.hot_file_records import record_hot_file_config
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
 from saorsa_deploy.provisioning.network_profile import (
@@ -871,6 +872,13 @@ def cmd_provision_clients(args):
     # deployment's own and each extension's), so it converges whichever tier
     # this pass provisioned, and a no-op for a deployment with no browser VMs.
     record_browser_config(args.name, console)
+
+    # The same denormalisation for the hot-file reader tier, and for the same
+    # reason: the S3 client state carrying the round period, the parity, the
+    # stagger and each VM's `client_index` -- which is what a reader's own start
+    # offset is derived from -- is deleted by `clients destroy`, while the rows
+    # it describes outlive the cohort. A no-op for a deployment with no readers.
+    record_hot_file_config(args.name, console)
 
     # Install client host-metrics Telegraf (InfluxDB, host_role=CLIENT) as part
     # of this clients pass, so it no longer needs a separate provision-telegraf

@@ -49,6 +49,7 @@ from saorsa_db.models import (
 
 from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_deploy.derived_metrics import format_metric_value
+from saorsa_deploy.gate_comparison import percentile
 from saorsa_deploy.registry import get_repository
 
 _TESTNET_KIND = "testnet"
@@ -180,6 +181,14 @@ def cmd_print_recorded_results(args) -> None:
         # no browser rounds, which is every run before V2-1617.
         _print_browser_downloads_section(
             repo.list_browser_download_records_for_deployment(deployment.id),
+            deployment.name,
+            console,
+        )
+        # The native hot-file cohort, on the same footing and for the same
+        # reason: its reads are neither uploads nor downloads in the file-op
+        # sense, and they print nothing at all for a run that has none.
+        _print_hot_file_reads_section(
+            repo.list_hot_file_download_records_for_deployment(deployment.id),
             deployment.name,
             console,
         )
@@ -819,6 +828,122 @@ def _print_browser_downloads_section(rows: list, name: str, console: Console) ->
         "`saorsa-deploy analysis browser-reads --name <name> --window-start … "
         "--window-end …`[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# Hot-file reads section (deployment_hot_file_download_records)
+# ---------------------------------------------------------------------------
+
+
+def _fmt_hot_file_ms(value) -> str:
+    """A millisecond figure as seconds, or ``-`` when there is none.
+
+    Its own formatter rather than the per-op tables' `_fmt_duration`: those take
+    a row's raw `duration_ms`, while these are computed percentiles and may be
+    None for a round in which nothing succeeded.
+    """
+    if value is None:
+        return "-"
+    return f"{value / 1000.0:.1f}s"
+
+
+def _print_hot_file_reads_section(rows: list, name: str, console: Console) -> None:
+    """Per round and extension, the counts and the swarm figures.
+
+    Prints NOTHING when the deployment has no hot-file reads, so every existing
+    run's output is unchanged.
+
+    Split by EXTENSION, unlike the browser section: the whole point of the role
+    is two cohorts on one deployment -- a branch build on even rounds and a
+    released control on odd -- and a table pooling them would average the two
+    arms of the comparison into one meaningless row.
+    """
+    if not rows:
+        return
+    console.print()
+    console.rule(f"[bold]Hot-file reads — {name}[/bold]")
+
+    rounds = sorted({r.round_id for r in rows})
+    hosts = sorted({r.client_hostname for r in rows})
+    extensions = sorted({r.extension for r in rows if r.extension})
+
+    summary = Table(show_header=False, box=None)
+    summary.add_column("k")
+    summary.add_column("v", justify="right")
+    summary.add_row("rounds", f"{len(rounds):,}")
+    summary.add_row(
+        "round ids",
+        f"{rounds[0]}–{rounds[-1]}" if len(rounds) > 1 else str(rounds[0]),
+    )
+    summary.add_row("VMs", f"{len(hosts):,}")
+    # Distinct (host, instance) pairs: the cohort's size is readers per VM times
+    # VMs, and a VM whose service never came up contributes none.
+    summary.add_row("readers", f"{len({(r.client_hostname, r.instance) for r in rows}):,}")
+    summary.add_row("reads", f"{len(rows):,}")
+    if extensions:
+        summary.add_row("extensions", ", ".join(extensions))
+    # The one figure that says whether a swarm existed at all. A released `ant`
+    # reports no swarm, so its rows are `swarm_present = False` and their zeros
+    # are a property of the binary, not of the network.
+    reporting = sum(1 for r in rows if r.swarm_present)
+    summary.add_row("reads reporting a swarm", f"{reporting:,}/{len(rows):,}")
+    console.print(summary)
+
+    table = Table(title="By round")
+    table.add_column("Round", justify="right")
+    show_extension = bool(extensions)
+    if show_extension:
+        table.add_column("Extension")
+    table.add_column("Readers", justify="right")
+    table.add_column("OK", justify="right")
+    table.add_column("Fail", justify="right")
+    table.add_column("Skip", justify="right")
+    table.add_column("p50", justify="right")
+    table.add_column("p95", justify="right")
+    table.add_column("Peer-fed", justify="right")
+    table.add_column("Recs/peers", justify="right")
+    table.add_column("Bytes/peers", justify="right")
+    table.add_column("Recs served", justify="right")
+
+    grouped: dict[tuple, list] = {}
+    for row in rows:
+        grouped.setdefault((row.round_id, row.extension), []).append(row)
+    for round_id, extension in sorted(grouped, key=lambda k: (k[0], k[1] or "")):
+        group = grouped[(round_id, extension)]
+        ok = [r for r in group if r.status == OpRecordStatus.SUCCESS]
+        fail = [r for r in group if r.status == OpRecordStatus.FAILURE]
+        skip = [r for r in group if r.status == OpRecordStatus.SKIPPED]
+        durations = [float(r.total_ms) for r in ok if r.total_ms is not None]
+        peer_fed = sum(1 for r in group if (r.records_from_peers or 0) >= 1)
+        line = [str(round_id)]
+        if show_extension:
+            line.append(extension or "-")
+        line += [
+            str(len(group)),
+            str(len(ok)),
+            str(len(fail)),
+            str(len(skip)),
+            _fmt_hot_file_ms(percentile(durations, 0.50)),
+            _fmt_hot_file_ms(percentile(durations, 0.95)),
+            f"{peer_fed}/{len(group)}",
+            f"{sum(r.records_from_peers or 0 for r in group):,}",
+            f"{sum(r.bytes_from_peers or 0 for r in group):,}",
+            f"{sum(r.records_served or 0 for r in group):,}",
+        ]
+        table.add_row(*line)
+    console.print(table)
+
+    kinds: dict[str, int] = {}
+    for row in rows:
+        if row.error_kind:
+            kinds[row.error_kind] = kinds.get(row.error_kind, 0) + 1
+    if kinds:
+        kind_table = Table(title="By error_kind")
+        kind_table.add_column("error_kind")
+        kind_table.add_column("rows", justify="right")
+        for kind, count in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0])):
+            kind_table.add_row(kind, f"{count:,}")
+        console.print(kind_table)
 
 
 def _print_op_records_for_kind(

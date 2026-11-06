@@ -36,6 +36,7 @@ from saorsa_deploy.influx import (
     fetch_all_operation_points,
     fetch_all_prod_upload_points,
     fetch_browser_download_points,
+    fetch_hot_file_download_points,
 )
 from saorsa_deploy.influx_retention import binding_retention_seconds
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
@@ -257,6 +258,18 @@ def _dispatch(args, op_type: str) -> None:
     # `console_for` is quiet when the JSON is going to stdout, so a table or a
     # preamble cannot land in the caller's `jq` input.
     console = console_for(getattr(args, "json_out", None))
+    # Refused by name rather than resolved by precedence: the two cohorts are
+    # different instruments in different buckets, and silently printing one of
+    # them would leave an operator reading their own argv as a description of
+    # output it did not produce.
+    if getattr(args, "browser", False) and getattr(args, "hot_file", False):
+        console.print(
+            "[bold red]Error:[/bold red] --browser and --hot-file are mutually "
+            "exclusive. A real-browser cohort and a native reader cohort are "
+            "two instruments writing two measurements in two buckets; run the "
+            "command once for each."
+        )
+        sys.exit(2)
     kind = _resolve_kind(args.name, console)
 
     if kind == "prod-local-uploads":
@@ -312,6 +325,13 @@ def _dispatch(args, op_type: str) -> None:
     # empty table rather than the kind's own advisory.
     if op_type == "download" and getattr(args, "browser", False):
         _run_browser_rounds(args, console)
+        return
+
+    # The native hot-file cohort's own measurement, on the same footing and for
+    # the same reason. Checked after the prod kinds for the same reason too: no
+    # prod kind runs one.
+    if op_type == "download" and getattr(args, "hot_file", False):
+        _run_hot_file_rounds(args, console)
         return
 
     # Testnet (explicit "testnet" or unrecognised/empty kind — fall through
@@ -1077,6 +1097,223 @@ def _print_browser_summary(rounds: list[dict], name: str, console: Console) -> N
         "[dim]Per-chunk holder share, the stall distribution and the gates come "
         "from `analysis browser-reads`, which reads the recorded Postgres rows "
         "and so survives teardown.[/dim]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hot-file readers: per-round hot_file_download tables
+# ---------------------------------------------------------------------------
+
+
+def summarise_hot_file_rounds(points: list[dict]) -> list[dict]:
+    """One summary per ``(round_id, extension)``, oldest first.
+
+    Pure, so the renderer below is testable without an InfluxDB.
+
+    Split by EXTENSION as well as by round, which the browser view is not: the
+    whole point of the role is two cohorts on one deployment -- a branch build
+    on even rounds and a released control on odd -- and a row pooling them would
+    average the two arms of the comparison. The parities mean the two never
+    share a round in practice, so the split costs nothing and guards against the
+    case where they do.
+
+    ``skipped`` rows are counted and reported but excluded from the percentiles
+    and from the success denominator: a round that ran before the operator chose
+    a hot file is part of the series, not a failure.
+
+    ``extension`` is NOT on the Influx point (it is resolved from state at
+    record time), so the key here comes from whatever the caller put on the
+    point -- which, on the live Influx view, is nothing. The grouping is then
+    one bucket per round, exactly as the browser view's is.
+    """
+    grouped: dict[tuple, list[dict]] = {}
+    for point in points:
+        round_id = point.get("round_id")
+        if round_id is None:
+            continue
+        grouped.setdefault((round_id, point.get("extension")), []).append(point)
+
+    out: list[dict] = []
+    for round_id, extension in sorted(grouped, key=lambda k: (k[0], k[1] or "")):
+        rows = grouped[(round_id, extension)]
+        boundaries = [p["start_ns"] for p in rows if p.get("start_ns") is not None]
+        successes = [p for p in rows if p.get("status") == "success"]
+        failures = [p for p in rows if p.get("status") == "failure"]
+        skipped = [p for p in rows if p.get("status") == "skipped"]
+        durations = [float(p["total_ms"]) for p in successes if p.get("total_ms") is not None]
+        kinds: dict[str, int] = {}
+        for point in failures:
+            kind = point.get("error_kind") or "unknown"
+            kinds[kind] = kinds.get(kind, 0) + 1
+        out.append(
+            {
+                "round_id": round_id,
+                "extension": extension,
+                "boundary": (
+                    datetime.fromtimestamp(min(boundaries) / 1_000_000_000, tz=timezone.utc)
+                    if boundaries
+                    else None
+                ),
+                # Distinct (host, instance): one point per reader per round, so
+                # a count of rows would hide a duplicate and a count of readers
+                # would hide a VM that reported nothing.
+                "readers": len({(p.get("host"), p.get("instance")) for p in rows}),
+                "hosts": len({p.get("host") for p in rows}),
+                "success": len(successes),
+                "failure": len(failures),
+                "skipped": len(skipped),
+                "p50_ms": percentile(durations, 0.50),
+                "p95_ms": percentile(durations, 0.95),
+                "error_kinds": kinds,
+                # Readers that received at least one record from a PEER rather
+                # than from a node. The headline: it is the count of readers the
+                # swarm actually reached, which a sum alone cannot say (one
+                # reader served by a peer thousands of times reads the same as
+                # a thousand reached once).
+                "readers_with_peer_records": sum(
+                    1 for p in rows if (p.get("records_from_peers") or 0) >= 1
+                ),
+                "records_from_peers": sum(p.get("records_from_peers") or 0 for p in rows),
+                "bytes_from_peers": sum(p.get("bytes_from_peers") or 0 for p in rows),
+                "records_served": sum(p.get("records_served") or 0 for p in rows),
+            }
+        )
+    return out
+
+
+def _run_hot_file_rounds(args, console: Console) -> None:
+    creds = _resolve_influx(args, console)
+    if creds is None:
+        return
+    influx_url, influx_token, influx_org, influx_bucket = creds
+
+    console.print(
+        f"[bold]Querying {influx_url} (bucket={influx_bucket}, "
+        f"measurement=hot_file_download, window={args.window})...[/bold]"
+    )
+    try:
+        points = fetch_hot_file_download_points(
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            start=args.window,
+        )
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
+        sys.exit(1)
+
+    # Bound to a name, not inlined into the call: the warning needs it too.
+    # Rounds expire exactly as file operations do.
+    coverage = _window_coverage(
+        points,
+        args.window,
+        _resolve_retention(creds, (influx_bucket,), console),
+        deployment_started_at=_resolve_deployment_start(args.name),
+    )
+    _emit_ops_json(
+        args,
+        console,
+        deployment=args.name,
+        kind="hot_file",
+        op_type="download",
+        source="influx:hot_file_download",
+        points=points,
+        window=args.window,
+        coverage=coverage,
+    )
+    # BEFORE the empty-result return: "no rounds recorded yet" over a window
+    # whose rounds have expired is the one reading this must not give.
+    _warn_if_truncated(coverage, args.name, console)
+    if not points:
+        console.print(
+            f"[yellow]No hot-file reader rounds recorded yet for "
+            f"'{args.name}' (window {args.window}).[/yellow]"
+        )
+        return
+
+    rounds = summarise_hot_file_rounds(points)
+    if args.recent:
+        rounds = rounds[-10:]
+
+    if args.summary:
+        _print_hot_file_summary(rounds, args.name, console)
+        return
+
+    console.print(_hot_file_rounds_table(rounds, args.name))
+    _print_hot_file_summary(rounds, args.name, console)
+
+
+def _hot_file_rounds_table(rounds: list[dict], name: str) -> Table:
+    table = Table(
+        title=f"{name} — hot-file reader rounds ({len(rounds)} round(s))",
+        title_style="bold",
+    )
+    table.add_column("Round", justify="right")
+    table.add_column("Boundary (UTC)")
+    # Only when something carries one, so the deployment's own tier renders
+    # without a column of dashes.
+    show_extension = any(r.get("extension") for r in rounds)
+    if show_extension:
+        table.add_column("Extension")
+    table.add_column("Readers", justify="right")
+    table.add_column("OK", justify="right")
+    table.add_column("Fail", justify="right")
+    table.add_column("Skip", justify="right")
+    table.add_column("p50", justify="right")
+    table.add_column("p95", justify="right")
+    table.add_column("Peer-fed", justify="right")
+    table.add_column("Recs/peers", justify="right")
+    table.add_column("Bytes/peers", justify="right")
+    table.add_column("Recs served", justify="right")
+    table.add_column("Failures by kind")
+    for entry in rounds:
+        row = [str(entry["round_id"]), _fmt_time(entry["boundary"])]
+        if show_extension:
+            row.append(entry.get("extension") or "-")
+        row += [
+            str(entry["readers"]),
+            str(entry["success"]),
+            str(entry["failure"]),
+            str(entry["skipped"]),
+            _fmt_duration(entry["p50_ms"]),
+            _fmt_duration(entry["p95_ms"]),
+            f"{entry['readers_with_peer_records']}/{entry['readers']}",
+            f"{entry['records_from_peers']:,}",
+            f"{entry['bytes_from_peers']:,}",
+            f"{entry['records_served']:,}",
+            _fmt_error_kinds(entry["error_kinds"]),
+        ]
+        table.add_row(*row)
+    return table
+
+
+def _print_hot_file_summary(rounds: list[dict], name: str, console: Console) -> None:
+    attempted = sum(r["success"] + r["failure"] for r in rounds)
+    ok = sum(r["success"] for r in rounds)
+    readers = sum(r["readers"] for r in rounds)
+    peer_fed = sum(r["readers_with_peer_records"] for r in rounds)
+    table = Table(show_header=False, title=f"{name} — hot-file cohort totals")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("Rounds", f"{len({r['round_id'] for r in rounds}):,}")
+    table.add_row("Reads", f"{attempted + sum(r['skipped'] for r in rounds):,}")
+    # The completion rate excludes skips, exactly as the browser view's does.
+    table.add_row("Completion", f"{100.0 * ok / attempted:.2f}%" if attempted else "n/a")
+    table.add_row("Skipped", f"{sum(r['skipped'] for r in rounds):,}")
+    table.add_row(
+        "Reads fed by a peer",
+        f"{peer_fed:,}/{readers:,}" + (f" = {100.0 * peer_fed / readers:.2f}%" if readers else ""),
+    )
+    table.add_row("Records from peers", f"{sum(r['records_from_peers'] for r in rounds):,}")
+    table.add_row("Bytes from peers", f"{sum(r['bytes_from_peers'] for r in rounds):,}")
+    table.add_row("Records served", f"{sum(r['records_served'] for r in rounds):,}")
+    console.print(table)
+    console.print(
+        "[dim]A cohort running a RELEASED `ant` reports no swarm at all "
+        "(`swarm_present=0`), so its peer figures are zero by construction — "
+        "not a swarm that formed and shared nothing. The persisted view, which "
+        "survives teardown, is `deployments print-recorded-results --id`.[/dim]"
     )
 
 

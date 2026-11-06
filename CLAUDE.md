@@ -366,8 +366,9 @@ up`/`down` (journal, `--resume`, the lot). The five primitives take
 `--extension <name>` directly. Unrelated to `deployments extend`, which creates
 a second NODE fleet. Example:
 `deploy/saorsa_deploy/resources/profiles/clients-extension-example.yaml`. The
-`browser_downloaders` tier (below) is the one most often added this way — a hot
-file only exists once the deployment's uploaders have published one.
+`browser_downloaders` and `hot_file_readers` tiers (below) are the ones most
+often added this way — a hot file only exists once the deployment's uploaders
+have published one.
 
 - **Binaries: the version form only, and only without a WASM or browser tier.**
   By default the extension reuses what the deployment recorded at `clients
@@ -2051,6 +2052,88 @@ no fetch step and no S3 archive.
 
 See `deploy/README.md` §"Persisting the rounds", §"The trace: forwarded to
 Elasticsearch as it is produced" and §"The report (`analysis browser-reads`)".
+
+### The hot-file reader tier (`clients.hot_file_readers[]`, INFRA-531)
+
+The **native** mirror of the browser-downloader tier, and the instrument
+**ADR-0026** (V2-1892: readers of a file share its records with each other over
+WebRTC data channels, the nodes introducing them and staying the last seed) is
+measured with. N `ant file download` processes per VM, all reading the ONE file
+`clients select-hot-files` chose, each starting at its own offset after a
+wall-clock round boundary, on even or odd rounds only when asked. Role
+`hot-file-read`, unit `ant-hot-file-reader`, CLI `--hot-file-reader`, script
+`resources/scripts/hot_file_reader.py`. Works in a `kind: clients` extension,
+which is the normal way to use it.
+
+It exists because a swarm only forms when several readers read the **same** file
+at the **same** time, and `downloader.sh` — one process per VM, a random address
+out of the whole pool, sleep 10 s, repeat — never puts two readers on one file
+together.
+
+- **`instances` is capped at 8, and the cap is the VM's, not the network's.** A
+  native reader speaks QUIC and is not subject to the per-IP WebRTC session
+  quota the browser role is capped by; beyond eight concurrent downloads of one
+  file the box, not the network, is what is measured. ant-node admits a native
+  client's swarm requests at 8/s and 64 members per source host, so the readers
+  on one VM share one host budget — accepted for the run and deliberately not
+  something the role limits.
+- **`round_parity` (`even` | `odd` | `all`) is what lets two cohorts share a
+  deployment.** The DEV-01 run puts a branch-built `ant` on `even` and a
+  released 0.3.13 control on `odd`, so neither is ever inside the other's
+  swarm. A round another cohort owns produces **nothing** — no process, no
+  point, no log line beyond `round=<id> parity=skip`.
+- **The start offset is derived from the inventory**, not from a coordinator:
+  reader `i` on the VM with `client_index = k` starts at
+  `boundary + ((k−1) × instances + (i−1)) × start_stagger_secs`. It matters
+  because the CLI force-exits the moment a download completes, so a reader stops
+  sharing as soon as it finishes — overlapping them in time is the whole point.
+  **The arithmetic is not checked** (a long stagger over a long round is
+  legitimate), so `clients plan` / `deployments plan` print the last reader's
+  offset and warn when that plus the deadline exceeds the round.
+- **A released `ant` prints no `swarm` at all, and that is not a failure** —
+  it is half the comparison. `swarm_present` is the field that makes a zero
+  readable: without it a released binary's zero `records_from_peers` would be
+  indistinguishable from a swarm that formed and shared nothing. The twenty-five
+  counters are named once per layer and three tests pin the three lists together
+  (the script's, the Flux allowlist's and the table's) — a counter in one and
+  not another is a column that silently reads NULL forever.
+- **`clients select-hot-files` now records each file's `sha256`** (the pool
+  line's third field, `null` on a two-field WASM-published line), because by the
+  time a round has picked an address the line it came from is gone. A reader
+  with no hash records `verify_status = 2` — unverifiable, never a mismatch —
+  and a real mismatch is its own `error_kind` (`verify`), since a download that
+  fails is availability while one returning different bytes is correctness.
+  `print-hot-files` shows the first 12 hex; the browser harness ignores the key.
+- **Measurement `hot_file_download` in `testnet-metrics`, never `download`.**
+  The readers are NATIVE, so the deployment's ordinary bucket — not the WASM one
+  the browser cohort writes to — but a measurement of their own, so nothing can
+  average a synchronised cohort's reads of one file with a client's reads of
+  random ones. **One point per reader per round of this cohort's parity,
+  always**: a round with no point is itself a finding, which only reads that way
+  if a skip is a point.
+- **`clock_skew` and `network` are refused by name**; `rust_log` is accepted,
+  unlike on the browser role, because the transfers run in a Rust process whose
+  tracing subscriber there is something to configure — which is also why `ant` is
+  invoked with `-v` (it gates the subscriber behind it), and why the result is
+  the last stdout line that PARSES as JSON rather than the last line outright.
+- **Rows go in their own table** (`deployment_hot_file_download_records`,
+  revision `c3f8d41b6e92`), recorded in the SAME `record-results` pass as the
+  file ops. Not more rows in `deployment_download_records`: pooling them would
+  let any rate or percentile average the two and would push this cohort's
+  failures into the native hard floors `deployments compare` gates on.
+  `extension` **COALESCEs** on upsert, as the browser table's does — it comes
+  from state teardown deletes, and a re-run after `clients down` would otherwise
+  merge the branch cohort and the control. The hot-file selection is snapshotted
+  into `deploy_args.hot_file_readers_hot_files`, **skipped when the browser role
+  already recorded the same document** under `browser_hot_files`.
+- `deployments print-downloads --hot-file` is the live Influx view (one row per
+  round AND extension, unlike the browser view's — pooling two cohorts would
+  average the two arms), mutually exclusive with `--browser`;
+  `print-recorded-results` gains a "Hot-file reads" section; `slack-post`
+  renders the tier under `_Hot-file readers (native):_`. **No gate**: a swarm
+  figure has no calibration yet, and gating it would need one nobody has.
+
+See `deploy/README.md` §"Hot-file reader VMs (native, swarm cohort)".
 
 ### The pointer client tier (`clients.pointers[]`)
 

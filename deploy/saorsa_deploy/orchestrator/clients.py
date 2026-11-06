@@ -33,6 +33,7 @@ from __future__ import annotations
 from saorsa_deploy.client_roles import (
     BROWSER_DEFAULT_VM_SIZE,
     ROLE_BROWSER_DOWNLOAD,
+    ROLE_HOT_FILE_READ,
 )
 from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.orchestrator.steps import Step
@@ -181,6 +182,7 @@ _ROLE_FOR_LIST = {
     "wasm_downloaders": "wasm-download",
     "pointers": "pointer",
     "browser_downloaders": ROLE_BROWSER_DOWNLOAD,
+    "hot_file_readers": ROLE_HOT_FILE_READ,
 }
 
 #: Default VM size per role, mirroring the `clients infra` spec parsers. Only
@@ -232,6 +234,71 @@ def planned_client_vms(
                     }
                 )
     return vms
+
+
+def manifest_client_tiers(manifest: Manifest):
+    """The client block of any manifest kind that has one, or None.
+
+    Three kinds carry client tiers in three places -- a testnet's
+    ``testnet.clients``, an extension's ``extension.clients`` and a
+    ``kind: clients`` manifest's top-level ``clients`` -- and the notes below
+    are printed for all three, so the lookup lives here rather than being
+    repeated at each call site.
+    """
+    for holder in (manifest.testnet, manifest.extension):
+        if holder is not None and getattr(holder, "clients", None) is not None:
+            return holder.clients
+    return manifest.clients
+
+
+def hot_file_stagger_notes(manifest: Manifest) -> list[str]:
+    """One line per hot-file reader cohort, naming the LAST reader's offset.
+
+    `(VMs in the role x instances - 1) x start_stagger_secs`. Printed because
+    the arithmetic is not checked anywhere: the operator sizes the cohort, and a
+    stagger that walks the last reader's start past the round's own deadline is
+    a cohort whose later readers never overlap the earlier ones -- which is the
+    one thing the stagger exists to arrange. Refusing it would be wrong (a
+    deliberately long stagger over a long round is a legitimate shape), so it is
+    said out loud instead.
+
+    Grouped by ``(round_period_secs, download_timeout_secs, round_parity,
+    start_stagger_secs)``, not per entry: the offset is a property of the
+    COHORT, and two entries that agree on the schedule are one cohort however
+    many regions they span.
+
+    Pure, so `clients plan` and `deployments plan` print the same line.
+    """
+    entries = getattr(manifest_client_tiers(manifest), "hot_file_readers", None) or []
+    cohorts: dict[tuple, list] = {}
+    for entry in entries:
+        key = (
+            entry.round_period_secs,
+            entry.download_timeout_secs,
+            entry.round_parity,
+            entry.start_stagger_secs,
+            entry.instances,
+        )
+        cohorts.setdefault(key, []).append(entry)
+
+    notes: list[str] = []
+    for key in cohorts:
+        period, deadline, parity, stagger, instances = key
+        vms = sum(e.count for e in cohorts[key])
+        last = (vms * instances - 1) * stagger
+        note = (
+            f"hot-file readers: {vms} VM(s) x {instances} reader(s), round "
+            f"{period}s, parity {parity}, stagger {stagger}s — the last "
+            f"reader starts {last}s after the boundary"
+        )
+        if last + deadline > period:
+            note += (
+                f"; that plus the {deadline}s deadline exceeds the round "
+                f"({last + deadline}s > {period}s), so the last readers may "
+                f"not overlap the first"
+            )
+        notes.append(note)
+    return notes
 
 
 def vm_summary(manifest: Manifest) -> str:

@@ -42,6 +42,10 @@ from saorsa_db.models.host_metric_bucket import (
     DeploymentHostMetricBucket,
 )
 from saorsa_db.models.host_result import DeploymentHostResult
+from saorsa_db.models.hot_file_download_record import (
+    SWARM_COUNTER_COLUMNS,
+    DeploymentHotFileDownloadRecord,
+)
 from saorsa_db.models.log_event_count import (
     DEFAULT_PATTERN_SET,
     SOURCE_ELASTICSEARCH,
@@ -131,7 +135,9 @@ from saorsa_db.models.transfer_error_kind import (
 __all__ = [
     "BLOCKING_STATUSES",
     "BrowserDownloadErrorKind",
+    "SWARM_COUNTER_COLUMNS",
     "DeploymentBrowserDownloadRecord",
+    "DeploymentHotFileDownloadRecord",
     "POINTER_SUCCESS_OUTCOMES",
     "POINTER_WRITE_OPS",
     "DeploymentPointerRecord",

@@ -12,10 +12,18 @@ from rich.console import Console
 
 from saorsa_deploy.client_extension import client_vm_name
 from saorsa_deploy.client_roles import (
+    HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+    HOT_FILE_DEFAULT_INSTANCES,
+    HOT_FILE_DEFAULT_ROUND_PERIOD_SECS,
+    HOT_FILE_DEFAULT_START_STAGGER_SECS,
+    HOT_FILE_PARITY_ALL,
+    HOT_FILES_OBJECT_NAME,
     ROLE_BROWSER_DOWNLOAD,
+    ROLE_HOT_FILE_READ,
     ROLE_POINTER,
     ROLE_UPLOAD,
     is_browser,
+    is_hot_file_read,
     is_pointer,
     is_upload,
     is_wasm,
@@ -75,6 +83,14 @@ SCRIPTS_DIR = "/root/ant-client"
 #: key is a pointer that can never be updated again.
 POINTER_DATA_DIR = "/var/lib/ant-pointer"
 POINTER_UNIT = unit_for_role(ROLE_POINTER)
+#: Where a hot-file reader writes the file it is fetching, and where it keeps a
+#: FAILED download's `ant` output. Under the client data dir rather than beside
+#: the uploads, because a reader's file is deleted the moment its hash has been
+#: taken and nothing else ever reads it.
+HOT_FILE_DOWNLOAD_DIR = f"{CLIENT_DATA_DIR}/hot-file"
+HOT_FILE_LOG_DIR = "/var/log/ant-hot-file-reader"
+HOT_FILE_READER_UNIT = unit_for_role(ROLE_HOT_FILE_READ)
+HOT_FILE_READER_SCRIPT = "hot_file_reader.py"
 
 
 def os_hostnames_by_ip(
@@ -193,6 +209,32 @@ Type=simple
 EnvironmentFile=/etc/ant-client.env
 ExecStart=/usr/bin/python3 {SCRIPTS_DIR}/pointer_client.py
 Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _build_hot_file_reader_unit() -> str:
+    """systemd unit for the ant-hot-file-reader service.
+
+    ``Restart=on-failure`` like the transfer clients, not the pointer client's
+    ``Restart=always``: the service keeps no durable state, and a reader that
+    restarts simply rejoins the cohort at the next round boundary -- the round
+    is derived from the wall clock precisely so that costs nothing.
+    """
+    return f"""\
+[Unit]
+Description=Ant Hot-File Reader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/ant-client.env
+ExecStart=/usr/bin/python3 {SCRIPTS_DIR}/{HOT_FILE_READER_SCRIPT}
+Restart=on-failure
 RestartSec=10
 
 [Install]
@@ -401,6 +443,7 @@ class AntClientProvisioner:
                     "rust_log": rust_log,
                     "upload_presigned_url": "",
                     **(self._browser_env(c) if is_browser(role) else {}),
+                    **(self._hot_file_env(c) if is_hot_file_read(role) else {}),
                 }
         return ip_to_env
 
@@ -416,6 +459,33 @@ class AntClientProvisioner:
             "instances": client.get("instances", 4),
             "round_period_secs": client.get("round_period_secs", 600),
             "download_timeout_secs": client.get("download_timeout_secs", 300),
+        }
+
+    @staticmethod
+    def _hot_file_env(client: dict) -> dict:
+        """The five knobs one hot-file reader VM runs at.
+
+        Read from the client's own recorded spec, not from a shared default: two
+        cohorts in one deployment differ on purpose (a branch build on `even`
+        and a released control on `odd` is the point of the parity), and the
+        recorded value is the one `clients infra` matched the VM against.
+
+        Every key here must reach `/etc/ant-client.env` as its upper-cased name
+        -- the reader script reads them from the environment and nothing else
+        tells it what to do.
+        """
+        return {
+            "instances": client.get("instances") or HOT_FILE_DEFAULT_INSTANCES,
+            "round_period_secs": (
+                client.get("round_period_secs") or HOT_FILE_DEFAULT_ROUND_PERIOD_SECS
+            ),
+            "download_timeout_secs": (
+                client.get("download_timeout_secs") or HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS
+            ),
+            "round_parity": client.get("round_parity") or HOT_FILE_PARITY_ALL,
+            "start_stagger_secs": (
+                client.get("start_stagger_secs") or HOT_FILE_DEFAULT_START_STAGGER_SECS
+            ),
         }
 
     def _pointer_env(self, client: dict) -> dict:
@@ -759,6 +829,17 @@ class AntClientProvisioner:
             [browser.BROWSER_STDOUT_LOG, browser.BROWSER_STDERR_LOG],
             "browser_downloader",
         ),
+        # The reader service tees its own streams into these, exactly as the
+        # pointer service does. Its one line per download carries the round,
+        # the instance, the status, the kind and the swarm counters, so the
+        # forwarded log answers the same questions the bucket does.
+        ROLE_HOT_FILE_READ: (
+            [
+                "/var/log/ant-client-forward/hot-file-reader.stdout.log",
+                "/var/log/ant-client-forward/hot-file-reader.stderr.log",
+            ],
+            "hot_file_reader",
+        ),
     }
 
     #: Per role, the files to tail as JSON rather than as plain text. One role
@@ -932,6 +1013,11 @@ class AntClientProvisioner:
             f"TRANSFER_INTERVAL_SECS={env.get('transfer_interval_secs', 0)}; "
             f"POINTER_MAX={env.get('pointer_max', 0)}; "
             f'TRANSFERS_PRESIGNED_URL="{env.get("transfers_presigned_url", "")}"; '
+            f"INSTANCES={env.get('instances', 0)}; "
+            f"ROUND_PERIOD_SECS={env.get('round_period_secs', 0)}; "
+            f"DOWNLOAD_TIMEOUT_SECS={env.get('download_timeout_secs', 0)}; "
+            f'ROUND_PARITY="{env.get("round_parity", "")}"; '
+            f"START_STAGGER_SECS={env.get('start_stagger_secs', 0)}; "
             f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}" ;;'
         )
 
@@ -946,6 +1032,15 @@ class AntClientProvisioner:
         two more.
         """
         bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
+        # Unsigned HTTPS, the same base the browser harness reads the selection
+        # from: the bucket is public-read and the VM signs nothing, so a
+        # deliberately skewed clock cannot have its requests rejected. Constant
+        # per deployment, so it is in the heredoc rather than the case block.
+        hot_files_url = (
+            f"{addresses_base_url(self.deployment_name)}/{HOT_FILES_OBJECT_NAME}"
+            if self.deployment_name
+            else ""
+        )
         env_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
@@ -954,7 +1049,8 @@ case "$MY_IP" in
 PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0; BOOTSTRAP_CACHE=true; \
 FORWARD_LOGS=false; RUST_LOG=""; CREATE_INTERVAL_SECS=0; UPDATE_INTERVAL_SECS=0; \
 SWEEP_INTERVAL_SECS=0; CHAIN_FRACTION=0; TRANSFER_INTERVAL_SECS=0; POINTER_MAX=0; \
-TRANSFERS_PRESIGNED_URL=""; UPLOAD_PRESIGNED_URL="" ;;
+TRANSFERS_PRESIGNED_URL=""; INSTANCES=0; ROUND_PERIOD_SECS=0; DOWNLOAD_TIMEOUT_SECS=0; \
+ROUND_PARITY=""; START_STAGGER_SECS=0; UPLOAD_PRESIGNED_URL="" ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
@@ -990,6 +1086,15 @@ CHAIN_FRACTION=$CHAIN_FRACTION
 TRANSFER_INTERVAL_SECS=$TRANSFER_INTERVAL_SECS
 POINTER_MAX=$POINTER_MAX
 TRANSFERS_PRESIGNED_URL=$TRANSFERS_PRESIGNED_URL
+INSTANCES=$INSTANCES
+ROUND_PERIOD_SECS=$ROUND_PERIOD_SECS
+DOWNLOAD_TIMEOUT_SECS=$DOWNLOAD_TIMEOUT_SECS
+ROUND_PARITY=$ROUND_PARITY
+START_STAGGER_SECS=$START_STAGGER_SECS
+TESTNET_NAME={self.deployment_name}
+HOT_FILES_URL={hot_files_url}
+HOT_FILE_DOWNLOAD_DIR={HOT_FILE_DOWNLOAD_DIR}
+HOT_FILE_LOG_DIR={HOT_FILE_LOG_DIR}
 EVM_NETWORK={self.evm_network}
 RPC_URL={self.rpc_url}"""
 
@@ -1187,6 +1292,7 @@ ENV_EOF"""
             uploader_script = (scripts_dir / "uploader.sh").read_text()
             downloader_script = (scripts_dir / "downloader.sh").read_text()
             pointer_script = (scripts_dir / "pointer_client.py").read_text()
+            hot_file_script = (scripts_dir / HOT_FILE_READER_SCRIPT).read_text()
 
             add_op(
                 state,
@@ -1219,6 +1325,28 @@ ENV_EOF"""
                         f"chmod +x {SCRIPTS_DIR}/pointer_client.py",
                     ],
                     host=pointer_hosts,
+                )
+
+            # The hot-file reader workload, targeted at its own VMs only: it is
+            # a few hundred lines of Python a transfer client has no use for.
+            hot_file_ips = {
+                c["ip"] for c in self.clients if c.get("ip") and is_hot_file_read(c.get("role", ""))
+            }
+            hot_file_hosts = [
+                h for h in state.inventory.get_active_hosts() if h.name in hot_file_ips
+            ]
+            if hot_file_hosts:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Deploy hot-file reader script",
+                    commands=[
+                        f"mkdir -p {HOT_FILE_DOWNLOAD_DIR} {HOT_FILE_LOG_DIR}",
+                        f"cat > {SCRIPTS_DIR}/{HOT_FILE_READER_SCRIPT} << 'SCRIPT_EOF'\n"
+                        f"{hot_file_script}SCRIPT_EOF",
+                        f"chmod +x {SCRIPTS_DIR}/{HOT_FILE_READER_SCRIPT}",
+                    ],
+                    host=hot_file_hosts,
                 )
 
             if self.heaptrack_targets:
@@ -1305,6 +1433,7 @@ ENV_EOF"""
             uploader_unit = _build_uploader_unit()
             downloader_unit = _build_downloader_unit()
             pointer_unit = _build_pointer_unit()
+            hot_file_reader_unit = _build_hot_file_reader_unit()
 
             # Native roles only: a WASM host's unit is written by
             # _add_wasm_ops, and must not be overwritten here.
@@ -1331,15 +1460,21 @@ esac
 if [ "$ROLE" = "upload" ]; then
     cat > /etc/systemd/system/ant-uploader.service << 'UNIT_EOF'
 {uploader_unit}UNIT_EOF
-    rm -f /etc/systemd/system/ant-downloader.service /etc/systemd/system/{POINTER_UNIT}.service
+    rm -f /etc/systemd/system/ant-downloader.service /etc/systemd/system/{POINTER_UNIT}.service \
+/etc/systemd/system/{HOT_FILE_READER_UNIT}.service
 elif [ "$ROLE" = "{ROLE_POINTER}" ]; then
     cat > /etc/systemd/system/{POINTER_UNIT}.service << 'UNIT_EOF'
 {pointer_unit}UNIT_EOF
     rm -f /etc/systemd/system/ant-uploader.service /etc/systemd/system/ant-downloader.service
+elif [ "$ROLE" = "{ROLE_HOT_FILE_READ}" ]; then
+    cat > /etc/systemd/system/{HOT_FILE_READER_UNIT}.service << 'UNIT_EOF'
+{hot_file_reader_unit}UNIT_EOF
+    rm -f /etc/systemd/system/ant-uploader.service /etc/systemd/system/ant-downloader.service
 else
     cat > /etc/systemd/system/ant-downloader.service << 'UNIT_EOF'
 {downloader_unit}UNIT_EOF
-    rm -f /etc/systemd/system/ant-uploader.service /etc/systemd/system/{POINTER_UNIT}.service
+    rm -f /etc/systemd/system/ant-uploader.service /etc/systemd/system/{POINTER_UNIT}.service \
+/etc/systemd/system/{HOT_FILE_READER_UNIT}.service
 fi
 systemctl daemon-reload"""
 

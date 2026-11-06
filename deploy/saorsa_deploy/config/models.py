@@ -21,6 +21,13 @@ from saorsa_deploy.client_roles import (
     BROWSER_DEFAULT_ROUND_PERIOD_SECS,
     BROWSER_MAX_INSTANCES,
     BROWSER_MIN_ROUND_PERIOD_SECS,
+    HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+    HOT_FILE_DEFAULT_INSTANCES,
+    HOT_FILE_DEFAULT_ROUND_PERIOD_SECS,
+    HOT_FILE_DEFAULT_START_STAGGER_SECS,
+    HOT_FILE_MAX_INSTANCES,
+    HOT_FILE_MIN_ROUND_PERIOD_SECS,
+    HOT_FILE_PARITIES,
 )
 from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES as _WASM_MAX_FILE_BYTES
 from saorsa_deploy.providers import PROVIDERS
@@ -746,6 +753,96 @@ class BrowserDownloader(_Base):
         return self
 
 
+class HotFileReader(_Base):
+    """A VM running N native `ant file download` readers on one hot file.
+
+    The native mirror of :class:`BrowserDownloader`, and the instrument ADR-0026
+    (peer swarm: readers of one file share its records over WebRTC data
+    channels, with the nodes introducing them) is measured with. A swarm only
+    forms when several readers read the SAME file at the SAME time, and
+    `downloader.sh` -- one process per VM, a random address out of the whole
+    pool, sleep 10 s, repeat -- never puts two readers on one file together.
+
+    No file size and no wallet: it only reads, and what it reads is named by
+    `clients select-hot-files`, not by this entry.
+
+    `rust_log` IS accepted here, unlike on the browser role: the transfers run
+    in a Rust process whose tracing subscriber there is something to configure.
+    `clock_skew` and `network` are not fields -- the measurement is *when* each
+    reader read, so a shifted clock or a shaped link would distort the one thing
+    the stagger exists to arrange.
+    """
+
+    provider: str
+    region: str
+    vm_size: Optional[str] = None
+    # `ant` processes per VM. The cap is the VM's, not the network's (a native
+    # reader speaks QUIC and is not subject to the per-IP WebRTC session quota
+    # the browser role is capped by).
+    instances: int = HOT_FILE_DEFAULT_INSTANCES
+    # Rounds begin on wall-clock multiples of this, which is what makes the
+    # cohort simultaneous without any coordination between VMs.
+    round_period_secs: int = HOT_FILE_DEFAULT_ROUND_PERIOD_SECS
+    # Deadline per download, measured from the ROUND BOUNDARY rather than from
+    # the reader's own staggered start: the point of the deadline is that every
+    # reader is finished before the next round is due.
+    download_timeout_secs: int = HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS
+    # `even` | `odd` | `all`. Two cohorts on one deployment -- a branch build on
+    # `even` and a released control on `odd` -- then never read the same file at
+    # the same moment, so neither is inside the other's swarm.
+    round_parity: str = "all"
+    # Seconds between consecutive reader starts, cohort-wide. The CLI force-exits
+    # when a download completes, so a reader stops sharing the moment it
+    # finishes; overlapping the readers in time is the whole point of the
+    # stagger.
+    start_stagger_secs: int = HOT_FILE_DEFAULT_START_STAGGER_SECS
+    forward_logs: Optional[bool] = None
+    rust_log: Optional[str] = None
+    # Identical VMs to create from this entry, with consecutive client_index
+    # values -- as on the browser role, and for the same reason: a cohort is N
+    # VMs of one shape and listing them individually is a diff nobody reviews.
+    count: int = 1
+
+    @model_validator(mode="after")
+    def _within_the_limits(self) -> "HotFileReader":
+        if self.count < 1:
+            raise ValueError(
+                f"clients.hot_file_readers: count must be >= 1, got {self.count}. "
+                "Omit the key for a single VM."
+            )
+        if not 1 <= self.instances <= HOT_FILE_MAX_INSTANCES:
+            raise ValueError(
+                f"clients.hot_file_readers: instances must be between 1 and "
+                f"{HOT_FILE_MAX_INSTANCES}, got {self.instances}. Each instance is "
+                f"a concurrent `ant file download` of the same file on one VM; "
+                f"beyond that the VM, not the network, is what is being measured."
+            )
+        if self.round_period_secs < HOT_FILE_MIN_ROUND_PERIOD_SECS:
+            raise ValueError(
+                f"clients.hot_file_readers: round_period_secs must be >= "
+                f"{HOT_FILE_MIN_ROUND_PERIOD_SECS}, got {self.round_period_secs}."
+            )
+        if self.download_timeout_secs >= self.round_period_secs:
+            raise ValueError(
+                f"clients.hot_file_readers: download_timeout_secs "
+                f"({self.download_timeout_secs}) must be < round_period_secs "
+                f"({self.round_period_secs}), or a round can still be running when "
+                "the next one is due and the cohort stops being simultaneous."
+            )
+        if self.round_parity not in HOT_FILE_PARITIES:
+            raise ValueError(
+                f"clients.hot_file_readers: round_parity must be one of "
+                f"{', '.join(HOT_FILE_PARITIES)}, got '{self.round_parity}'."
+            )
+        if self.start_stagger_secs < 0:
+            raise ValueError(
+                f"clients.hot_file_readers: start_stagger_secs must be >= 0 "
+                f"(0 = every reader starts on the boundary), got "
+                f"{self.start_stagger_secs}."
+            )
+        return self
+
+
 class Clients(_Base):
     uploaders: list[Uploader] = []
     downloaders: list[Downloader] = []
@@ -764,6 +861,11 @@ class Clients(_Base):
     # of what is already in the pool, so a cohort is added to a deployment whose
     # uploads have already happened -- which is the only time a hot file exists.
     browser_downloaders: list[BrowserDownloader] = []
+    # Native hot-file readers. Exempt from the pairing rule for the same reason
+    # the browser role is: the file they read is named by
+    # `clients select-hot-files` out of what is already in the pool, so a cohort
+    # is added to a deployment whose uploads have already happened.
+    hot_file_readers: list[HotFileReader] = []
 
     @model_validator(mode="after")
     def _both_roles(self) -> "Clients":
@@ -799,6 +901,7 @@ class Clients(_Base):
             *self.wasm_downloaders,
             *self.pointers,
             *self.browser_downloaders,
+            *self.hot_file_readers,
         ]
 
     @property
@@ -811,6 +914,8 @@ class Clients(_Base):
         WebRTC-Direct addresses collected before `clients provision`. The
         uploader/downloader PAIRING rule is checked on the two wasm-* lists
         alone and is unaffected.
+
+        False for the hot-file readers: they are native, and run `ant`.
         """
         return bool(self.wasm_uploaders or self.wasm_downloaders or self.browser_downloaders)
 
@@ -850,6 +955,7 @@ class ClientsExtensionSpec(_Base):
     wasm_downloaders: list[WasmDownloader] = []
     pointers: list[PointerClient] = []
     browser_downloaders: list[BrowserDownloader] = []
+    hot_file_readers: list[HotFileReader] = []
 
     @model_validator(mode="after")
     def _at_least_one_tier(self) -> "ClientsExtensionSpec":
@@ -857,7 +963,7 @@ class ClientsExtensionSpec(_Base):
             raise ValueError(
                 "clients: at least one of uploaders / downloaders / "
                 "wasm_uploaders / wasm_downloaders / pointers / "
-                "browser_downloaders must be non-empty "
+                "browser_downloaders / hot_file_readers must be non-empty "
                 "(an extension with no VMs would only stand in the way of a "
                 "`deployments down`)"
             )
@@ -872,6 +978,7 @@ class ClientsExtensionSpec(_Base):
             *self.wasm_downloaders,
             *self.pointers,
             *self.browser_downloaders,
+            *self.hot_file_readers,
         ]
 
     @property
@@ -884,6 +991,8 @@ class ClientsExtensionSpec(_Base):
         WebRTC-Direct addresses collected before `clients provision`. The
         uploader/downloader PAIRING rule is checked on the two wasm-* lists
         alone and is unaffected.
+
+        False for the hot-file readers: they are native, and run `ant`.
         """
         return bool(self.wasm_uploaders or self.wasm_downloaders or self.browser_downloaders)
 
@@ -940,9 +1049,15 @@ def _require_client_binaries(clients, binaries, kind: str) -> None:
     """
     if clients is None:
         return
-    if (clients.uploaders or clients.downloaders or clients.pointers) and binaries.ant is None:
-        # Pointer clients drive the native `ant pointer` subcommands, so they
-        # need `ant` for the same reason the native transfer clients do.
+    if (
+        clients.uploaders
+        or clients.downloaders
+        or clients.pointers
+        or getattr(clients, "hot_file_readers", None)
+    ) and binaries.ant is None:
+        # Pointer clients drive the native `ant pointer` subcommands, and the
+        # hot-file readers drive `ant file download`, so both need `ant` for the
+        # same reason the native transfer clients do.
         raise ValueError(f"{kind}.binaries.ant is required when clients are configured")
     if clients.has_wasm:
         if binaries.ant_wasm is None:

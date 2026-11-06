@@ -173,6 +173,9 @@ class TestCandidateSelection:
                 "bytes": FIFTY_MIB,
                 "source_key": "upload-lon1-1.txt",
                 "line": 1,
+                # None, not "": a two-field line has nothing to verify against,
+                # and the reader has to tell that from a mismatch (INFRA-531).
+                "sha256": None,
             }
         ]
 
@@ -199,21 +202,29 @@ class TestCandidateSelection:
 
 class TestPoolLineParsing:
     def test_an_address_and_a_size(self):
-        assert hot_files.parse_pool_line(f"{_addr(1)} 1024") == (_addr(1), 1024)
+        # Two fields: no hash to carry, so the third element is None.
+        assert hot_files.parse_pool_line(f"{_addr(1)} 1024") == (_addr(1), 1024, None)
 
     def test_the_native_uploaders_three_field_line(self):
-        # `<address> <bytes> <sha256>`, verbatim from run 681. The hash is for
-        # `downloader.sh` to verify the bytes it got back; it is nothing to the
-        # hot-file selector, which reads the first two fields and stops.
+        # `<address> <bytes> <sha256>`, verbatim from run 681. The hash is
+        # CARRIED now (INFRA-531): by the time a hot-file round has picked an
+        # address the line it came from is gone, so a reader that wants to
+        # verify the bytes it got back has to be handed the hash in the
+        # selection.
         assert hot_files.parse_pool_line(RUN_681_LINES[0]) == (
             "dca2d2ab6cc24da56f69993719b6fc81882631f85b733a64ae6d2fac85b07711",
             52428800,
+            "0eb8f9ec44481eed8ed640fa00df2e06fd15d6be0b8d980f2f59548c9a6f78f4",
         )
 
     def test_trailing_fields_beyond_the_hash_are_ignored_too(self):
         # A field count is not the rule: whatever a future producer appends,
-        # the first two fields are the address and the size.
-        assert hot_files.parse_pool_line(f"{_addr(1)} 1024 deadbeef extra") == (_addr(1), 1024)
+        # the first three fields are the address, the size and the hash.
+        assert hot_files.parse_pool_line(f"{_addr(1)} 1024 deadbeef extra") == (
+            _addr(1),
+            1024,
+            "deadbeef",
+        )
 
     def test_case_is_normalised(self):
         assert hot_files.parse_pool_line(f"{_addr(1).upper()} 1024")[0] == _addr(1)
@@ -223,6 +234,45 @@ class TestPoolLineParsing:
     @pytest.mark.parametrize("line", ["", "   ", _addr(1), f"{_addr(1)} notanumber", "a b c"])
     def test_anything_else_is_not_a_candidate_line(self, line):
         assert hot_files.parse_pool_line(line) is None
+
+
+class TestSha256InTheSelection:
+    """The hash the native uploader published, carried into the selection.
+
+    INFRA-531: by the time a hot-file round has picked an address the pool line
+    it came from is gone, and an address alone cannot say what bytes were
+    published under it. So the hash travels in the document, and a reader with
+    none records `verify_status=2` -- unverifiable, never a mismatch.
+    """
+
+    def test_a_three_field_line_carries_its_hash(self):
+        s3 = _pool(**{"upload-lon1-1.txt": f"{RUN_681_LINES[0]}\n"})
+        doc = hot_files.select_hot_files("DEV-01", count=1, size_mb=50, s3=s3)
+        assert doc["files"][0]["sha256"] == RUN_681_LINES[0].split()[2]
+
+    def test_a_two_field_line_carries_null(self):
+        # The WASM uploaders publish two fields into this same shared pool.
+        s3 = _pool(**{"upload-lon1-1.txt": f"{_addr(1)} {FIFTY_MIB}\n"})
+        doc = hot_files.select_hot_files("DEV-01", count=1, size_mb=50, s3=s3)
+        assert doc["files"][0]["sha256"] is None
+
+    def test_a_mixed_pool_carries_each_line_s_own_answer(self):
+        s3 = _pool(
+            **{
+                "upload-lon1-1.txt": f"{RUN_681_LINES[0]}\n",
+                "upload-wasm-1.txt": f"{_addr(1)} {FIFTY_MIB}\n",
+            }
+        )
+        doc = hot_files.select_hot_files("DEV-01", count=1, size_mb=50, s3=s3)
+        # Only the native `upload-*` keys are candidates, so the WASM-published
+        # key is not even looked at -- but the native one still carries its hash.
+        assert [f["sha256"] for f in doc["files"]] == [RUN_681_LINES[0].split()[2]]
+
+    def test_the_hash_is_lower_cased(self):
+        upper = f"{_addr(1)} {FIFTY_MIB} {'AB' * 32}"
+        s3 = _pool(**{"upload-lon1-1.txt": f"{upper}\n"})
+        doc = hot_files.select_hot_files("DEV-01", count=1, size_mb=50, s3=s3)
+        assert doc["files"][0]["sha256"] == "ab" * 32
 
 
 class TestCommands:
@@ -274,6 +324,60 @@ class TestCommands:
             cmd_select_hot_files(self._args(count=5, size_mb=50))
         assert exc.value.code == 2
         assert s3.puts == []
+
+    def test_print_shows_the_first_twelve_hex_of_the_hash(self, monkeypatch, capsys):
+        s3 = _pool(
+            **{
+                HOT_FILES_OBJECT_NAME: json.dumps(
+                    {
+                        "deployment": "DEV-01",
+                        "selected_at": "2026-10-18T12:00:00Z",
+                        "files": [
+                            {
+                                "index": 0,
+                                "address": _addr(1),
+                                "bytes": FIFTY_MIB,
+                                "source_key": "upload-lon1-1.txt",
+                                "line": 1,
+                                "sha256": RUN_681_LINES[0].split()[2],
+                            }
+                        ],
+                    }
+                )
+            }
+        )
+        monkeypatch.setattr(hot_files, "_s3", lambda: s3)
+        cmd_print_hot_files(self._args())
+        out = capsys.readouterr().out
+        assert "sha256" in out
+        assert RUN_681_LINES[0].split()[2][:12] in out
+
+    def test_print_shows_a_dash_when_there_is_no_hash(self, monkeypatch, capsys):
+        # "-", not blank: the reader records that download as unverifiable, not
+        # as a mismatch, and the table has to say so.
+        s3 = _pool(
+            **{
+                HOT_FILES_OBJECT_NAME: json.dumps(
+                    {
+                        "deployment": "DEV-01",
+                        "selected_at": "2026-10-18T12:00:00Z",
+                        "files": [
+                            {
+                                "index": 0,
+                                "address": _addr(1),
+                                "bytes": FIFTY_MIB,
+                                "source_key": "upload-lon1-1.txt",
+                                "line": 1,
+                                "sha256": None,
+                            }
+                        ],
+                    }
+                )
+            }
+        )
+        monkeypatch.setattr(hot_files, "_s3", lambda: s3)
+        cmd_print_hot_files(self._args())
+        assert " - " in capsys.readouterr().out
 
     def test_print_renders_the_selection(self, monkeypatch, capsys):
         s3 = _pool(

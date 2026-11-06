@@ -932,6 +932,30 @@ def main(argv=None):
         "files selected with `clients select-hot-files`.",
     )
     clients_infra_parser.add_argument(
+        "--hot-file-reader",
+        type=str,
+        action="append",
+        default=[],
+        help="Hot-file reader VM spec: "
+        "'provider:region[:vm_size][:instances=N][:round_period_secs=N]"
+        "[:download_timeout_secs=N][:round_parity=even|odd|all]"
+        "[:start_stagger_secs=N][:forward_logs=BOOL][:rust_log=VALUE]'. Runs N "
+        "NATIVE `ant file download` processes per VM, all reading the ONE hot "
+        "file `clients select-hot-files` chose, each starting at its own offset "
+        "after a wall-clock round boundary — the native mirror of "
+        "--browser-downloader, and the instrument ADR-0026's peer swarm is "
+        "measured with (a swarm only forms when several readers read the same "
+        "file at the same time, which downloader.sh never does). instances "
+        "defaults to 4 and is capped at 8; round_period_secs defaults to 600 "
+        "(minimum 120) and download_timeout_secs to 300, which must be less "
+        "than it. round_parity (default all) gives two cohorts on one "
+        "deployment — a branch build on even, a released control on odd — "
+        "rounds they never share. start_stagger_secs (default 0) spaces the "
+        "cohort's reader starts: reader i on the VM with client_index k starts "
+        "at boundary + ((k-1) x instances + (i-1)) x stagger. rust_log, if "
+        "given, must be last.",
+    )
+    clients_infra_parser.add_argument(
         "--force",
         action="store_true",
         help="Delete stale Terraform state files and proceed",
@@ -1813,6 +1837,21 @@ def main(argv=None):
             "invocation — a synchronised cohort reading one file and a client "
             "drawing random files are two unlike workloads, so nothing should "
             "render them in one table."
+        ),
+    )
+    deployments_print_downloads_parser.add_argument(
+        "--hot-file",
+        action="store_true",
+        help=(
+            "Print the hot-file reader cohort's rounds (the "
+            "`hot_file_download` measurement) instead of the native/WASM "
+            "download operations: one row per round and extension with readers "
+            "reporting, status counts, p50/p95 of the successes and the swarm "
+            "figures (readers that received records from a peer, and the summed "
+            "records/bytes from peers and records served). Mutually exclusive "
+            "with --browser and with the native view — a synchronised cohort "
+            "reading one file and a client drawing random files are two unlike "
+            "workloads, so nothing should render them in one table."
         ),
     )
 

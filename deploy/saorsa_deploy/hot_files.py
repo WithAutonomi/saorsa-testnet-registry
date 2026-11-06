@@ -22,7 +22,12 @@ A pool line is ``<address> <bytes> [<sha256>]``. Two producers write into the
 one shared pool and they write different numbers of fields: ``uploader.sh``
 publishes all three (the hash is what ``downloader.sh`` checks the bytes it got
 back against), the WASM uploaders publish the first two. So every reader of the
-pool — this one included — takes the first two fields and ignores the rest.
+pool — this one included — requires only the first two fields; the third is
+carried through to the selection when it is there and is ``null`` when it is
+not (INFRA-531), because by the time a round has picked an address the line it
+came from is gone and an address alone cannot say what bytes were published
+under it. A reader with no hash records ``verify_status=2`` — unverifiable, not
+a mismatch.
 """
 
 from __future__ import annotations
@@ -65,6 +70,11 @@ class Candidate:
     bytes: int
     source_key: str
     line: int
+    #: The SHA-256 the uploader published as the line's third field, or None
+    #: when the line has only two (every WASM-uploaded file, and every native
+    #: line published before the hash was added). None, never "": a reader has
+    #: to tell "nothing to check against" from "checked".
+    sha256: "str | None" = None
 
 
 def addresses_prefix(deployment: str) -> str:
@@ -99,8 +109,8 @@ def _s3():
     return boto3.client("s3")
 
 
-def parse_pool_line(line: str) -> tuple[str, int] | None:
-    """``<address> <bytes> [<sha256>]`` → ``(address, bytes)``, or None.
+def parse_pool_line(line: str) -> tuple[str, int, "str | None"] | None:
+    """``<address> <bytes> [<sha256>]`` → ``(address, bytes, sha256_or_None)``.
 
     Two or more fields with a numeric second field, and **anything after the
     second is ignored** rather than counted: the native ``uploader.sh`` writes
@@ -121,7 +131,8 @@ def parse_pool_line(line: str) -> tuple[str, int] | None:
     address, size = fields[0], fields[1]
     if not size.isdigit():
         return None
-    return address.lower(), int(size)
+    sha256 = fields[2].lower() if len(fields) >= 3 and fields[2] else None
+    return address.lower(), int(size), sha256
 
 
 def collect_candidates(deployment: str, size_bytes: int, *, s3=None) -> list[Candidate]:
@@ -151,10 +162,18 @@ def collect_candidates(deployment: str, size_bytes: int, *, s3=None) -> list[Can
             parsed = parse_pool_line(raw)
             if parsed is None:
                 continue
-            address, size = parsed
+            address, size, sha256 = parsed
             if size != size_bytes:
                 continue
-            out.append(Candidate(address=address, bytes=size, source_key=name, line=lineno))
+            out.append(
+                Candidate(
+                    address=address,
+                    bytes=size,
+                    source_key=name,
+                    line=lineno,
+                    sha256=sha256,
+                )
+            )
     return out
 
 
@@ -174,6 +193,12 @@ def build_document(
                 "bytes": c.bytes,
                 "source_key": c.source_key,
                 "line": c.line,
+                # Carried so a reader can verify the bytes it got back without
+                # re-reading the pool line (which it cannot: by then it has only
+                # the address). `null` when the publisher wrote no hash --
+                # unverifiable, which is not the same as a mismatch. Existing
+                # readers of this document (the browser harness) ignore the key.
+                "sha256": c.sha256,
             }
             for index, c in enumerate(selected)
         ],

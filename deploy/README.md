@@ -897,7 +897,8 @@ clients:                         # same per-entry grammar as a testnet manifest
   wasm_uploaders: []
   wasm_downloaders: []
   pointers: []
-  browser_downloaders: []        # the hot-read cohort; `count:` works here
+  browser_downloaders: []        # the hot-read cohort (Chromium); `count:` works here
+  hot_file_readers: []           # the NATIVE hot-read cohort; `count:` works here
 ```
 
 A committed example is at `deploy/saorsa_deploy/resources/profiles/clients-extension-example.yaml`.
@@ -927,7 +928,7 @@ and that path is byte-identical to before.
 - At least one role list must be non-empty.
 - `name:` must match `^[A-Za-z0-9-]+$` and must not begin with a client role
   (`upload`, `download`, `wasm-upload`, `wasm-download`, `pointer`,
-  `browser-download`): the tfstate key is
+  `browser-download`, `hot-file-read`): the tfstate key is
   `<prefix>-<tf name>-<role>-<region>-<index>.tfstate`, so
   `DEV-01-upload-extra-download-lon1-1` would parse as role `upload` of DEV-01
   and the deployment's own orphan-recovery scan would adopt the extension's VM.
@@ -1154,12 +1155,15 @@ requires.
 
 Client VMs run the ant binary as long-running upload-or-download workers against a testnet. Each VM runs *either* an uploader *or* a downloader — not both — and the downloader VMs pull addresses produced by uploaders through a per-testnet S3 folder.
 
-Three further client roles exist and are documented separately: the WASM
+Four further client roles exist and are documented separately: the WASM
 (browser-path) pair below; the **browser downloader** (`--browser-downloader` /
 `clients.browser_downloaders[]`), which runs real headless Chromium instances
-against one chosen hot file — see "Browser client VMs"; and the **pointer** role
-(`--pointer` / `clients.pointers[]`), which exercises paid mutable references
-rather than file transfers — see "Pointer client VMs".
+against one chosen hot file — see "Browser client VMs"; the **hot-file reader**
+(`--hot-file-reader` / `clients.hot_file_readers[]`), which is the NATIVE mirror
+of that and is how the ADR-0026 peer swarm is measured — see "Hot-file reader
+VMs"; and the **pointer** role (`--pointer` / `clients.pointers[]`), which
+exercises paid mutable references rather than file transfers — see "Pointer
+client VMs".
 
 Commands:
 
@@ -1167,7 +1171,7 @@ Commands:
 - `clients provision` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM). For each uploader, generates a fresh Arbitrum Sepolia EOA wallet, transfers the configured ANT + ETH from the funding wallet (`--wallet-secret-key` / `ANT_DEPLOY_SECRET_KEY`), persists wallet info in S3 client state, and writes the per-uploader secret key into `/etc/ant-client.env`. Idempotent: re-runs reuse wallets already recorded in client state. Skipped under `--prod`.
 - `clients start` / `clients stop` — start or stop the appropriate service per-VM based on role.
 - `clients destroy` — drains every per-uploader wallet (ANT + ETH back to the funding wallet on Arbitrum Sepolia, less a small ETH gas reserve), then tears down VMs and wipes the per-testnet addresses folder at `s3://saorsa-testnet-addresses/saorsa-deploy/addresses/<testnet>/`. Drain failures abort the destroy so VMs and state remain available for retry — pass `--wallet-secret-key` (or set `ANT_DEPLOY_SECRET_KEY`) so funds know where to return.
-- `clients clean` — remove services + artefacts without destroying the VMs. It is handed IPs, never roles, so it stops and removes **every** role's unit (`ant-uploader`, `ant-downloader`, `ant-wasm-uploader`, `ant-wasm-downloader`, `ant-pointer`, `ant-browser-downloader`) — a role missing from that list leaves its service running on a "cleaned" VM.
+- `clients clean` — remove services + artefacts without destroying the VMs. It is handed IPs, never roles, so it stops and removes **every** role's unit (`ant-uploader`, `ant-downloader`, `ant-wasm-uploader`, `ant-wasm-downloader`, `ant-pointer`, `ant-browser-downloader`, `ant-hot-file-reader`) — a role missing from that list leaves its service running on a "cleaned" VM.
 
 Uploader flow (`uploader.sh`): uploads a random file via `ant`, appends the returned address to a local tail buffer capped at `ADDRESSES_TAIL_SIZE` (default 10k), and flushes the buffer to `upload-<region>-<client_index>.txt` under the testnet's addresses prefix every `S3_FLUSH_EVERY_N` addresses or `S3_FLUSH_INTERVAL_SECS` seconds, whichever comes first. The flush goes through a **presigned PUT URL** minted by `clients provision` (SigV4 max expiry: 7 days — re-provision to refresh on longer-lived testnets), so it keeps working on clock-skewed VMs whose own SigV4-signed requests S3 rejects (~15min tolerance); when no URL is provisioned it falls back to the signed `aws s3 cp` path.
 
@@ -1528,10 +1532,19 @@ Candidates are every line in the deployment's own **native** `upload-*.txt` pool
 keys whose declared size is **exactly** `size-mb × 1048576` (binary, matching an
 uploader's `file_size_mb`), ordered by `(key name, line number)` — lines are
 appended as each upload completes, so that is upload order and the first N are
-the oldest files of that size. The selector reads `<address> <bytes>` from each
-line and ignores the trailing `sha256` the native uploader publishes after them.
-A bare line with no size is never a candidate: unknown is not a match for any
-size.
+the oldest files of that size. The selector requires only `<address> <bytes>`
+from each line; a bare line with no size is never a candidate (unknown is not a
+match for any size).
+
+**The `sha256` the native uploader publishes as the third field is carried into
+the selection** (INFRA-531), as `"sha256": "<hex>"` per entry, or `null` when
+the line has only two fields — which is every WASM-uploaded file, and every
+native line published before the hash existed. It is carried rather than looked
+up afterwards because by the time a round has picked an address the pool line it
+came from is gone, and an address alone cannot say what bytes were published
+under it. A reader handed `null` records `verify_status = 2` — unverifiable,
+which is **not** a mismatch. `print-hot-files` shows the first 12 hex, or `-`.
+The browser harness ignores the key.
 
 The result is written once, to
 `s3://saorsa-testnet-addresses/saorsa-deploy/addresses/<deployment>/browser-hot-files.json`:
@@ -1539,7 +1552,7 @@ The result is written once, to
 ```json
 {"deployment": "DEV-01", "selected_at": "2026-10-18T12:00:00Z", "size_bytes": 52428800,
  "files": [{"index": 0, "address": "<hex>", "bytes": 52428800,
-            "source_key": "upload-sgp-1.txt", "line": 1}]}
+            "source_key": "upload-sgp-1.txt", "line": 1, "sha256": "<hex>"}]}
 ```
 
 - Fewer than `--count` candidates → prints how many it found, writes **nothing**,
@@ -1958,6 +1971,276 @@ snapshot; both **before** teardown, because the report also reads the forwarded
 trace records out of the run's Elasticsearch. The 1.5.0 procedure had a
 `clients fetch-browser-traces` step between them, which on DEV-01 (id 685) ran
 2 h 47 min and put the run past its ceiling; it no longer exists.
+
+### Hot-file reader VMs (native, swarm cohort)
+
+The native mirror of the browser cohort above: N `ant file download` processes
+per VM, all reading the ONE file `clients select-hot-files` chose, each starting
+at its own offset after a wall-clock round boundary, on even or odd rounds only
+when asked. Role `hot-file-read`, unit `ant-hot-file-reader`, CLI
+`--hot-file-reader`, manifest `clients.hot_file_readers[]`.
+
+It exists because **ADR-0026** (V2-1892: readers of a file share its records
+with each other over WebRTC data channels, the nodes introducing them and
+staying the last seed) only has anything to measure when several readers read
+the **same** file at the **same** time. `downloader.sh` runs one process per VM
+and picks a random address out of the whole pool, so it never puts two readers
+on one file together; the browser role does arrange it, but only inside
+Chromium. Works in a `kind: clients` extension too, which is the normal way to
+use it — a hot file only exists once the deployment's uploaders have published
+one.
+
+```yaml
+clients:
+  hot_file_readers:
+    - provider: digital_ocean      # any provider the other client roles accept
+      region: lon1
+      vm_size: s-2vcpu-4gb         # default (no Chromium, no WASM memory)
+      instances: 4                 # `ant` processes per VM, 1..8. Default 4
+      round_period_secs: 600       # rounds start on wall-clock multiples. Default 600, min 120
+      download_timeout_secs: 420   # deadline per download, from the ROUND BOUNDARY. Default 300; < round_period_secs
+      round_parity: even           # even | odd | all. Default all
+      start_stagger_secs: 2        # seconds between consecutive reader starts, cohort-wide. Default 0
+      forward_logs: true           # service stdout/stderr → the deployment's Elasticsearch
+      rust_log: info               # RUST_LOG for the `ant` processes
+      count: 1                     # identical VMs from this entry, consecutive client_index
+```
+
+The CLI spec is
+`--hot-file-reader provider:region[:vm_size][:instances=N][:round_period_secs=N][:download_timeout_secs=N][:round_parity=even|odd|all][:start_stagger_secs=N][:forward_logs=BOOL][:rust_log=VALUE]`,
+repeatable; `rust_log` must be the last token (its value can contain `:`).
+`count:` is manifest-only — the orchestrator expands it to one repeated flag per
+VM, because `clients infra` allocates one `client_index` per flag and a reader's
+start offset is derived from it.
+
+| key | default | refuses |
+| -- | -- | -- |
+| `instances` | 4 | outside 1..8 |
+| `round_period_secs` | 600 | below 120 |
+| `download_timeout_secs` | 300 | `>= round_period_secs` |
+| `round_parity` | `all` | anything but `even` / `odd` / `all` |
+| `start_stagger_secs` | 0 | negative |
+| `count` | 1 | below 1 |
+
+**`clock_skew` and `network` are not fields, and the spec parser rejects the
+tokens by name.** What is measured is *when* each reader read and what its swarm
+did, and a shifted clock or a shaped link would distort exactly that. `rust_log`
+**is** accepted, unlike on the browser role: the transfers run in a Rust process
+whose tracing subscriber there is something to configure.
+
+#### Three facts the design rests on
+
+- **`ant --json file download` prints `swarm` and `swarm_rooms` on
+  `feat/peer-swarm`, and a released `ant` (0.3.13) prints neither.** Both are
+  treated as absent rather than as an error — that is what lets the control
+  cohort of a branch-vs-release comparison run a released binary at all. The
+  point carries `swarm_present = 0` and zeros, and **the flag is what makes the
+  zeros readable**: without it a released binary's zero `records_from_peers`
+  would be indistinguishable from a swarm that formed and shared nothing.
+- **The CLI force-exits when the download completes** (ant-cli `main.rs`), so a
+  reader stops sharing the moment it finishes. Overlapping the readers in time
+  is the whole point of the stagger.
+- **ant-node admits a native client's swarm requests at 8 a second per source
+  host and 64 members per host**, so the readers on one VM share one host
+  budget. That is accepted for the run and deliberately not something this role
+  limits — the `instances` cap of 8 is the VM's, not the network's (a native
+  reader speaks QUIC and is not subject to the per-IP WebRTC session quota the
+  browser role is capped by).
+
+#### Rounds, the parity and the stagger
+
+`round_id = floor(epoch_secs / round_period_secs)`, boundary `round_id ×
+round_period_secs`, `hot_file_index = round_id mod len(files)` — the same
+arithmetic the browser harness uses, anchored to the wall clock for the same
+reason: a sleep taken after each round moves its start by the round's own
+duration, so two VMs started minutes apart would drift apart indefinitely. A VM
+that restarts mid-run rejoins the cohort at the next boundary.
+
+A round is **this cohort's** when `round_parity` is `all`, or `even` and the
+round id is even, or `odd` and it is odd. A round that is not produces
+**nothing** — no process, no point, and no log line beyond
+`round=<id> parity=skip`. That is what lets the DEV-01 run put a branch cohort on
+`even` and a released control on `odd` in one deployment: neither is ever inside
+the other's swarm.
+
+Reader `i` (1..`instances`) on the VM with `client_index = k` starts at
+
+```
+boundary + ((k − 1) × instances + (i − 1)) × start_stagger_secs
+```
+
+so a cohort of 4 VMs × 4 readers with a 2 s stagger starts one reader every 2 s
+for 30 s with no coordinator at all. **The arithmetic is not checked** — a
+deliberately long stagger over a long round is a legitimate shape — so `clients
+plan` and `deployments plan` print the last reader's offset,
+`(VMs × instances − 1) × start_stagger_secs`, and say so when that plus the
+deadline exceeds the round:
+
+```
+hot-file readers: 2 VM(s) x 4 reader(s), round 600s, parity even, stagger 2s —
+the last reader starts 14s after the boundary
+```
+
+#### What one reader does in a round
+
+1. GET the hot-file manifest over unsigned HTTPS. Absent or unparseable → one
+   point `status=skipped`, `error_kind=no_hot_files`, and no process started.
+   The rounds before the operator selects are part of the series, not failures.
+2. Sleep to its own start, recording `started_late_ms` (clamped at 0 — a reader
+   cannot start early).
+3. Run `ant -v [--bootstrap …] --evm-network arbitrum-sepolia --json file
+   download <address> -o <dir>/<round>-<i>`, with `RUST_LOG` exported when set
+   and **removed** when not (an empty `RUST_LOG` is an empty EnvFilter, which
+   silences everything and overrides `-v`). `bootstrap_cache` is the shared
+   default: with the peer cache on, `--bootstrap` is omitted and `ant` reads the
+   provisioned `bootstrap_peers.toml`, exactly as `downloader.sh` does. `--json`
+   is a **global** flag and goes before the subcommand, which is where
+   `uploader.sh` puts it.
+4. Kill it at `boundary + download_timeout_secs` (SIGTERM, SIGKILL after 5 s) →
+   `failure` / `timeout` / `"deadline"`. The deadline is measured from the round
+   BOUNDARY, not from this reader's staggered start: what it is for is that
+   every reader has finished before the next round is due.
+5. On exit 0, parse the **last line of stdout that parses as a JSON object** —
+   scanned backwards, because `-v` can put a tracing line after the record and
+   taking the final line outright would turn every success into "no json
+   result". `size` must equal the entry's `bytes` (else `failure` / `other` /
+   `"size mismatch: got N"`); the file's SHA-256 is compared against the entry's
+   `sha256` giving `verify_status` 0 / 1 / 2, and a **mismatch is its own kind**
+   (`verify`) because a download that fails is availability while one that
+   returns different bytes is correctness. The file is then deleted.
+6. On a non-zero exit, `error_kind` comes from stderr as a lower-cased substring
+   match — `not found` → `not_found`, `payment`, `quorum`,
+   `connect`/`dial`/`channel` → `connection`, else `other` — over the whole
+   stderr BLOCK rather than its first line, and **order is load-bearing** as it
+   is in `transfer_errors.py`. `error_text` is stderr's last 2,000 characters
+   (the tail: `ant`'s last words are the error). **The swarm counters of a
+   failure are still recorded** — a reader fed by a peer and then failing says
+   something different from one that never reached the swarm.
+7. Write the point. A FAILED download's `ant` stdout/stderr are kept under
+   `/var/log/ant-hot-file-reader/`; a success's are deleted, as
+   `downloader.sh` does.
+
+A reader whose previous download is still running when the next round comes due
+emits one `skipped` / `round_overrun` point. That cannot happen while
+`download_timeout_secs < round_period_secs`, which is enforced in the schema and
+in the spec parser; the guard is cheap and the alternative is a round that
+silently produced nothing. Any exception around a download is a recorded
+`failure` / `other` — a reader that stopped emitting points would read as one
+that never ran.
+
+#### Results: measurement `hot_file_download`, bucket `testnet-metrics`
+
+The readers are NATIVE, so their points land in the deployment's **ordinary**
+bucket — not the `wasm-client-metrics` one the browser cohort writes to — in a
+measurement of their own, so nothing can average a synchronised cohort's reads
+of one file with a client's reads of random ones. **The `download` measurement
+is not written.**
+
+Tags: `host`, `testnet_name`, `host_role=hot_file_reader`, `region`, `round_id`,
+`instance`, `hot_file_index` (dropped on a skip that never chose a file).
+
+Fields: `status` (`success` / `failure` / `skipped`, a string so a human reading
+the bucket gets a word), `error_kind` (`""` on a success), `error_text`,
+`address`, `file_size`, `total_ms` (process spawn to exit), `client_elapsed_ms`
+(`elapsed_secs × 1000` from the CLI), `start_ns` (the reader's SCHEDULED start),
+`started_late_ms`, `verify_status`, `swarm_present`, `swarm_rooms` (the array as
+JSON, `"[]"` when absent), and the twenty-five swarm counters as integers, 0 when
+absent: `records_from_peers`, `bytes_from_peers`, `records_rejected`,
+`asks_busy`, `asks_missing`, `asks_failed`, `records_served`, `bytes_served`,
+`links`, `rooms`, and `discovery_` + `lookups` / `announces` /
+`announces_failed` / `announces_timed_out` / `announces_refused` / `bytes_sent` /
+`bytes_received` / `offers_made` / `offers_delivered` / `offers_received` /
+`answers_sent` / `answers_received` / `channels_opened` / `links_proven` /
+`links_failed`.
+
+**One point per reader per round of this cohort's parity, always** — including
+the rounds that did nothing. A round with no point is itself a finding, and it
+only reads that way if a skip is a point. No line-protocol timestamp is sent:
+Influx stamps each point with its own server-receive time, the only correct clock
+on a testnet whose manifests skew client clocks on purpose.
+
+#### Persisting the reads (`deployment_hot_file_download_records`)
+
+`deployments record-results` copies every `hot_file_download` point into its own
+table in the same pass as the file-op, pointer and browser records — a command
+an operator has to remember separately does not get run. Always full-range
+(`--window` narrows only the file-op aggregate). Keyed
+`(deployment, client_hostname, round_id, instance)`, so a re-run revises rather
+than duplicates.
+
+Its own table, not more rows in `deployment_download_records`, for the same
+reason it writes its own measurement: pooling the two would let any rate or
+percentile average them, and would push this cohort's failures into the native
+hard floors `deployments compare` gates on. `status` reuses the existing
+`oprecordstatus` enum, including the load-bearing part — a `skipped` row is
+STORED but in no denominator.
+
+Two things the pass needs are held in S3 state teardown deletes, so both are
+snapshotted into the registry beside the rows they describe:
+
+- **`extension`**, resolved per host from `deploy_args.hot_file_readers` first
+  and the live client tiers second (the recorded config survives `clients down`;
+  the two cannot disagree, since the extension name is part of the hostname).
+  It **COALESCEs** on upsert — the Influx point does not carry it, so a re-run
+  after teardown resolves None for every host, and writing that would merge the
+  branch cohort and the released control into one. `clients provision` records
+  that config (hostname, extension, region, `client_index`, `instances`,
+  `round_period_secs`, `download_timeout_secs`, `round_parity`,
+  `start_stagger_secs`), rebuilt from every client tier on each pass.
+- **The hot-file selection**, into `deploy_args.hot_file_readers_hot_files` —
+  additive, and **skipped entirely when the browser role has already snapshotted
+  the same document** under `browser_hot_files`. Both cohorts read the one
+  object, and two copies of it could only ever drift.
+
+#### Reading the results
+
+```bash
+# live, from Influx (one row per round and extension)
+uv run saorsa-deploy deployments print-downloads --name DEV-03 --hot-file
+# persisted, from Postgres (survives teardown)
+uv run saorsa-deploy deployments print-recorded-results --id 712
+```
+
+`--hot-file` is **mutually exclusive with `--browser`** and with the native view
+— two instruments in two buckets, refused by name rather than resolved by
+precedence. Each row gives the readers reporting, the success / failure / skipped
+counts, p50 and p95 `total_ms` of the successes, the readers with
+`records_from_peers >= 1`, and the summed `records_from_peers`,
+`bytes_from_peers` and `records_served`. **Rows are split by extension**, unlike
+the browser view's: the whole point of the role is two cohorts on one
+deployment, and a row pooling them would average the two arms of the comparison.
+"Peer-fed" counts READERS, not records — one reader served by a peer a thousand
+times is not a thousand readers the swarm reached.
+
+`print-recorded-results` gains a "Hot-file reads" section with the same
+per-round table out of Postgres, plus "reads reporting a swarm", which is the
+figure that says whether a swarm existed at all.
+
+`slack-post` renders the tier under a `_Hot-file readers (native):_` heading,
+naming the readers, the round, the deadline, the parity and the stagger — the
+four things that tell two cohorts on one deployment apart. It appears only when
+the deployment has readers, so every existing post is unchanged.
+
+#### Logs
+
+The service tees its own stdout and stderr into
+`/var/log/ant-client-forward/hot-file-reader.stdout.log` / `.stderr.log`, capped
+at 1 GiB like the other native roles, and `forward_logs: true` ships them to
+`telegraf-ant-clients-<name>`. Appends are serialised: four reader threads emit
+concurrently and two interleaved writes would cut a line in half, which telegraf
+drops silently.
+
+One grep-able line per download, carrying the same keys as the point:
+
+```
+round=3000000 instance=2 status=success kind=- total_ms=12800 records_from_peers=7 bytes_from_peers=7340032 address=a0a0…
+```
+
+and one per round another cohort owns:
+
+```
+round=3000001 parity=skip
+```
 
 ### Pointer client VMs
 

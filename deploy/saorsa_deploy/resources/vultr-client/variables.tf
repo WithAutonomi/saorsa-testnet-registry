@@ -29,8 +29,12 @@ variable "role" {
     # wall-clock schedule, and takes no wallet. Its own role for the same reason
     # again -- the role names the VM, its Terraform workspace and its S3 state
     # key -- and because `clients clean` and `clients destroy` dispatch on it.
-    condition     = contains(["upload", "download", "wasm-upload", "wasm-download", "pointer", "browser-download"], var.role)
-    error_message = "role must be one of 'upload', 'download', 'wasm-upload', 'wasm-download', 'pointer', 'browser-download'."
+    # `hot-file-read` is the NATIVE mirror of that: N `ant file download`
+    # processes per VM on the same chosen hot file, staggered off the round
+    # boundary, which is what forms the ADR-0026 peer swarm. Its own role for
+    # the same reasons once more.
+    condition     = contains(["upload", "download", "wasm-upload", "wasm-download", "pointer", "browser-download", "hot-file-read"], var.role)
+    error_message = "role must be one of 'upload', 'download', 'wasm-upload', 'wasm-download', 'pointer', 'browser-download', 'hot-file-read'."
   }
 }
 
