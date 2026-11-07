@@ -1,0 +1,14 @@
+[
+  {
+    "hostname": "DEV-03-swarm-ant-client-browser-download-lon1-1",
+    "extension": "swarm",
+    "region": "lon1",
+    "client_index": 1,
+    "instances": 2,
+    "round_period_secs": 600,
+    "download_timeout_secs": 600,
+    "round_parity": "even",
+    "start_stagger_secs": 0,
+    "seed_until_secs": 0
+  }
+]
