@@ -193,6 +193,31 @@ def record_deploy_args_update(
         logger.warning("Failed to merge deploy_args in registry", exc_info=True)
 
 
+def read_deploy_args(
+    name: str,
+    repo: DeploymentRepository | None = None,
+) -> dict | None:
+    """A deployment's ``deploy_args``, or None when it cannot be read.
+
+    The read half of :func:`record_deploy_args_update`, for a caller that has to
+    MERGE rather than overwrite a key. It returns None -- not ``{}`` -- when
+    there is no registry or no row, so a caller can tell "nothing recorded" from
+    "could not look"; every caller here degrades to the live facts alone, which
+    is what the behaviour was before it merged at all.
+    """
+    repo = repo or get_repository()
+    if repo is None:
+        return None
+    try:
+        deployment = _find_deployment(name, repo)
+        if deployment is None:
+            return None
+        return deployment.deploy_args
+    except Exception:
+        logger.warning("Failed to read deploy_args from registry", exc_info=True)
+        return None
+
+
 def get_prod_fleet_repository() -> ProdFleetRepository | None:
     """Repository for standalone production-fleet records (disk surveys +
     service audit), keyed by inventory name. Returns None when DATABASE_URL is

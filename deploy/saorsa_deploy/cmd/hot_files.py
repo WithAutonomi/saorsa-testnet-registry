@@ -28,12 +28,19 @@ def _print_document(console: Console, document: dict) -> None:
     table.add_column("index", justify="right")
     table.add_column("address")
     table.add_column("bytes", justify="right")
+    # Truncated to 12 hex: enough to tell two selections apart at a glance, and
+    # the whole value is in the document for anything that needs it. "-" rather
+    # than blank when the publisher wrote no hash -- the reader records that
+    # download as unverifiable, not as a mismatch, and the table has to say so.
+    table.add_column("sha256")
     table.add_column("source")
     for entry in document.get("files", []):
+        digest = entry.get("sha256")
         table.add_row(
             str(entry.get("index")),
             str(entry.get("address")),
             f"{entry.get('bytes', 0):,}",
+            digest[:12] if digest else "-",
             f"{entry.get('source_key')}:{entry.get('line')}",
         )
     console.print(table)

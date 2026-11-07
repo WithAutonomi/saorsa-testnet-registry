@@ -30,7 +30,7 @@ from saorsa_deploy.cmd.deploy_cmds import (
 )
 from saorsa_deploy.config import ManifestError, load_manifest
 from saorsa_deploy.orchestrator import build_deploy_steps, build_destroy_steps
-from saorsa_deploy.orchestrator.clients import planned_client_vms
+from saorsa_deploy.orchestrator.clients import hot_file_stagger_notes, planned_client_vms
 from saorsa_deploy.orchestrator.steps import Step
 from saorsa_deploy.state import (
     S3_KEY_PREFIX,
@@ -167,6 +167,11 @@ def _print_vm_plan(console: Console, manifest, base_indexes, note: str | None) -
             f"{vm['provider']}:{vm['region']} ({vm['vm_size']}) "
             f"role={vm['role']} client_index={vm['client_index']}"
         )
+    # The same `base_indexes` the VM list above was planned from: an extension's
+    # reader indexes continue from the deployment's own, and the last reader's
+    # offset is derived from the highest of them.
+    for stagger_note in hot_file_stagger_notes(manifest, base_indexes):
+        console.print(f"  [cyan]{stagger_note}[/cyan]")
     if note:
         console.print(f"  [yellow]{note}[/yellow]")
     console.print()

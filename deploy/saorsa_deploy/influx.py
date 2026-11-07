@@ -699,6 +699,190 @@ def parse_browser_download_csv(body: "str | Iterable[str]") -> list[dict]:
     return points
 
 
+#: The swarm counters the `hot_file_download` measurement carries, in the order
+#: `hot_file_reader.py` emits them. Named once: the Flux field allowlist, the
+#: CSV parse and the Postgres row all read this tuple, and a counter present in
+#: one of the three and absent from another is a column that silently reads NULL
+#: forever -- which is exactly how `reason` reached no consumer at all until it
+#: was added to `PIVOT_FLUX_TEMPLATE`'s allowlist.
+HOT_FILE_SWARM_FIELDS = (
+    "records_from_peers",
+    "bytes_from_peers",
+    "records_rejected",
+    "asks_busy",
+    "asks_missing",
+    "asks_failed",
+    "records_served",
+    "bytes_served",
+    "links",
+    "rooms",
+    "discovery_lookups",
+    "discovery_announces",
+    "discovery_announces_failed",
+    "discovery_announces_timed_out",
+    "discovery_announces_refused",
+    "discovery_bytes_sent",
+    "discovery_bytes_received",
+    "discovery_offers_made",
+    "discovery_offers_delivered",
+    "discovery_offers_received",
+    "discovery_answers_sent",
+    "discovery_answers_received",
+    "discovery_channels_opened",
+    "discovery_links_proven",
+    "discovery_links_failed",
+)
+
+#: The non-swarm fields of the measurement, with `swarm_rooms` last.
+HOT_FILE_BASE_FIELDS = (
+    "status",
+    "error_kind",
+    "error_text",
+    "address",
+    "file_size",
+    "total_ms",
+    "client_elapsed_ms",
+    "start_ns",
+    "started_late_ms",
+    "verify_status",
+    "swarm_present",
+    "swarm_rooms",
+)
+
+#: The `hot_file_download` measurement (INFRA-531): one point per native
+#: `ant file download` reader per round of a hot-file cohort. Fields named
+#: explicitly, as every other query here does.
+#:
+#: `round_id`, `instance` and `hot_file_index` are TAGS, so they arrive as their
+#: own columns; the first two are part of the row key, because one host emits
+#: one point per (round, reader) and `_time` alone would collide for the readers
+#: of one round that finished inside the same second.
+HOT_FILE_FLUX_TEMPLATE = """from(bucket: "{bucket}")
+  |> range(start: {start}, stop: {stop})
+  |> filter(fn: (r) => r._measurement == "hot_file_download")
+  |> filter(fn: (r) => contains(value: r._field, set: [{fields}]))
+  |> pivot(rowKey: ["_time", "host", "round_id", "instance"], \
+columnKey: ["_field"], valueColumn: "_value")
+"""
+
+
+def _hot_file_flux(bucket: str, start: str, stop: str) -> str:
+    """The rendered hot-file query.
+
+    `contains(value:, set:)` rather than thirty-seven `or`-ed comparisons: the
+    field list is thirty-seven long, and a hand-written chain of that length is
+    how a field gets dropped from it.
+    """
+    fields = ", ".join(f'"{name}"' for name in (*HOT_FILE_BASE_FIELDS, *HOT_FILE_SWARM_FIELDS))
+    return HOT_FILE_FLUX_TEMPLATE.format(bucket=bucket, start=start, stop=stop, fields=fields)
+
+
+def fetch_hot_file_download_points(
+    url: str,
+    token: str,
+    org: str,
+    bucket: str,
+    start: str = "0",
+    stop: str = FLUX_FAR_FUTURE,
+    timeout: int = 30,
+) -> list[dict]:
+    """One dict per `hot_file_download` point.
+
+    The readers are NATIVE, so their rounds land in the ordinary
+    `testnet-metrics` bucket -- not the WASM one the browser cohort writes to.
+    A measurement of their own within it, so nothing averages a synchronised
+    cohort's reads of one file with a client's reads of random ones.
+
+    ``stop`` defaults to :data:`FLUX_FAR_FUTURE` for the reason every query here
+    does. The role takes no `clock_skew` (the measurement IS when each reader
+    read), but the default is the safe one and costs nothing.
+    """
+    flux = _hot_file_flux(bucket, start, stop)
+    resp = requests.post(
+        f"{url.rstrip('/')}/api/v2/query",
+        params={"org": org},
+        headers={
+            "Authorization": f"Token {token}",
+            "Content-Type": "application/vnd.flux",
+            "Accept": "application/csv",
+        },
+        data=flux,
+        timeout=timeout,
+        stream=True,
+    )
+    resp.raise_for_status()
+    return parse_hot_file_download_csv(iter_response_lines(resp))
+
+
+def parse_hot_file_download_csv(body: "str | Iterable[str]") -> list[dict]:
+    """Parse the pivoted `hot_file_download` CSV.
+
+    ``status`` is a STRING field, as on the browser measurement and for the same
+    reason: a human reading the bucket gets `success` rather than `0`, and the
+    mapping onto `OpRecordStatus` happens in `record-results`.
+
+    A row with no ``round_id`` or no ``instance`` is dropped: those two are the
+    operation's identity, so a point missing either cannot be stored or counted.
+
+    The swarm counters read as `None` when the field is absent, never as 0: a
+    point written by a build that reports no swarm carries explicit zeros with
+    `swarm_present=0` beside them, and coercing an ABSENT field to 0 here would
+    make the two indistinguishable in the other direction.
+    """
+    points: list[dict] = []
+    reader = csv.reader(_csv_lines(body))
+    header: list[str] | None = None
+    for row in reader:
+        if not row or not any(row):
+            header = None
+            continue
+        if row[0].startswith("#"):
+            continue
+        if header is None:
+            header = row
+            continue
+        record = dict(zip(header, row))
+        if record.get("_measurement") != "hot_file_download":
+            continue
+        if record.get("host") in (None, ""):
+            continue
+        round_id = _parse_int(record.get("round_id", ""))
+        instance = _parse_int(record.get("instance", ""))
+        if round_id is None or instance is None:
+            continue
+        try:
+            point = {
+                "_time": _parse_ts(record["_time"]),
+                "host": record["host"],
+                "region": record.get("region", "") or None,
+                "round_id": round_id,
+                "instance": instance,
+                # Absent on a skip that never chose a file -- the reader drops
+                # the tag rather than writing it blank.
+                "hot_file_index": _parse_int(record.get("hot_file_index", "")),
+                "status": record.get("status") or "",
+                "error_kind": record.get("error_kind") or None,
+                "error_text": record.get("error_text") or None,
+                "address": record.get("address") or None,
+                "file_size": _parse_int(record.get("file_size", "")),
+                "total_ms": _parse_int(record.get("total_ms", "")),
+                "client_elapsed_ms": _parse_int(record.get("client_elapsed_ms", "")),
+                # The reader's SCHEDULED start in nanoseconds, not the instant
+                # it got going: `round_id x period + offset`.
+                "start_ns": _parse_int(record.get("start_ns", "")),
+                "started_late_ms": _parse_int(record.get("started_late_ms", "")),
+                "verify_status": _parse_int(record.get("verify_status", "")),
+                "swarm_present": _parse_int(record.get("swarm_present", "")),
+                "swarm_rooms": _parse_json_list(record.get("swarm_rooms")),
+            }
+            for name in HOT_FILE_SWARM_FIELDS:
+                point[name] = _parse_int(record.get(name, ""))
+            points.append(point)
+        except (KeyError, ValueError):
+            continue
+    return points
+
+
 def aggregate_file_results(points: list[dict]) -> list[dict]:
     """Group operation points by (measurement, host, file_size) and compute stats.
 

@@ -24,6 +24,11 @@ from saorsa_deploy.client_roles import (
     BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
     BROWSER_DEFAULT_INSTANCES,
     BROWSER_DEFAULT_ROUND_PERIOD_SECS,
+    HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+    HOT_FILE_DEFAULT_INSTANCES,
+    HOT_FILE_DEFAULT_ROUND_PERIOD_SECS,
+    HOT_FILE_DEFAULT_START_STAGGER_SECS,
+    HOT_FILE_PARITY_ALL,
 )
 from saorsa_deploy.config.models import (
     POINTER_CHAIN_FRACTION,
@@ -215,6 +220,38 @@ def _browser_downloader_spec(b) -> str:
     return ":".join(parts)
 
 
+def _hot_file_reader_spec(h) -> str:
+    """Token string for a hot-file reader.
+
+    Each knob is emitted only when it differs from the CLI default, like the
+    browser knobs and the pointer rates: a manifest taking the defaults emits
+    the short spec, and the step journal of a run that changed one shows exactly
+    which one changed. ``count`` is deliberately NOT in the token -- it expands
+    to repeated flags, one per VM, because `clients infra` indexes one VM per
+    flag and that is what makes `count` land as consecutive ``client_index``
+    values, which the reader's own start offset is derived from.
+    """
+    parts = [h.provider, h.region]
+    if h.vm_size:
+        parts.append(h.vm_size)
+    if h.instances != HOT_FILE_DEFAULT_INSTANCES:
+        parts.append(f"instances={h.instances}")
+    if h.round_period_secs != HOT_FILE_DEFAULT_ROUND_PERIOD_SECS:
+        parts.append(f"round_period_secs={h.round_period_secs}")
+    if h.download_timeout_secs != HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS:
+        parts.append(f"download_timeout_secs={h.download_timeout_secs}")
+    if h.round_parity != HOT_FILE_PARITY_ALL:
+        parts.append(f"round_parity={h.round_parity}")
+    if h.start_stagger_secs != HOT_FILE_DEFAULT_START_STAGGER_SECS:
+        parts.append(f"start_stagger_secs={h.start_stagger_secs}")
+    if h.forward_logs is not None:
+        parts.append(f"forward_logs={str(h.forward_logs).lower()}")
+    # rust_log MUST be last -- its value may contain ':' (RUST_LOG '::' paths).
+    if h.rust_log is not None:
+        parts.append(f"rust_log={h.rust_log}")
+    return ":".join(parts)
+
+
 def _nodes_infra_argv(name: str, nodes: Nodes) -> list[str]:
     argv = ["nodes", "infra", "--name", name]
     for provider in _PROVIDER_ORDER:
@@ -327,6 +364,11 @@ def _clients_infra_argv(name: str, clients, extension: str | None = None) -> lis
         # token keeps the argv the journal compares a literal description of the
         # VMs that will exist.
         argv += ["--browser-downloader", _browser_downloader_spec(b)] * b.count
+    for h in getattr(clients, "hot_file_readers", []) or []:
+        # One flag per VM, as the browser role does: the reader's own start
+        # offset is derived from its VM's `client_index`, which `clients infra`
+        # allocates one per repeated flag.
+        argv += ["--hot-file-reader", _hot_file_reader_spec(h)] * h.count
     return argv
 
 

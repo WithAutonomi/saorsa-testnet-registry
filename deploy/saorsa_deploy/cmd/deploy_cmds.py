@@ -479,3 +479,20 @@ def cmd_plan(args):
         build_deploy_steps(manifest, skip_builds=getattr(args, "skip_builds", False)),
         "Deploy",
     )
+    _print_hot_file_notes(console, manifest)
+
+
+def _print_hot_file_notes(console: Console, manifest) -> None:
+    """Say where the LAST hot-file reader's start lands, once per cohort.
+
+    The per-VM list is already in the plan -- `count:` expands to one repeated
+    `--hot-file-reader` flag per VM, so the argv IS the expansion -- but the
+    stagger arithmetic is not, and nothing checks it: a stagger that walks the
+    last reader's start past the round's deadline leaves the later readers never
+    overlapping the earlier ones, which is the one thing the stagger exists to
+    arrange.
+    """
+    from saorsa_deploy.orchestrator.clients import hot_file_stagger_notes
+
+    for note in hot_file_stagger_notes(manifest):
+        console.print(f"  [cyan]{note}[/cyan]")

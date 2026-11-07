@@ -50,11 +50,19 @@ from saorsa_deploy.client_transport import (
     transport_map_from_client_state,
     transport_map_from_deploy_args,
 )
+from saorsa_deploy.hot_file_records import (
+    resolve_extension_by_host as resolve_hot_file_extension_by_host,
+)
+from saorsa_deploy.hot_file_records import (
+    snapshot_hot_files as snapshot_hot_file_reader_files,
+)
 from saorsa_deploy.influx import (
+    HOT_FILE_SWARM_FIELDS,
     aggregate_file_results,
     fetch_all_operation_points,
     fetch_all_prod_upload_points,
     fetch_browser_download_points,
+    fetch_hot_file_download_points,
     fetch_pointer_points,
 )
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
@@ -186,6 +194,20 @@ def cmd_record_results(args):
             influx_url,
             influx_token,
             influx_org,
+        )
+        # Hot-file reader rounds, likewise -- and from the ORDINARY bucket, not
+        # the WASM one: the readers are native. Nothing is added to the Slack
+        # summary; the comparison these rows are for is read with
+        # `print-downloads --hot-file` / `print-recorded-results`.
+        _record_hot_file_downloads(
+            repo,
+            deployment,
+            args,
+            console,
+            influx_url,
+            influx_token,
+            influx_org,
+            influx_bucket,
         )
 
     # Close the pool claims this deployment took. Only reached for the remote
@@ -557,6 +579,10 @@ _BROWSER_STATUS = {
     "failure": OpRecordStatus.FAILURE,
     "skipped": OpRecordStatus.SKIPPED,
 }
+#: The hot-file reader writes the same three strings, on purpose: the two
+#: round-based roles are the same shape of measurement, and an alias rather than
+#: a second dict is what keeps them from drifting into two vocabularies.
+_HOT_FILE_STATUS = _BROWSER_STATUS
 
 
 def _record_browser_downloads(
@@ -615,8 +641,11 @@ def _record_browser_downloads(
     extension_for_host = resolve_extension_by_host(
         deployment.deploy_args, _client_tiers(args.name), args.name
     )
-    # Additive: a selection already gone leaves an earlier snapshot in place.
-    snapshot_hot_files(args.name, console)
+    # Merged, not replaced: `record-results` runs this pass BEFORE the hot-file
+    # reader one, so replacing the key outright left that pass reading only the
+    # replacement with nothing to carry forward. `deploy_args` is what the merge
+    # preserves history against.
+    snapshot_hot_files(args.name, deployment.deploy_args, console)
 
     recorded = 0
     unusable = 0
@@ -664,6 +693,122 @@ def _record_browser_downloads(
     rounds = len({p.get("round_id") for p in points})
     console.print(
         f"[bold green]Recorded {recorded} browser download(s) across {rounds} "
+        f"round(s) ({unusable} unusable point(s)) for deployment "
+        f"'{args.name}'.[/bold green]"
+    )
+
+
+def _record_hot_file_downloads(
+    repo,
+    deployment,
+    args,
+    console,
+    influx_url,
+    influx_token,
+    influx_org,
+    influx_bucket,
+) -> None:
+    """Persist every `hot_file_download` round into ``deployment_hot_file_download_records``.
+
+    Always queried from epoch (``start="0"``), like the per-op file, pointer and
+    browser records: ``--window`` narrows the file-op AGGREGATE, while the
+    per-op tables are the windowable ones and a re-run is expected to backfill
+    the full history.
+
+    The readers are NATIVE, so this reads the deployment's ordinary bucket --
+    the browser pass reads the WASM one. A deployment with no reader tier simply
+    finds no points and says nothing.
+
+    This pass is also what makes the cohort READABLE after teardown, which is
+    the whole point of the table. Two things it needs are held in S3 state the
+    deployment's own teardown deletes, so both are snapshotted into the registry
+    here, beside the rows they describe: the hot-file selection (the address
+    prefix goes with `clients destroy`) and each VM's extension (the
+    extension's client state goes with `clients down`).
+    """
+    try:
+        points = fetch_hot_file_download_points(
+            influx_url,
+            influx_token,
+            influx_org,
+            influx_bucket,
+            "0",
+        )
+    except Exception as e:
+        console.print(
+            "[yellow]Warning: hot_file_download query failed, no hot-file "
+            f"reader records written: {e}[/yellow]"
+        )
+        return
+    if not points:
+        return
+
+    # Both resolved only once there is something to label, so a deployment with
+    # no reader tier does not pay for a client-state scan or an S3 GET on each
+    # `record-results` pass.
+    #
+    # The recorded role config comes FIRST and the live client tiers second: the
+    # config survives `clients down` while the tiers do not, and the two cannot
+    # disagree because the extension name is part of the hostname. On a run with
+    # a branch cohort and a released control, getting this wrong merges the two
+    # arms of the comparison.
+    extension_for_host = resolve_hot_file_extension_by_host(
+        deployment.deploy_args, _client_tiers(args.name), args.name
+    )
+    # Additive, and a no-op when the browser role already snapshotted the same
+    # document: both cohorts read the one selection.
+    snapshot_hot_file_reader_files(args.name, deployment.deploy_args, console)
+
+    recorded = 0
+    unusable = 0
+    #: Every usable round's row, written with one statement per batch after the
+    #: loop: a cohort emits one point per reader per round and a pass over a
+    #: whole run writes thousands of them.
+    rows: list[dict] = []
+    for point in points:
+        status = _HOT_FILE_STATUS.get(point.get("status"))
+        start_ns = point.get("start_ns")
+        if status is None or start_ns is None:
+            unusable += 1
+            continue
+        # `start_ns` is the reader's SCHEDULED start, which is what makes a
+        # window selection over these rows select whole rounds.
+        started_at = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
+        present = point.get("swarm_present")
+        row = {
+            "deployment_id": deployment.id,
+            "client_hostname": point["host"],
+            "round_id": point["round_id"],
+            "instance": point["instance"],
+            "status": status,
+            "started_at": started_at,
+            "extension": extension_for_host.get(point["host"]),
+            "region": point.get("region"),
+            "hot_file_index": point.get("hot_file_index"),
+            "address": point.get("address"),
+            "file_size_bytes": point.get("file_size"),
+            "error_kind": point.get("error_kind"),
+            "error_text": point.get("error_text"),
+            "total_ms": point.get("total_ms"),
+            "client_elapsed_ms": point.get("client_elapsed_ms"),
+            "started_late_ms": point.get("started_late_ms"),
+            "verify_status": point.get("verify_status"),
+            # None, not False, when the field is absent: a point written before
+            # the column existed must read as "not recorded", and False means
+            # "this build reports no swarm", which is a different fact.
+            "swarm_present": None if present is None else bool(present),
+            "swarm_rooms": point.get("swarm_rooms"),
+        }
+        for name in HOT_FILE_SWARM_FIELDS:
+            row[name] = point.get(name)
+        rows.append(row)
+        recorded += 1
+
+    repo.upsert_hot_file_download_records(rows)
+
+    rounds = len({p.get("round_id") for p in points})
+    console.print(
+        f"[bold green]Recorded {recorded} hot-file read(s) across {rounds} "
         f"round(s) ({unusable} unusable point(s)) for deployment "
         f"'{args.name}'.[/bold green]"
     )

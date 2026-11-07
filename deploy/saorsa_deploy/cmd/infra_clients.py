@@ -17,8 +17,18 @@ from saorsa_deploy.client_roles import (  # noqa: F401  (re-exported for callers
     BROWSER_DEFAULT_VM_SIZE,
     BROWSER_MAX_INSTANCES,
     BROWSER_MIN_ROUND_PERIOD_SECS,
+    HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+    HOT_FILE_DEFAULT_INSTANCES,
+    HOT_FILE_DEFAULT_ROUND_PERIOD_SECS,
+    HOT_FILE_DEFAULT_START_STAGGER_SECS,
+    HOT_FILE_DEFAULT_VM_SIZE,
+    HOT_FILE_MAX_INSTANCES,
+    HOT_FILE_MIN_ROUND_PERIOD_SECS,
+    HOT_FILE_PARITIES,
+    HOT_FILE_PARITY_ALL,
     ROLE_BROWSER_DOWNLOAD,
     ROLE_DOWNLOAD,
+    ROLE_HOT_FILE_READ,
     ROLE_LABELS,
     ROLE_ORDER,
     ROLE_POINTER,
@@ -93,6 +103,20 @@ _VALID_BROWSER_DOWNLOADER_KEYS = (
     "instances",
     "round_period_secs",
     "download_timeout_secs",
+    "forward_logs",
+)
+# A hot-file reader takes no wallet, no clock skew and no network shaping, for
+# the same reason the browser role does not: what it measures is WHEN each
+# reader read and what its swarm did, and a shifted clock or a shaped link would
+# distort exactly that. `rust_log` IS accepted (and, as everywhere, must be the
+# final token) -- unlike the browser role, the transfers run in a Rust process
+# whose tracing subscriber there is something to configure.
+_VALID_HOT_FILE_READER_KEYS = (
+    "instances",
+    "round_period_secs",
+    "download_timeout_secs",
+    "round_parity",
+    "start_stagger_secs",
     "forward_logs",
 )
 DEFAULT_ANT_FUNDING = "100"
@@ -486,6 +510,101 @@ def _parse_browser_int(spec: str, key: str, value: str) -> int:
         )
 
 
+def _parse_hot_file_int(spec: str, key: str, value: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(
+            f"Invalid hot-file reader spec '{spec}': '{key}' must be an integer, got '{value}'."
+        )
+
+
+def parse_hot_file_reader_spec(spec: str) -> dict:
+    """Parse a hot-file-reader spec.
+
+    Format: ``provider:region[:vm_size][:instances=N][:round_period_secs=N]``
+    ``[:download_timeout_secs=N][:round_parity=even|odd|all]``
+    ``[:start_stagger_secs=N][:forward_logs=BOOL][:rust_log=VALUE]``
+
+    Positionals match ``--downloader`` (nothing is uploaded and there is no file
+    size -- the file is named by `clients select-hot-files`). Every limit the
+    manifest schema enforces is enforced here too, so a hand-typed
+    `clients infra` cannot stand up a cohort a manifest would have refused.
+    """
+    parsed = _parse_downloader_like(
+        spec, _VALID_HOT_FILE_READER_KEYS, ROLE_HOT_FILE_READ, "hot-file reader"
+    )
+    _, options, _ = _split_spec(spec, _VALID_HOT_FILE_READER_KEYS, "hot-file reader")
+
+    instances = (
+        _parse_hot_file_int(spec, "instances", options["instances"])
+        if "instances" in options
+        else HOT_FILE_DEFAULT_INSTANCES
+    )
+    if not 1 <= instances <= HOT_FILE_MAX_INSTANCES:
+        raise ValueError(
+            f"Invalid hot-file reader spec '{spec}': instances must be between 1 "
+            f"and {HOT_FILE_MAX_INSTANCES}, got {instances}. Each instance is a "
+            f"concurrent `ant file download` of the same file on one VM; beyond "
+            f"that the VM, not the network, is what is being measured."
+        )
+    round_period = (
+        _parse_hot_file_int(spec, "round_period_secs", options["round_period_secs"])
+        if "round_period_secs" in options
+        else HOT_FILE_DEFAULT_ROUND_PERIOD_SECS
+    )
+    if round_period < HOT_FILE_MIN_ROUND_PERIOD_SECS:
+        raise ValueError(
+            f"Invalid hot-file reader spec '{spec}': round_period_secs must be "
+            f">= {HOT_FILE_MIN_ROUND_PERIOD_SECS}, got {round_period}."
+        )
+    download_timeout = (
+        _parse_hot_file_int(spec, "download_timeout_secs", options["download_timeout_secs"])
+        if "download_timeout_secs" in options
+        else HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS
+    )
+    # Before the relationship check, which a non-positive value passes: see the
+    # same guard in the manifest model. A `0` reached the VM as the 300 s
+    # default and could then outlast a 120 s round.
+    if download_timeout < 1:
+        raise ValueError(
+            f"Invalid hot-file reader spec '{spec}': download_timeout_secs must "
+            f"be >= 1, got {download_timeout}. There is no 'unlimited' "
+            f"deadline: the whole point of it is that every reader has finished "
+            f"before the next round is due."
+        )
+    if download_timeout >= round_period:
+        raise ValueError(
+            f"Invalid hot-file reader spec '{spec}': download_timeout_secs "
+            f"({download_timeout}) must be < round_period_secs ({round_period}), "
+            f"or a round can still be running when the next one is due and the "
+            f"cohort stops being simultaneous."
+        )
+    parity = options.get("round_parity", HOT_FILE_PARITY_ALL)
+    if parity not in HOT_FILE_PARITIES:
+        raise ValueError(
+            f"Invalid hot-file reader spec '{spec}': round_parity must be one of "
+            f"{', '.join(HOT_FILE_PARITIES)}, got '{parity}'."
+        )
+    stagger = (
+        _parse_hot_file_int(spec, "start_stagger_secs", options["start_stagger_secs"])
+        if "start_stagger_secs" in options
+        else HOT_FILE_DEFAULT_START_STAGGER_SECS
+    )
+    if stagger < 0:
+        raise ValueError(
+            f"Invalid hot-file reader spec '{spec}': start_stagger_secs must be "
+            f">= 0 (0 = every reader starts on the boundary), got {stagger}."
+        )
+
+    parsed["instances"] = instances
+    parsed["round_period_secs"] = round_period
+    parsed["download_timeout_secs"] = download_timeout
+    parsed["round_parity"] = parity
+    parsed["start_stagger_secs"] = stagger
+    return parsed
+
+
 def _parse_positive_int(spec: str, key: str, value: str) -> int:
     """Validate an integer spec option that must be strictly positive."""
     try:
@@ -644,6 +763,11 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("instances"),
         spec.get("round_period_secs"),
         spec.get("download_timeout_secs"),
+        # Hot-file reader knobs, in the signature for the same reason: changing
+        # the parity or the stagger must be a spec MISMATCH, not a silent reuse
+        # of VMs still running the old schedule. `None` on every other role.
+        spec.get("round_parity"),
+        spec.get("start_stagger_secs"),
     )
 
 
@@ -716,13 +840,14 @@ def cmd_infra_clients(args):
         (getattr(args, "wasm_downloader", None) or [], parse_wasm_downloader_spec),
         (getattr(args, "pointer", None) or [], parse_pointer_spec),
         (getattr(args, "browser_downloader", None) or [], parse_browser_downloader_spec),
+        (getattr(args, "hot_file_reader", None) or [], parse_hot_file_reader_spec),
     ]
 
     if not any(raw for raw, _ in role_inputs):
         console.print(
             "[bold red]Error:[/bold red] At least one --uploader, --downloader, "
-            "--wasm-uploader, --wasm-downloader, --pointer or "
-            "--browser-downloader spec is required."
+            "--wasm-uploader, --wasm-downloader, --pointer, "
+            "--browser-downloader or --hot-file-reader spec is required."
         )
         sys.exit(1)
 
@@ -790,6 +915,16 @@ def cmd_infra_clients(args):
                 f"chain {spec['chain_fraction']:.0%}, "
                 f"{handover}"
                 f"fund {ant} ANT + {eth} ETH{skew_str})"
+            )
+        elif spec["role"] == ROLE_HOT_FILE_READ:
+            console.print(
+                f"  {label} #{spec['client_index']}: {spec['provider']}:"
+                f"{spec['region']} ({spec['vm_size']}, "
+                f"{spec['instances']} reader(s), "
+                f"round/{spec['round_period_secs']}s, "
+                f"deadline {spec['download_timeout_secs']}s, "
+                f"parity {spec['round_parity']}, "
+                f"stagger {spec['start_stagger_secs']}s)"
             )
         elif spec["role"] == ROLE_BROWSER_DOWNLOAD:
             console.print(

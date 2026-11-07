@@ -30,6 +30,15 @@ ROLE_POINTER = "pointer"
 # say anything about many real browsers reading the same record at the same
 # moment (ADR-0023, hot-record read spreading).
 ROLE_BROWSER_DOWNLOAD = "browser-download"
+# Hot-file readers: N NATIVE `ant file download` processes per VM, all reading
+# the one file `clients select-hot-files` chose, each starting at its own offset
+# after a wall-clock round boundary (INFRA-531). The native mirror of
+# ROLE_BROWSER_DOWNLOAD, and a role of its own for the same reasons: the role
+# names the VM, its Terraform workspace and its S3 state key, and it runs a
+# service nothing else runs. ADR-0026 (peer swarm) only forms a swarm when
+# several readers read the SAME file at the SAME time, which `downloader.sh` --
+# one process per VM drawing a random address from the whole pool -- cannot do.
+ROLE_HOT_FILE_READ = "hot-file-read"
 
 ALL_CLIENT_ROLES = (
     ROLE_UPLOAD,
@@ -38,15 +47,16 @@ ALL_CLIENT_ROLES = (
     ROLE_WASM_DOWNLOAD,
     ROLE_POINTER,
     ROLE_BROWSER_DOWNLOAD,
+    ROLE_HOT_FILE_READ,
 )
 #: Roles that hold their own funded per-VM wallet. Every pointer write is a paid
 #: single-node quote, so a pointer client mints, tops up and drains a wallet
 #: exactly as an uploader does -- which is what makes it an "upload-type" role
 #: even though it uploads no files.
 UPLOAD_ROLES = (ROLE_UPLOAD, ROLE_WASM_UPLOAD, ROLE_POINTER)
-DOWNLOAD_ROLES = (ROLE_DOWNLOAD, ROLE_WASM_DOWNLOAD, ROLE_BROWSER_DOWNLOAD)
+DOWNLOAD_ROLES = (ROLE_DOWNLOAD, ROLE_WASM_DOWNLOAD, ROLE_BROWSER_DOWNLOAD, ROLE_HOT_FILE_READ)
 WASM_ROLES = (ROLE_WASM_UPLOAD, ROLE_WASM_DOWNLOAD)
-NATIVE_ROLES = (ROLE_UPLOAD, ROLE_DOWNLOAD, ROLE_POINTER)
+NATIVE_ROLES = (ROLE_UPLOAD, ROLE_DOWNLOAD, ROLE_POINTER, ROLE_HOT_FILE_READ)
 POINTER_ROLES = (ROLE_POINTER,)
 #: Roles whose transfers run inside a real browser (headless Chromium under
 #: Playwright). Deliberately NOT part of :data:`WASM_ROLES`: both run the same
@@ -54,6 +64,10 @@ POINTER_ROLES = (ROLE_POINTER,)
 #: and its unit, so folding this role in would provision a browser VM as a
 #: `wasm-download` one and leave `clients start` looking for a unit nobody wrote.
 BROWSER_ROLES = (ROLE_BROWSER_DOWNLOAD,)
+#: Roles running the native hot-file reader service. Its own tuple rather than a
+#: membership test against the unit map, so the predicates below all read the
+#: same way.
+HOT_FILE_READ_ROLES = (ROLE_HOT_FILE_READ,)
 
 #: ant-core refuses a browser-path UPLOAD of a file larger than this (a DECIMAL
 #: gigabyte, `MAX_BROWSER_FILE_BYTES`), before touching the network. The
@@ -89,6 +103,37 @@ BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS = 300
 #: client role's.
 BROWSER_DEFAULT_VM_SIZE = "s-4vcpu-8gb"
 
+#: `ant` processes one hot-file reader VM runs concurrently. Capped, but NOT by
+#: the browser role's per-IP WebRTC session quota -- a native reader speaks QUIC
+#: to the nodes and is not subject to it. The bound is the VM: eight concurrent
+#: `ant file download` processes of one file is already more than a 2-vCPU box
+#: can serve without the measurement becoming a measurement of the box. ant-node
+#: admits a native client's swarm requests at 8/s and 64 members per source
+#: host, so the readers on one VM share one host budget; that is accepted for
+#: the run and deliberately not something this role limits.
+HOT_FILE_MAX_INSTANCES = 8
+HOT_FILE_DEFAULT_INSTANCES = 4
+#: Rounds start on wall-clock multiples of this, so every reader on every VM in
+#: the cohort reads the same file at the same moment -- which is the whole
+#: measurement, and the only condition under which a swarm forms at all.
+HOT_FILE_DEFAULT_ROUND_PERIOD_SECS = 600
+HOT_FILE_MIN_ROUND_PERIOD_SECS = 120
+HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS = 300
+#: Seconds between consecutive reader starts, cohort-wide. 0 (the default)
+#: starts every reader on the boundary together.
+HOT_FILE_DEFAULT_START_STAGGER_SECS = 0
+#: A native reader needs no Chromium and holds no file in WASM memory, so the
+#: shared client default is the right size for it.
+HOT_FILE_DEFAULT_VM_SIZE = "s-2vcpu-4gb"
+
+#: Which rounds a cohort owns. Two cohorts on one deployment -- a branch build
+#: on `even` and a released control on `odd` -- never read the same file at the
+#: same moment, so neither contaminates the other's swarm.
+HOT_FILE_PARITY_ALL = "all"
+HOT_FILE_PARITY_EVEN = "even"
+HOT_FILE_PARITY_ODD = "odd"
+HOT_FILE_PARITIES = (HOT_FILE_PARITY_EVEN, HOT_FILE_PARITY_ODD, HOT_FILE_PARITY_ALL)
+
 #: The hot-file manifest, written by `clients select-hot-files` into the
 #: deployment's address prefix and read by every browser instance at every round
 #: start. One object, written once by the operator: VMs choosing independently
@@ -102,6 +147,7 @@ ROLE_UNITS = {
     ROLE_WASM_DOWNLOAD: "ant-wasm-downloader",
     ROLE_POINTER: "ant-pointer",
     ROLE_BROWSER_DOWNLOAD: "ant-browser-downloader",
+    ROLE_HOT_FILE_READ: "ant-hot-file-reader",
 }
 
 ROLE_LABELS = {
@@ -111,6 +157,7 @@ ROLE_LABELS = {
     ROLE_WASM_DOWNLOAD: "WASM downloader",
     ROLE_POINTER: "Pointer client",
     ROLE_BROWSER_DOWNLOAD: "Browser downloader",
+    ROLE_HOT_FILE_READ: "Hot-file reader",
 }
 
 #: Ordering used when a client list is rendered or persisted, so a resumed state
@@ -147,3 +194,13 @@ def is_pointer(role: str) -> bool:
 def is_browser(role: str) -> bool:
     """Whether this role drives transfers through a real headless browser."""
     return role in BROWSER_ROLES
+
+
+def is_hot_file_read(role: str) -> bool:
+    """Whether this role runs the native hot-file reader service.
+
+    NOT a browser or WASM role: it drives the native `ant` binary, so
+    `_native_only` keeps its hosts, `client_transport` labels it native and
+    `_require_client_binaries` requires `binaries.ant` for it.
+    """
+    return role in HOT_FILE_READ_ROLES

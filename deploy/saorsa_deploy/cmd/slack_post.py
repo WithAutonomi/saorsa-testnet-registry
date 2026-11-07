@@ -16,7 +16,13 @@ from pathlib import Path
 import requests
 from rich.console import Console
 
-from saorsa_deploy.client_roles import is_browser, is_pointer, is_upload, is_wasm
+from saorsa_deploy.client_roles import (
+    is_browser,
+    is_hot_file_read,
+    is_pointer,
+    is_upload,
+    is_wasm,
+)
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.slack_api import SlackApiError, post_message
 from saorsa_deploy.state import (
@@ -610,6 +616,26 @@ def _client_line(c: dict) -> str:
             f"• browser-download — {region} ({vm_size}, {instances} Chromium, "
             f"round {period}s, deadline {deadline}s){fwd_str}{rust_str}"
         )
+    if is_hot_file_read(role):
+        # Tested BEFORE is_upload (it is a download role, so it would otherwise
+        # render as the generic downloader line): what defines a native
+        # hot-read cohort is how many readers a VM runs, the wall-clock round
+        # they all read on, which rounds are this cohort's and how far apart
+        # their starts are -- none of which appears on that line, and the
+        # parity and the stagger are exactly what a reader of the post needs to
+        # tell two cohorts on one deployment apart.
+        instances = c.get("instances") or "?"
+        period = c.get("round_period_secs") or "?"
+        deadline = c.get("download_timeout_secs") or "?"
+        parity = c.get("round_parity") or "?"
+        stagger = c.get("start_stagger_secs")
+        stagger_str = "0" if stagger in (None, "") else str(stagger)
+        return (
+            f"• hot-file-read — {region} ({vm_size}, {instances} readers, "
+            f"round {period}s, deadline {deadline}s, parity {parity}, "
+            f"stagger {stagger_str}s){cache_str}{skew_str}{net_str}"
+            f"{fwd_str}{rust_str}"
+        )
     if is_upload(role):
         file_size = c.get("file_size_mb")
         # file_size_mb is 0 for prod uploaders (real files of arbitrary
@@ -639,9 +665,14 @@ def _clients_block(clients: list[dict]) -> dict:
     pointers = [c for c in clients if is_pointer(c.get("role", "upload"))]
     wasm = [c for c in clients if is_wasm(c.get("role", "upload"))]
     browser = [c for c in clients if is_browser(c.get("role", "upload"))]
-    native = [c for c in clients if c not in pointers and c not in wasm and c not in browser]
+    hot_file = [c for c in clients if is_hot_file_read(c.get("role", "upload"))]
+    native = [
+        c
+        for c in clients
+        if c not in pointers and c not in wasm and c not in browser and c not in hot_file
+    ]
 
-    if not (wasm or pointers or browser):
+    if not (wasm or pointers or browser or hot_file):
         return _section("*Clients:*\n" + "\n".join(_client_line(c) for c in native))
 
     lines: list[str] = []
@@ -660,6 +691,13 @@ def _clients_block(clients: list[dict]) -> dict:
         # drawing random files.
         lines.append("_Browser (WebRTC-Direct, headless Chromium):_")
         lines.extend(_client_line(c) for c in browser)
+    if hot_file:
+        # Its own heading although the transport is native: a synchronised
+        # cohort of `ant` processes reading ONE hot file is a different
+        # instrument from a downloader drawing random addresses, and the two
+        # under one "Native" heading would read as one tier.
+        lines.append("_Hot-file readers (native):_")
+        lines.extend(_client_line(c) for c in hot_file)
     if pointers:
         # Its own heading because a pointer client measures something else
         # entirely: whether a paid mutable reference can be read back, not

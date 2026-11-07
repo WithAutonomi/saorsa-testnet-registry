@@ -49,6 +49,7 @@ from saorsa_db.models import (
 
 from saorsa_deploy.analysis.json_out import console_for, emit_json
 from saorsa_deploy.derived_metrics import format_metric_value
+from saorsa_deploy.gate_comparison import percentile
 from saorsa_deploy.registry import get_repository
 
 _TESTNET_KIND = "testnet"
@@ -182,6 +183,15 @@ def cmd_print_recorded_results(args) -> None:
             repo.list_browser_download_records_for_deployment(deployment.id),
             deployment.name,
             console,
+        )
+        # The native hot-file cohort, on the same footing and for the same
+        # reason: its reads are neither uploads nor downloads in the file-op
+        # sense, and they print nothing at all for a run that has none.
+        _print_hot_file_reads_section(
+            repo.list_hot_file_download_records_for_deployment(deployment.id),
+            deployment.name,
+            console,
+            deployment.deploy_args,
         )
 
     _emit_recorded_json(args, console, repo, deployment, kind)
@@ -819,6 +829,159 @@ def _print_browser_downloads_section(rows: list, name: str, console: Console) ->
         "`saorsa-deploy analysis browser-reads --name <name> --window-start … "
         "--window-end …`[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# Hot-file reads section (deployment_hot_file_download_records)
+# ---------------------------------------------------------------------------
+
+
+def _fmt_peer_fed(peer_fed: int, attempted: int) -> str:
+    """``N/M`` over ATTEMPTED reads, or ``n/a`` when none was attempted.
+
+    The live view's `print_file_ops._fmt_peer_fed` twin. Skips are out of the
+    denominator, so a round that only skipped has no rate rather than 0%.
+    """
+    return f"{peer_fed}/{attempted}" if attempted else "n/a"
+
+
+def _fmt_hot_file_ms(value) -> str:
+    """A millisecond figure as seconds, or ``-`` when there is none.
+
+    Its own formatter rather than the per-op tables' `_fmt_duration`: those take
+    a row's raw `duration_ms`, while these are computed percentiles and may be
+    None for a round in which nothing succeeded.
+    """
+    if value is None:
+        return "-"
+    return f"{value / 1000.0:.1f}s"
+
+
+def _print_hot_file_reads_section(
+    rows: list, name: str, console: Console, deploy_args: dict | None = None
+) -> None:
+    """Per round and extension, the counts and the swarm figures.
+
+    Prints NOTHING when the deployment has no hot-file reads, so every existing
+    run's output is unchanged.
+
+    Split by EXTENSION, unlike the browser section: the whole point of the role
+    is two cohorts on one deployment -- a branch build on even rounds and a
+    released control on odd -- and a table pooling them would average the two
+    arms of the comparison into one meaningless row.
+    """
+    if not rows:
+        return
+    console.print()
+    console.rule(f"[bold]Hot-file reads — {name}[/bold]")
+
+    rounds = sorted({r.round_id for r in rows})
+    hosts = sorted({r.client_hostname for r in rows})
+    extensions = sorted({r.extension for r in rows if r.extension})
+
+    summary = Table(show_header=False, box=None)
+    summary.add_column("k")
+    summary.add_column("v", justify="right")
+    summary.add_row("rounds", f"{len(rounds):,}")
+    summary.add_row(
+        "round ids",
+        f"{rounds[0]}–{rounds[-1]}" if len(rounds) > 1 else str(rounds[0]),
+    )
+    summary.add_row("VMs", f"{len(hosts):,}")
+    # Distinct (host, instance) pairs: the cohort's size is readers per VM times
+    # VMs, and a VM whose service never came up contributes none.
+    summary.add_row("readers", f"{len({(r.client_hostname, r.instance) for r in rows}):,}")
+    summary.add_row("reads", f"{len(rows):,}")
+    if extensions:
+        summary.add_row("extensions", ", ".join(extensions))
+    # The one figure that says whether a swarm existed at all. A released `ant`
+    # reports no swarm, so its rows are `swarm_present = False` and their zeros
+    # are a property of the binary, not of the network.
+    reporting = sum(1 for r in rows if r.swarm_present)
+    summary.add_row("reads reporting a swarm", f"{reporting:,}/{len(rows):,}")
+    console.print(summary)
+
+    table = Table(title="By round")
+    table.add_column("Round", justify="right")
+    show_extension = bool(extensions)
+    if show_extension:
+        table.add_column("Extension")
+    table.add_column("Readers", justify="right")
+    table.add_column("OK", justify="right")
+    table.add_column("Fail", justify="right")
+    table.add_column("Skip", justify="right")
+    table.add_column("p50", justify="right")
+    table.add_column("p95", justify="right")
+    table.add_column("Peer-fed", justify="right")
+    table.add_column("Recs/peers", justify="right")
+    table.add_column("Bytes/peers", justify="right")
+    table.add_column("Recs served", justify="right")
+
+    # Split by the round's BOUNDARY as well as by round and extension, which is
+    # what makes the grouping schedule-qualified: a `round_id` is
+    # `floor(epoch / period)`, so a cohort recreated under the same name with a
+    # different period has two real rounds called 20833 and pooling them
+    # averages two eras. The live `--hot-file` view groups the same way. Where
+    # the period cannot be resolved the boundary is None for every row and the
+    # grouping collapses to one bucket per round, as it was.
+    from saorsa_deploy.hot_file_records import period_resolver, recorded_hot_file_config
+
+    period_for = period_resolver(recorded_hot_file_config(deploy_args))
+
+    def _boundary_of(row):
+        started = row.started_at
+        if started is None:
+            return None
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        period = period_for(row.extension, int(started.timestamp()))
+        return row.round_id * period if period else None
+
+    grouped: dict[tuple, list] = {}
+    for row in rows:
+        grouped.setdefault((row.round_id, row.extension, _boundary_of(row)), []).append(row)
+    for key in sorted(grouped, key=lambda k: (k[0], k[1] or "", str(k[2]))):
+        round_id, extension, _ = key
+        group = grouped[key]
+        ok = [r for r in group if r.status == OpRecordStatus.SUCCESS]
+        fail = [r for r in group if r.status == OpRecordStatus.FAILURE]
+        skip = [r for r in group if r.status == OpRecordStatus.SKIPPED]
+        durations = [float(r.total_ms) for r in ok if r.total_ms is not None]
+        # ATTEMPTED reads, not every row: skips are excluded from this
+        # denominator as they are from the completion rate. Counting them gave
+        # "1/10" for a round of nine `no_hot_files` skips and one peer-fed
+        # success, where the only read attempted WAS peer-fed.
+        attempted = ok + fail
+        peer_fed = sum(1 for r in attempted if (r.records_from_peers or 0) >= 1)
+        line = [str(round_id)]
+        if show_extension:
+            line.append(extension or "-")
+        line += [
+            str(len(group)),
+            str(len(ok)),
+            str(len(fail)),
+            str(len(skip)),
+            _fmt_hot_file_ms(percentile(durations, 0.50)),
+            _fmt_hot_file_ms(percentile(durations, 0.95)),
+            _fmt_peer_fed(peer_fed, len(attempted)),
+            f"{sum(r.records_from_peers or 0 for r in group):,}",
+            f"{sum(r.bytes_from_peers or 0 for r in group):,}",
+            f"{sum(r.records_served or 0 for r in group):,}",
+        ]
+        table.add_row(*line)
+    console.print(table)
+
+    kinds: dict[str, int] = {}
+    for row in rows:
+        if row.error_kind:
+            kinds[row.error_kind] = kinds.get(row.error_kind, 0) + 1
+    if kinds:
+        kind_table = Table(title="By error_kind")
+        kind_table.add_column("error_kind")
+        kind_table.add_column("rows", justify="right")
+        for kind, count in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0])):
+            kind_table.add_row(kind, f"{count:,}")
+        console.print(kind_table)
 
 
 def _print_op_records_for_kind(

@@ -366,8 +366,9 @@ up`/`down` (journal, `--resume`, the lot). The five primitives take
 `--extension <name>` directly. Unrelated to `deployments extend`, which creates
 a second NODE fleet. Example:
 `deploy/saorsa_deploy/resources/profiles/clients-extension-example.yaml`. The
-`browser_downloaders` tier (below) is the one most often added this way — a hot
-file only exists once the deployment's uploaders have published one.
+`browser_downloaders` and `hot_file_readers` tiers (below) are the ones most
+often added this way — a hot file only exists once the deployment's uploaders
+have published one.
 
 - **Binaries: the version form only, and only without a WASM or browser tier.**
   By default the extension reuses what the deployment recorded at `clients
@@ -2051,6 +2052,180 @@ no fetch step and no S3 archive.
 
 See `deploy/README.md` §"Persisting the rounds", §"The trace: forwarded to
 Elasticsearch as it is produced" and §"The report (`analysis browser-reads`)".
+
+### The hot-file reader tier (`clients.hot_file_readers[]`, INFRA-531)
+
+The **native** mirror of the browser-downloader tier, and the instrument
+**ADR-0026** (V2-1892: readers of a file share its records with each other over
+WebRTC data channels, the nodes introducing them and staying the last seed) is
+measured with. N `ant file download` processes per VM, all reading the ONE file
+`clients select-hot-files` chose, each starting at its own offset after a
+wall-clock round boundary, on even or odd rounds only when asked. Role
+`hot-file-read`, unit `ant-hot-file-reader`, CLI `--hot-file-reader`, script
+`resources/scripts/hot_file_reader.py`. Works in a `kind: clients` extension,
+which is the normal way to use it.
+
+It exists because a swarm only forms when several readers read the **same** file
+at the **same** time, and `downloader.sh` — one process per VM, a random address
+out of the whole pool, sleep 10 s, repeat — never puts two readers on one file
+together.
+
+- **`instances` is capped at 8, and the cap is the VM's, not the network's.** A
+  native reader speaks QUIC and is not subject to the per-IP WebRTC session
+  quota the browser role is capped by; beyond eight concurrent downloads of one
+  file the box, not the network, is what is measured. ant-node admits a native
+  client's swarm requests at 8/s and 64 members per source host, so the readers
+  on one VM share one host budget — accepted for the run and deliberately not
+  something the role limits.
+- **`round_parity` (`even` | `odd` | `all`) is what lets two cohorts share a
+  deployment.** The DEV-01 run puts a branch-built `ant` on `even` and a
+  released 0.3.13 control on `odd`, so neither is ever inside the other's
+  swarm. A round another cohort owns produces **nothing** — no process, no
+  point, no log line beyond `round=<id> parity=skip`.
+- **The start offset is derived from the inventory**, not from a coordinator:
+  reader `i` on the VM with `client_index = k` starts at
+  `boundary + ((k−1) × instances + (i−1)) × start_stagger_secs`. It matters
+  because the CLI force-exits the moment a download completes, so a reader stops
+  sharing as soon as it finishes — overlapping them in time is the whole point.
+  **The arithmetic is not checked** (a long stagger over a long round is
+  legitimate), so `clients plan` / `deployments plan` print the last reader's
+  offset and warn when that plus the deadline exceeds the round. That offset is
+  keyed on the **highest ALLOCATED `client_index`**, never on the cohort's VM
+  count: an extension's indexes continue from the deployment's own, so a second
+  four-VM cohort is 5..8 and its last reader starts at 310 s where a VM count
+  says 150 s. One running index allocation over the whole role list, as
+  `planned_client_vms` does, so a later schedule group accounts for the earlier
+  ones' VMs. Two copies of the formula by necessity (the script imports nothing
+  from the package) and a test pins them together. **The warning is on the
+  DEADLINE, not on `last + deadline` against the period**: the deadline is an
+  absolute offset from the boundary and the service refuses
+  `offset >= download_timeout_secs`, so the sum said nothing — period 600,
+  deadline 100 and a 150 s last start passed silently with six of sixteen
+  readers guaranteed never to start. It now names how many can never run.
+- **A reader whose own start lands past `boundary + download_timeout_secs` does
+  not run `ant` at all**, recording `timeout` / `"deadline passed before
+  start"`. The deadline is checked BEFORE the spawn and the remaining time is
+  never floored upwards: spawning anyway left a download transferring inside the
+  NEXT round, which on a parity-split deployment is the other cohort's, so its
+  reads joined their swarm — and it reported `success`. A start the STAGGER has
+  put past the deadline is refused one step earlier still, **before the sleep**:
+  the round loop joins every reader thread, so one reader sleeping to
+  boundary + 720 s of a 600 s round held the loop past the next boundary and
+  cost every reader — the punctual ones included — a `round_overrun` skip. One
+  impossible start reports its own timeout and leaves the others alone.
+- **`download_timeout_secs` below 1 is refused in its own right**, at the
+  manifest and in the spec parser, because it PASSES the
+  `< round_period_secs` check: `(0, 120)` validated and then ran as `(300, 120)`
+  on the VM, since a falsy recorded value took the default. The other half is
+  that a recorded knob is **defaulted only when ABSENT, never when falsy**, so
+  defaulting cannot invent a value the validated spec did not carry —
+  `start_stagger_secs`, whose 0 is both default and legitimate setting, is why
+  that distinction is not academic.
+- **A released `ant` prints no `swarm` at all, and that is not a failure** —
+  it is half the comparison. `swarm_present` is the field that makes a zero
+  readable: without it a released binary's zero `records_from_peers` would be
+  indistinguishable from a swarm that formed and shared nothing. The twenty-five
+  counters are named once per layer and three tests pin the three lists together
+  (the script's, the Flux allowlist's and the table's) — a counter in one and
+  not another is a column that silently reads NULL forever.
+- **`clients select-hot-files` now records each file's `sha256`** (the pool
+  line's third field, `null` on a two-field WASM-published line), because by the
+  time a round has picked an address the line it came from is gone. A reader
+  with no hash records `verify_status = 2` — unverifiable, never a mismatch —
+  and a real mismatch is its own `error_kind` (`verify`), since a download that
+  fails is availability while one returning different bytes is correctness.
+  `print-hot-files` shows the first 12 hex; the browser harness ignores the key.
+- **Measurement `hot_file_download` in `testnet-metrics`, never `download`.**
+  The readers are NATIVE, so the deployment's ordinary bucket — not the WASM one
+  the browser cohort writes to — but a measurement of their own, so nothing can
+  average a synchronised cohort's reads of one file with a client's reads of
+  random ones. **One point per reader per round of this cohort's parity,
+  always**: a round with no point is itself a finding, which only reads that way
+  if a skip is a point — so the WHOLE round is guarded, not just the download,
+  and the manifest fetch names `http.client.HTTPException` (a body truncated
+  short of its `Content-Length` raises `IncompleteRead`, which is not an
+  `OSError`, and used to kill the reader thread outright).
+- **Publishing is asynchronous, and that is a SCHEDULING property.** Points go
+  to a bounded queue drained by one background thread, because a synchronous
+  POST put InfluxDB's latency inside the round loop: a 30 s write with a 120 s
+  period and eight readers carried a round past the next boundary, the catch-up
+  wrote eight more points sequentially, and the loop fell further behind every
+  pass — 40 overrun points and not one download after round 1. A full queue
+  DROPS with a throttled warning rather than waiting (a missing point is a
+  smaller lie than a round that never ran), and the catch-up is capped
+  (`OVERRUN_EMIT_LIMIT`) for the same reason, reporting the rest as a count.
+- **A log record is written WHOLE**, message and newline in one locked `write`.
+  `print()` splits them, so another reader thread landed between: eight threads
+  over 800 records produced 106 merged lines and 121 blank ones. One line per
+  download is a contract the forwarded log and `grep` both depend on.
+- The live view's `Boundary (UTC)` is `round_id × period` from the **recorded**
+  period, never the earliest `start_ns` (a reader's staggered start) and never
+  `floor(start_secs / round_id)` — that is the period only while every offset is
+  below the round id, and a daily round with a 7,200 s stagger is not. An
+  unresolvable period prints `-`. The recorded schedule is **time-versioned**
+  (`superseded_schedules` + `recorded_at`), because an extension recreated under
+  the same name may legitimately change period and overwriting it moved a round
+  anchored to 2027-01-15 to 2055-07-24.
+- `--summary` is one row per COHORT: a branch cohort at 100% and a control at 0%
+  pooled read "50%" with neither named. Every rate's denominator is the
+  **ATTEMPTED** reads — skips are out of all of them, as they are out of the
+  completion rate, and a round that only skipped has no rate rather than 0%.
+- **`clock_skew` and `network` are refused by name**; `rust_log` is accepted,
+  unlike on the browser role, because the transfers run in a Rust process whose
+  tracing subscriber there is something to configure — which is also why `ant` is
+  invoked with `-v` (it gates the subscriber behind it), and why the result is
+  the last stdout line that PARSES as JSON rather than the last line outright.
+- **`error_kind` is classified from the final `Error:` BLOCK, never from the
+  whole `-v` stream.** Everything from the last `Error: ` line to the end of
+  stderr, so a cause on a continuation line survives while the tracing stream
+  stays out of it: classifying the stream matched the startup banner, and a run
+  that logged `Connected to autonomi network` and then died of `No space left on
+  device` came out as `connection`. `error_text` is unchanged — stderr's last
+  2,000 characters, banner and all, because that is what an operator reads.
+- **Rows go in their own table** (`deployment_hot_file_download_records`,
+  revision `c3f8d41b6e92`), recorded in the SAME `record-results` pass as the
+  file ops. Not more rows in `deployment_download_records`: pooling them would
+  let any rate or percentile average the two and would push this cohort's
+  failures into the native hard floors `deployments compare` gates on.
+  Keyed `(deployment, client_hostname, round_id, instance, started_at)` --
+  **`started_at` is in the key, which is what makes the read identity
+  SCHEDULE-QUALIFIED**: a `round_id` is `floor(epoch / period)`, so a cohort
+  recreated under the same name with 86401 s instead of 86400 s has two real
+  reads of round 20833 (00:00:00 and 05:47:13), and on the four-column key the
+  later silently destroyed the earlier. It is the reader's SCHEDULED start, so
+  it is stable per (reader, round, schedule) and the upsert stays idempotent.
+  The round grouping in both views is qualified the same way, by the resolved
+  boundary.
+  `extension` **COALESCEs** on upsert, as the browser table's does — it comes
+  from state teardown deletes, and a re-run after `clients down` would otherwise
+  merge the branch cohort and the control. The role config behind it is
+  **merged by hostname across provisions, not replaced**: the live scan sees
+  only the tiers standing now, so provisioning `swarm`, tearing it down and then
+  provisioning `control` would erase the swarm cohort's schedule — and the
+  COALESCE does not cover that, since it protects a row that already HAS an
+  extension, not the first write of one that never did. The hot-file selection
+  is snapshotted into `deploy_args.hot_file_readers_hot_files` (or
+  `browser_hot_files`, when that role snapshotted it first). **Every pass reads
+  the live object**, because `select-hot-files --replace` changes it mid-run and
+  rows written afterwards record the new address; the entries it replaced are
+  carried under `superseded_files`, keyed by ADDRESS rather than index, because
+  the earlier rows still need their bytes and sha256. **Both writers merge** —
+  the browser role's too (`hot_files.merge_hot_file_selection` is the one copy),
+  since `record-results` runs that pass first and its replacing the key outright
+  left this one with no history to preserve.
+- `deployments print-downloads --hot-file` is the live Influx view (one row per
+  round AND extension, unlike the browser view's — pooling two cohorts would
+  average the two arms), mutually exclusive with `--browser`. **The extension is
+  not on the Influx point**, so the live path resolves it per host from the
+  recorded config and the live tiers before it emits JSON and before it
+  summarises, exactly as `record-results` does; a failure to resolve warns that
+  the rounds are not split and prints them anyway, because this is a read-only
+  diagnostic.
+  `print-recorded-results` gains a "Hot-file reads" section; `slack-post`
+  renders the tier under `_Hot-file readers (native):_`. **No gate**: a swarm
+  figure has no calibration yet, and gating it would need one nobody has.
+
+See `deploy/README.md` §"Hot-file reader VMs (native, swarm cohort)".
 
 ### The pointer client tier (`clients.pointers[]`)
 

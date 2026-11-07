@@ -8,6 +8,10 @@ from typing import Optional
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
+from saorsa_db.models.hot_file_download_record import (
+    SWARM_COUNTER_COLUMNS,
+    DeploymentHotFileDownloadRecord,
+)
 from saorsa_db.models.browser_download_record import (
     DeploymentBrowserDownloadRecord,
 )
@@ -353,6 +357,9 @@ class DeploymentRepository(ABC):
     def upsert_browser_download_records(self, rows: list[dict]) -> int: ...
 
     @abstractmethod
+    def upsert_hot_file_download_records(self, rows: list[dict]) -> int: ...
+
+    @abstractmethod
     def list_upload_records_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentUploadRecord]: ...
@@ -430,6 +437,23 @@ class DeploymentRepository(ABC):
     def list_browser_download_records_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentBrowserDownloadRecord]: ...
+
+    @abstractmethod
+    def upsert_hot_file_download_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        round_id: int,
+        instance: int,
+        status: OpRecordStatus,
+        started_at: datetime,
+        **fields,
+    ) -> DeploymentHotFileDownloadRecord: ...
+
+    @abstractmethod
+    def list_hot_file_download_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentHotFileDownloadRecord]: ...
 
     @abstractmethod
     def list_wasm_client_hostnames(self, deployment_id: int) -> list[str]: ...
@@ -1615,6 +1639,155 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 DeploymentBrowserDownloadRecord.round_id,
                 DeploymentBrowserDownloadRecord.client_hostname,
                 DeploymentBrowserDownloadRecord.instance,
+            )
+            .all()
+        )
+
+    #: ``started_at`` is in the KEY, not merely stored: a `round_id` means a
+    #: different instant under a different period, so two schedules' reads of
+    #: one round are two reads and must not share a key. See the model's
+    #: `UniqueConstraint`.
+    _HOT_FILE_RECORD_KEY_COLUMNS = (
+        "deployment_id",
+        "client_hostname",
+        "round_id",
+        "instance",
+        "started_at",
+    )
+    _HOT_FILE_RECORD_OVERWRITE_COLUMNS = (
+        "region",
+        "hot_file_index",
+        "address",
+        "file_size_bytes",
+        "status",
+        "error_kind",
+        "error_text",
+        "total_ms",
+        "client_elapsed_ms",
+        "started_late_ms",
+        "verify_status",
+        "swarm_present",
+        "swarm_rooms",
+    ) + SWARM_COUNTER_COLUMNS
+    #: The one column the Influx point does not carry, so it may not be
+    #: overwritten with None by a re-run that could not resolve it.
+    _HOT_FILE_RECORD_COALESCE_COLUMNS = ("extension",)
+
+    def upsert_hot_file_download_records(self, rows: list[dict]) -> int:
+        """Upsert many hot-file reader rounds, one statement and commit per chunk.
+
+        Idempotent like the browser upsert it mirrors, so `record-results` can be
+        re-run against the same Influx range and revise rather than duplicate.
+
+        **``extension`` COALESCEs**, because the Influx point does not carry it
+        and a re-run that cannot resolve it would otherwise erase what an
+        earlier pass recorded. It comes from state teardown deletes, so a
+        `record-results` re-run after `clients down` resolves None for every
+        host -- and writing that would relabel a whole cohort as the
+        deployment's own tier, which on a run with a branch cohort and a
+        released control is exactly the distinction being measured.
+
+        A known value still updates; only None is refused.
+        """
+        if not rows:
+            return 0
+        columns = (
+            self._HOT_FILE_RECORD_KEY_COLUMNS
+            + self._HOT_FILE_RECORD_OVERWRITE_COLUMNS
+            + self._HOT_FILE_RECORD_COALESCE_COLUMNS
+        )
+        dialect_insert = _dialect_insert(self.session)
+        # Insert-only: `created_at` is when the row first appeared, so it is
+        # deliberately absent from the SET clause below.
+        now = datetime.now(timezone.utc)
+        prepared = _dedupe_last(
+            [
+                {column: row.get(column) for column in columns} | {"created_at": now}
+                for row in rows
+            ],
+            self._HOT_FILE_RECORD_KEY_COLUMNS,
+        )
+        written = 0
+        for chunk in _upsert_chunks(prepared):
+            stmt = dialect_insert(DeploymentHotFileDownloadRecord.__table__).values(
+                chunk
+            )
+            set_ = {
+                column: stmt.excluded[column]
+                for column in self._HOT_FILE_RECORD_OVERWRITE_COLUMNS
+            }
+            set_.update(
+                {
+                    column: func.coalesce(
+                        stmt.excluded[column],
+                        getattr(DeploymentHotFileDownloadRecord, column),
+                    )
+                    for column in self._HOT_FILE_RECORD_COALESCE_COLUMNS
+                }
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=list(self._HOT_FILE_RECORD_KEY_COLUMNS),
+                set_=set_,
+            )
+            self.session.execute(stmt)
+            self.session.commit()
+            written += len(chunk)
+        # See `upsert_browser_download_records`: a Core INSERT ... ON CONFLICT
+        # goes round the ORM, and these sessions do not expire on commit.
+        self.session.expire_all()
+        return written
+
+    def upsert_hot_file_download_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        round_id: int,
+        instance: int,
+        status: OpRecordStatus,
+        started_at: datetime,
+        **fields,
+    ) -> DeploymentHotFileDownloadRecord:
+        """Record one reader's round, keyed on (deployment, host, round, instance).
+
+        ``**fields`` rather than forty-odd keyword parameters: twenty-five of
+        them are swarm counters whose only property is being carried, and a
+        signature listing each would be a second place to keep that list in step
+        with :data:`SWARM_COUNTER_COLUMNS`.
+        """
+        self.upsert_hot_file_download_records(
+            [
+                {
+                    "deployment_id": deployment_id,
+                    "client_hostname": client_hostname,
+                    "round_id": round_id,
+                    "instance": instance,
+                    "status": status,
+                    "started_at": started_at,
+                    **fields,
+                }
+            ]
+        )
+        return (
+            self.session.query(DeploymentHotFileDownloadRecord)
+            .filter(
+                DeploymentHotFileDownloadRecord.deployment_id == deployment_id,
+                DeploymentHotFileDownloadRecord.client_hostname == client_hostname,
+                DeploymentHotFileDownloadRecord.round_id == round_id,
+                DeploymentHotFileDownloadRecord.instance == instance,
+            )
+            .one_or_none()
+        )
+
+    def list_hot_file_download_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentHotFileDownloadRecord]:
+        return (
+            self.session.query(DeploymentHotFileDownloadRecord)
+            .filter(DeploymentHotFileDownloadRecord.deployment_id == deployment_id)
+            .order_by(
+                DeploymentHotFileDownloadRecord.round_id,
+                DeploymentHotFileDownloadRecord.client_hostname,
+                DeploymentHotFileDownloadRecord.instance,
             )
             .all()
         )

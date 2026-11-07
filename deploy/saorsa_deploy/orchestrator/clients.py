@@ -33,6 +33,7 @@ from __future__ import annotations
 from saorsa_deploy.client_roles import (
     BROWSER_DEFAULT_VM_SIZE,
     ROLE_BROWSER_DOWNLOAD,
+    ROLE_HOT_FILE_READ,
 )
 from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.orchestrator.steps import Step
@@ -181,6 +182,7 @@ _ROLE_FOR_LIST = {
     "wasm_downloaders": "wasm-download",
     "pointers": "pointer",
     "browser_downloaders": ROLE_BROWSER_DOWNLOAD,
+    "hot_file_readers": ROLE_HOT_FILE_READ,
 }
 
 #: Default VM size per role, mirroring the `clients infra` spec parsers. Only
@@ -232,6 +234,137 @@ def planned_client_vms(
                     }
                 )
     return vms
+
+
+def manifest_client_tiers(manifest: Manifest):
+    """The client block of any manifest kind that has one, or None.
+
+    Three kinds carry client tiers in three places -- a testnet's
+    ``testnet.clients``, an extension's ``extension.clients`` and a
+    ``kind: clients`` manifest's top-level ``clients`` -- and the notes below
+    are printed for all three, so the lookup lives here rather than being
+    repeated at each call site.
+    """
+    for holder in (manifest.testnet, manifest.extension):
+        if holder is not None and getattr(holder, "clients", None) is not None:
+            return holder.clients
+    return manifest.clients
+
+
+def reader_offset_secs(client_index: int, instance: int, instances: int, stagger: int) -> int:
+    """One reader's start offset from the round boundary.
+
+    ``((k − 1) × instances + (i − 1)) × stagger``, mirroring
+    ``reader_offset_secs`` in ``resources/scripts/hot_file_reader.py``. The two
+    cannot be shared (that file is copied verbatim onto a VM and imports nothing
+    from this package) and a test pins them together.
+    """
+    if stagger <= 0:
+        return 0
+    return ((max(client_index, 1) - 1) * instances + (max(instance, 1) - 1)) * stagger
+
+
+def last_hot_file_reader_offset_secs(max_client_index: int, instances: int, stagger: int) -> int:
+    """The offset of the last reader on the highest-indexed VM of a cohort.
+
+    The service's own formula with ``i = instances``:
+    ``((k − 1) × instances + (instances − 1)) × stagger``. Keyed on the highest
+    allocated ``client_index``, NOT on how many VMs the cohort has — an
+    extension's indexes CONTINUE from whatever the deployment already uses, so a
+    second cohort of four VMs is indexes 5..8 and its last reader starts far
+    later than a first cohort's would.
+
+    Mirrors ``last_reader_offset_secs`` in
+    ``resources/scripts/hot_file_reader.py``; the two cannot be shared (that
+    file is copied verbatim onto a VM and imports nothing from this package) and
+    a test pins them together. A plan that describes a schedule the VMs do not
+    run is worse than no plan: counting VMs printed 150 s for a cohort whose
+    last reader actually starts at 310 s, which is the figure an operator sizes
+    the stagger against.
+    """
+    if stagger <= 0 or max_client_index <= 0 or instances <= 0:
+        return 0
+    return ((max_client_index - 1) * instances + (instances - 1)) * stagger
+
+
+def hot_file_stagger_notes(
+    manifest: Manifest, base_indexes: dict[str, int] | None = None
+) -> list[str]:
+    """One line per hot-file reader cohort, naming the LAST reader's offset.
+
+    Printed because the arithmetic is not checked anywhere: the operator sizes
+    the cohort, and a stagger that walks the last reader's start past the
+    round's own deadline is a cohort whose later readers never overlap the
+    earlier ones -- which is the one thing the stagger exists to arrange.
+    Refusing it would be wrong (a deliberately long stagger over a long round is
+    a legitimate shape), so it is said out loud instead.
+
+    Grouped by ``(round_period_secs, download_timeout_secs, round_parity,
+    start_stagger_secs, instances)``, not per entry: the schedule is a property
+    of the COHORT, and two entries that agree on it are one cohort however many
+    regions they span.
+
+    **Indexes are allocated exactly as :func:`planned_client_vms` allocates
+    them** — one running offset over every entry in the role's list, continuing
+    from ``base_indexes``, so a group's highest index accounts for the VMs other
+    groups in the same manifest occupy ahead of it as well as for the
+    deployment's existing readers. ``base_indexes`` is ``None`` on a deployment
+    manifest (its own tier always starts at 1) and on a ``clients plan`` whose
+    deployment state could not be read, which is the case that already prints a
+    note saying the indexes shown are probably wrong.
+
+    Pure, so `clients plan` and `deployments plan` print the same line.
+    """
+    entries = getattr(manifest_client_tiers(manifest), "hot_file_readers", None) or []
+    base = dict(base_indexes or {}).get(ROLE_HOT_FILE_READ, 0)
+
+    cohorts: dict[tuple, list[int]] = {}
+    offset = 0
+    for entry in entries:
+        key = (
+            entry.round_period_secs,
+            entry.download_timeout_secs,
+            entry.round_parity,
+            entry.start_stagger_secs,
+            entry.instances,
+        )
+        for _ in range(entry.count):
+            offset += 1
+            cohorts.setdefault(key, []).append(base + offset)
+
+    notes: list[str] = []
+    for key, indexes in cohorts.items():
+        period, deadline, parity, stagger, instances = key
+        highest = max(indexes)
+        last = last_hot_file_reader_offset_secs(highest, instances, stagger)
+        note = (
+            f"hot-file readers: {len(indexes)} VM(s) x {instances} reader(s) "
+            f"(client_index {min(indexes)}..{highest}), round {period}s, parity "
+            f"{parity}, stagger {stagger}s — the last reader starts {last}s "
+            f"after the boundary"
+        )
+        # Compared with the DEADLINE, not with `last + deadline` against the
+        # period. The deadline is an absolute offset from the boundary -- the
+        # service refuses `offset >= download_timeout_secs` outright -- so it is
+        # not an extra download duration added to each start. The old sum said
+        # nothing: with period 600, deadline 100 and a 150 s last start,
+        # `150 + 100 <= 600` passed silently while six of the sixteen readers
+        # were guaranteed never to start at all.
+        stranded = sum(
+            1
+            for index in indexes
+            for i in range(1, instances + 1)
+            if reader_offset_secs(index, i, instances, stagger) >= deadline
+        )
+        if stranded:
+            note += (
+                f"; the {deadline}s deadline is an absolute offset from the "
+                f"boundary, so {stranded} of the {len(indexes) * instances} "
+                f"readers start at or past it, can never run and will record a "
+                f"timeout every round"
+            )
+        notes.append(note)
+    return notes
 
 
 def vm_summary(manifest: Manifest) -> str:
