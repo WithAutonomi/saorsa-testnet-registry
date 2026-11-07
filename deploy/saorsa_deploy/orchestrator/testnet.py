@@ -24,11 +24,14 @@ from saorsa_deploy.client_roles import (
     BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
     BROWSER_DEFAULT_INSTANCES,
     BROWSER_DEFAULT_ROUND_PERIOD_SECS,
+    BROWSER_DEFAULT_SEED_UNTIL_SECS,
+    BROWSER_DEFAULT_START_STAGGER_SECS,
     HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
     HOT_FILE_DEFAULT_INSTANCES,
     HOT_FILE_DEFAULT_ROUND_PERIOD_SECS,
     HOT_FILE_DEFAULT_START_STAGGER_SECS,
     HOT_FILE_PARITY_ALL,
+    ROUND_PARITY_ALL,
 )
 from saorsa_deploy.config.models import (
     POINTER_CHAIN_FRACTION,
@@ -215,6 +218,12 @@ def _browser_downloader_spec(b) -> str:
         parts.append(f"round_period_secs={b.round_period_secs}")
     if b.download_timeout_secs != BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS:
         parts.append(f"download_timeout_secs={b.download_timeout_secs}")
+    if b.round_parity != ROUND_PARITY_ALL:
+        parts.append(f"round_parity={b.round_parity}")
+    if b.start_stagger_secs != BROWSER_DEFAULT_START_STAGGER_SECS:
+        parts.append(f"start_stagger_secs={b.start_stagger_secs}")
+    if b.seed_until_secs != BROWSER_DEFAULT_SEED_UNTIL_SECS:
+        parts.append(f"seed_until_secs={b.seed_until_secs}")
     if b.forward_logs is not None:
         parts.append(f"forward_logs={str(b.forward_logs).lower()}")
     return ":".join(parts)

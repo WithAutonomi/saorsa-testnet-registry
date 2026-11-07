@@ -7,6 +7,7 @@
  */
 
 import { BROWSER_MAX_INSTANCES } from "./limits.mjs";
+import { ROUND_PARITIES, ROUND_PARITY_ALL, SEED_TAIL_GAP_SECS } from "./rounds.mjs";
 
 function int(env, name, fallback) {
   const raw = env[name];
@@ -36,13 +37,60 @@ export function loadConfig(env = process.env) {
         `ROUND_PERIOD_SECS (${roundPeriodSecs}).`,
     );
   }
+  const roundParity = env.ROUND_PARITY || ROUND_PARITY_ALL;
+  if (!ROUND_PARITIES.includes(roundParity)) {
+    throw new Error(
+      `ROUND_PARITY must be one of ${ROUND_PARITIES.join(", ")}, got '${roundParity}'.`,
+    );
+  }
+  const startStaggerSecs = int(env, "START_STAGGER_SECS", 0);
+  if (startStaggerSecs < 0) {
+    throw new Error(
+      `START_STAGGER_SECS must be >= 0 (0 = every instance starts on the ` +
+        `boundary), got ${startStaggerSecs}.`,
+    );
+  }
+  // The same two bounds the manifest schema and the spec parser apply, checked
+  // here as well because this is the only one of the three that sees what
+  // actually reached the VM. A seed window shorter than the deadline would shut
+  // a page that was still downloading; one that runs into the next boundary
+  // would leave this instance's WebRTC sessions open when the next round's
+  // browser dials, making it the fifth session from this address.
+  const seedUntilSecs = int(env, "SEED_UNTIL_SECS", 0);
+  if (seedUntilSecs < 0) {
+    throw new Error(`SEED_UNTIL_SECS must be >= 0 (0 = no seeding), got ${seedUntilSecs}.`);
+  }
+  if (seedUntilSecs > 0) {
+    if (seedUntilSecs < downloadTimeoutSecs) {
+      throw new Error(
+        `SEED_UNTIL_SECS (${seedUntilSecs}) must be >= DOWNLOAD_TIMEOUT_SECS ` +
+          `(${downloadTimeoutSecs}): a page cannot stop seeding before its own ` +
+          `download was allowed to finish.`,
+      );
+    }
+    if (seedUntilSecs >= roundPeriodSecs - SEED_TAIL_GAP_SECS) {
+      throw new Error(
+        `SEED_UNTIL_SECS (${seedUntilSecs}) must be < ROUND_PERIOD_SECS - ` +
+          `${SEED_TAIL_GAP_SECS} (${roundPeriodSecs - SEED_TAIL_GAP_SECS}): a page ` +
+          `still seeding when the next round launches holds a session the next ` +
+          `instance needs.`,
+      );
+    }
+  }
   return {
     testnetName: env.TESTNET_NAME || "",
     hostRole: env.HOST_ROLE || "browser_downloader",
     region: env.REGION || "",
+    // 1-based, as `clients infra` allocates it. Load-bearing: it is half of
+    // every instance's start offset, so a VM that did not receive its own index
+    // would start its whole cohort of instances on the boundary together.
+    clientIndex: int(env, "CLIENT_INDEX", 1),
     instances,
     roundPeriodSecs,
     downloadTimeoutSecs,
+    roundParity,
+    startStaggerSecs,
+    seedUntilSecs,
     seeds: (env.BOOTSTRAP_WEBRTC_MULTIADDRS || "")
       .split(",")
       .map((s) => s.trim())

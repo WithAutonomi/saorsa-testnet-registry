@@ -796,7 +796,14 @@ def _print_browser_downloads_section(rows: list, name: str, console: Console) ->
     summary.add_row("downloads", f"{len(rows):,}")
     if extensions:
         summary.add_row("extensions", ", ".join(extensions))
+    # The one figure that says whether a swarm existed at all. A bundle without
+    # `swarmStats()` reports none, so its rows are `swarm_present = False` and
+    # their zeros are a property of the build, not of the network.
+    reporting = sum(1 for r in rows if r.swarm_present)
+    summary.add_row("rounds reporting a swarm", f"{reporting:,}/{len(rows):,}")
     console.print(summary)
+
+    _print_browser_swarm_table(rows, console)
 
     status_table = Table(title="By status")
     status_table.add_column("status")
@@ -829,6 +836,70 @@ def _print_browser_downloads_section(rows: list, name: str, console: Console) ->
         "`saorsa-deploy analysis browser-reads --name <name> --window-start … "
         "--window-end …`[/dim]"
     )
+
+
+def _print_browser_swarm_table(rows: list, console: Console) -> None:
+    """Per round: how much of it the swarm served (INFRA-532).
+
+    Printed only when something carries a swarm figure, so every run recorded
+    before the columns existed renders exactly as it did -- and so does a cohort
+    that ran a bundle with no `swarmStats()`, whose rows are all NULL rather than
+    all zero.
+
+    Grouped by round alone, not by round and extension as the hot-file section
+    is: the parity makes two browser cohorts on one deployment own disjoint
+    rounds, so the extension is already a property of the round. The figures per
+    round are exactly the live `--browser` view's, which is what lets a reading
+    taken during the run be checked against the recorded one afterwards.
+    """
+    swarm_rows = [
+        r
+        for r in rows
+        if r.swarm_present is not None
+        or r.records_from_peers is not None
+        or r.chunks_from_readers is not None
+    ]
+    if not swarm_rows:
+        return
+
+    table = Table(title="Swarm by round")
+    table.add_column("Round", justify="right")
+    show_extension = any(r.extension for r in swarm_rows)
+    if show_extension:
+        table.add_column("Extension")
+    table.add_column("Peer-fed", justify="right")
+    table.add_column("Recs/peers", justify="right")
+    table.add_column("Bytes/peers", justify="right")
+    table.add_column("Recs served", justify="right")
+    table.add_column("Chunks/readers", justify="right")
+    table.add_column("Chunks/nodes", justify="right")
+
+    grouped: dict[tuple, list] = {}
+    for row in swarm_rows:
+        grouped.setdefault((row.round_id, row.extension), []).append(row)
+    for key in sorted(grouped, key=lambda k: (k[0], k[1] or "")):
+        round_id, extension = key
+        group = grouped[key]
+        # ATTEMPTED reads, not every row: a skip launched no browser, so
+        # counting it would put a round that mostly skipped at a peer-fed rate
+        # it never had the chance to reach.
+        attempted = [
+            r for r in group if r.status in (OpRecordStatus.SUCCESS, OpRecordStatus.FAILURE)
+        ]
+        peer_fed = sum(1 for r in attempted if (r.records_from_peers or 0) >= 1)
+        line = [str(round_id)]
+        if show_extension:
+            line.append(extension or "-")
+        line += [
+            _fmt_peer_fed(peer_fed, len(attempted)),
+            f"{sum(r.records_from_peers or 0 for r in group):,}",
+            f"{sum(r.bytes_from_peers or 0 for r in group):,}",
+            f"{sum(r.records_served or 0 for r in group):,}",
+            f"{sum(r.chunks_from_readers or 0 for r in group):,}",
+            f"{sum(r.chunks_from_nodes or 0 for r in group):,}",
+        ]
+        table.add_row(*line)
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------

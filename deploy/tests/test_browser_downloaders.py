@@ -151,6 +151,96 @@ class TestSpecParsing:
         with pytest.raises(ValueError, match="unknown key 'count'"):
             parse_browser_downloader_spec("digital_ocean:lon1:count=3")
 
+    def test_the_schedule_defaults_to_the_pre_infra_532_behaviour(self):
+        # Every round, every instance on the boundary, no seeding -- so a
+        # manifest written before the knobs existed describes the same cohort it
+        # always did.
+        spec = parse_browser_downloader_spec("digital_ocean:lon1")
+        assert spec["round_parity"] == "all"
+        assert spec["start_stagger_secs"] == 0
+        assert spec["seed_until_secs"] == 0
+
+    def test_the_schedule_knobs_parse(self):
+        spec = parse_browser_downloader_spec(
+            "digital_ocean:lon1:round_period_secs=600:download_timeout_secs=420"
+            ":round_parity=even:start_stagger_secs=2:seed_until_secs=480"
+        )
+        assert spec["round_parity"] == "even"
+        assert spec["start_stagger_secs"] == 2
+        assert spec["seed_until_secs"] == 480
+
+    @pytest.mark.parametrize("parity", ["even", "odd", "all"])
+    def test_every_parity_is_accepted(self, parity):
+        spec = parse_browser_downloader_spec(f"digital_ocean:lon1:round_parity={parity}")
+        assert spec["round_parity"] == parity
+
+    def test_an_unknown_parity_is_refused(self):
+        with pytest.raises(ValueError, match="round_parity must be one of"):
+            parse_browser_downloader_spec("digital_ocean:lon1:round_parity=EVEN")
+
+    def test_a_negative_stagger_is_refused(self):
+        with pytest.raises(ValueError, match="start_stagger_secs must be >= 0"):
+            parse_browser_downloader_spec("digital_ocean:lon1:start_stagger_secs=-1")
+
+    def test_a_seed_window_shorter_than_the_deadline_is_refused(self):
+        # It would shut a page that was still downloading, and the cohort would
+        # read that as the network's failure.
+        with pytest.raises(ValueError, match="must be >= download_timeout_secs"):
+            parse_browser_downloader_spec(
+                "digital_ocean:lon1:download_timeout_secs=420:seed_until_secs=400"
+            )
+
+    def test_a_seed_window_that_runs_into_the_next_round_is_refused(self):
+        # A page still seeding when the next round's browser launches holds a
+        # WebRTC session the next instance needs, and a node refuses the fifth
+        # from one source address.
+        with pytest.raises(ValueError, match="must be < round_period_secs - 30"):
+            parse_browser_downloader_spec(
+                "digital_ocean:lon1:round_period_secs=600:seed_until_secs=590"
+            )
+
+    def test_the_widest_legal_seed_window_is_accepted(self):
+        spec = parse_browser_downloader_spec(
+            "digital_ocean:lon1:round_period_secs=600:download_timeout_secs=420:seed_until_secs=569"
+        )
+        assert spec["seed_until_secs"] == 569
+
+    def test_the_seed_bounds_do_not_apply_when_seeding_is_off(self):
+        # 0 closes the page with its own download, so neither bound is a
+        # question that arises -- and it has to stay expressible beside a long
+        # deadline, which is the pre-INFRA-532 shape.
+        spec = parse_browser_downloader_spec(
+            "digital_ocean:lon1:download_timeout_secs=420:seed_until_secs=0"
+        )
+        assert spec["seed_until_secs"] == 0
+
+    def test_the_schedule_is_part_of_the_spec_signature(self):
+        # Changing one must be a spec MISMATCH, not a silent reuse of VMs still
+        # running the old schedule.
+        from saorsa_deploy.cmd.infra_clients import _spec_signature
+
+        base = parse_browser_downloader_spec("digital_ocean:lon1")
+        for changed in (
+            "digital_ocean:lon1:round_parity=even",
+            "digital_ocean:lon1:start_stagger_secs=2",
+            "digital_ocean:lon1:seed_until_secs=480",
+        ):
+            assert _spec_signature(base) != _spec_signature(
+                parse_browser_downloader_spec(changed)
+            ), changed
+
+    def test_an_absent_seed_window_signs_the_same_as_an_explicit_zero(self):
+        # 0 IS the default, so client state recorded before INFRA-532 must match
+        # a request that takes it -- otherwise a resumed run refuses to reuse
+        # VMs running precisely what was asked for.
+        from saorsa_deploy.cmd.infra_clients import _spec_signature
+
+        recorded = dict(parse_browser_downloader_spec("digital_ocean:lon1"))
+        del recorded["seed_until_secs"]
+        assert _spec_signature(recorded) == _spec_signature(
+            parse_browser_downloader_spec("digital_ocean:lon1:seed_until_secs=0")
+        )
+
 
 # --------------------------------------------------------------------------- #
 # manifest schema
@@ -258,6 +348,80 @@ class TestSchema:
         assert entry.download_timeout_secs == 300
         assert entry.count == 1
 
+    def _entry(self, **fields):
+        return {
+            "browser_downloaders": [
+                {"provider": "digital_ocean", "region": "lon1", **fields},
+            ]
+        }
+
+    def test_the_schedule_defaults_to_the_pre_infra_532_behaviour(self):
+        entry = _manifest(BROWSER).testnet.clients.browser_downloaders[0]
+        assert entry.round_parity == "all"
+        assert entry.start_stagger_secs == 0
+        assert entry.seed_until_secs == 0
+
+    def test_the_swarm_run_s_entry_validates(self):
+        # The DEV-01 shape: even rounds, a two-second stagger, seeding to 480s
+        # inside a 600s round with a 420s deadline.
+        entry = _manifest(
+            self._entry(
+                instances=4,
+                round_period_secs=600,
+                download_timeout_secs=420,
+                round_parity="even",
+                start_stagger_secs=2,
+                seed_until_secs=480,
+            )
+        ).testnet.clients.browser_downloaders[0]
+        assert (entry.round_parity, entry.start_stagger_secs, entry.seed_until_secs) == (
+            "even",
+            2,
+            480,
+        )
+
+    @pytest.mark.parametrize("parity", ["even", "odd", "all"])
+    def test_every_parity_is_accepted(self, parity):
+        entry = _manifest(self._entry(round_parity=parity)).testnet.clients.browser_downloaders[0]
+        assert entry.round_parity == parity
+
+    def test_an_unknown_parity_is_refused(self):
+        with pytest.raises(ValidationError, match="round_parity must be one of"):
+            _manifest(self._entry(round_parity="EVEN"))
+
+    def test_a_negative_stagger_is_refused(self):
+        with pytest.raises(ValidationError, match="start_stagger_secs must be >= 0"):
+            _manifest(self._entry(start_stagger_secs=-1))
+
+    def test_a_negative_seed_window_is_refused(self):
+        with pytest.raises(ValidationError, match="seed_until_secs must be >= 0"):
+            _manifest(self._entry(seed_until_secs=-1))
+
+    def test_a_seed_window_shorter_than_the_deadline_is_refused(self):
+        # The lower bound: a page shut while its own download was still allowed
+        # to be running fails for a reason the cohort would read as the
+        # network's.
+        with pytest.raises(ValidationError, match="must be >= download_timeout_secs"):
+            _manifest(self._entry(download_timeout_secs=420, seed_until_secs=400))
+
+    def test_a_seed_window_that_runs_into_the_next_round_is_refused(self):
+        # The upper bound: a page still seeding when the next round's browser
+        # launches holds a session the next instance needs.
+        with pytest.raises(ValidationError, match="must be < round_period_secs - 30"):
+            _manifest(self._entry(round_period_secs=600, seed_until_secs=590))
+
+    def test_the_widest_legal_seed_window_is_accepted(self):
+        entry = _manifest(
+            self._entry(round_period_secs=600, download_timeout_secs=420, seed_until_secs=569)
+        ).testnet.clients.browser_downloaders[0]
+        assert entry.seed_until_secs == 569
+
+    def test_the_seed_bounds_do_not_apply_when_seeding_is_off(self):
+        entry = _manifest(
+            self._entry(download_timeout_secs=420, seed_until_secs=0)
+        ).testnet.clients.browser_downloaders[0]
+        assert entry.seed_until_secs == 0
+
     def test_forward_logs_still_requires_elastic(self):
         with pytest.raises(ValidationError, match="forward_logs requires elastic.enabled"):
             _manifest(
@@ -353,6 +517,62 @@ class TestOrchestrator:
         argv = _step(build_deploy_steps(_manifest(BROWSER)), ["clients", "infra"]).argv
         token = argv[argv.index("--browser-downloader") + 1]
         assert "instances=" not in token and "round_period_secs=" not in token
+
+    def test_the_schedule_knobs_appear_in_the_token_when_set(self):
+        m = _manifest(
+            {
+                "browser_downloaders": [
+                    {
+                        "provider": "digital_ocean",
+                        "region": "lon1",
+                        "round_period_secs": 600,
+                        "download_timeout_secs": 420,
+                        "round_parity": "even",
+                        "start_stagger_secs": 2,
+                        "seed_until_secs": 480,
+                    }
+                ]
+            }
+        )
+        argv = _step(build_deploy_steps(m), ["clients", "infra"]).argv
+        assert argv[argv.index("--browser-downloader") + 1] == (
+            "digital_ocean:lon1:download_timeout_secs=420:round_parity=even"
+            ":start_stagger_secs=2:seed_until_secs=480"
+        )
+
+    def test_a_default_schedule_emits_none_of_the_three(self):
+        # The argv is what the step journal compares, so a token that narrows
+        # nothing is not free: it would make every existing run's journal entry
+        # a miss.
+        argv = _step(build_deploy_steps(_manifest(BROWSER)), ["clients", "infra"]).argv
+        token = argv[argv.index("--browser-downloader") + 1]
+        for key in ("round_parity=", "start_stagger_secs=", "seed_until_secs="):
+            assert key not in token
+
+    def test_the_emitted_token_parses_back_to_the_manifest_entry(self):
+        # The round trip is what matters: the orchestrator writes the token and
+        # `clients infra` parses it, so a knob emitted in a form the parser
+        # refuses would fail only once the run was under way.
+        m = _manifest(
+            {
+                "browser_downloaders": [
+                    {
+                        "provider": "digital_ocean",
+                        "region": "lon1",
+                        "round_period_secs": 600,
+                        "download_timeout_secs": 420,
+                        "round_parity": "odd",
+                        "start_stagger_secs": 3,
+                        "seed_until_secs": 500,
+                    }
+                ]
+            }
+        )
+        argv = _step(build_deploy_steps(m), ["clients", "infra"]).argv
+        parsed = parse_browser_downloader_spec(argv[argv.index("--browser-downloader") + 1])
+        assert parsed["round_parity"] == "odd"
+        assert parsed["start_stagger_secs"] == 3
+        assert parsed["seed_until_secs"] == 500
 
     def test_the_wasm_build_step_carries_the_features(self):
         argv = _step(build_deploy_steps(_manifest(BROWSER)), ["build", "ant-wasm"]).argv
@@ -514,6 +734,12 @@ class TestProvisioning:
             "instances": 2,
             "round_period_secs": 300,
             "download_timeout_secs": 120,
+            # The schedule knobs an entry that names none of them runs at: every
+            # round, every instance on the boundary, no seeding — which is what
+            # every cohort before INFRA-532 did.
+            "round_parity": "all",
+            "start_stagger_secs": 0,
+            "seed_until_secs": 0,
         }
 
     def test_the_env_file_quotes_the_multiaddr_list_and_the_url(self):
@@ -777,6 +1003,9 @@ def _browser_env(**overrides):
         "instances": 4,
         "round_period_secs": 600,
         "download_timeout_secs": 300,
+        "round_parity": "all",
+        "start_stagger_secs": 0,
+        "seed_until_secs": 0,
     }
     env.update(overrides)
     return {"1.2.3.4": env}
@@ -867,9 +1096,13 @@ class TestBrowserOps:
             "TESTNET_NAME=DEV-01",
             "HOST_ROLE=browser_downloader",
             "REGION=lon1",
+            "CLIENT_INDEX=1",
             "INSTANCES=4",
             "ROUND_PERIOD_SECS=600",
             "DOWNLOAD_TIMEOUT_SECS=300",
+            "ROUND_PARITY=all",
+            "START_STAGGER_SECS=0",
+            "SEED_UNTIL_SECS=0",
             "BOOTSTRAP_WEBRTC_MULTIADDRS=",
             "ADDRESSES_BASE_URL=",
             "TRACE_LOG=",
@@ -891,6 +1124,38 @@ class TestBrowserOps:
         assert "INSTANCES=2" in cmds
         assert "ROUND_PERIOD_SECS=300" in cmds
         assert "DOWNLOAD_TIMEOUT_SECS=120" in cmds
+
+    def test_the_schedule_reaches_the_env_file(self):
+        cmds = self._commands(
+            self._run(
+                _browser_env(
+                    client_index=3,
+                    round_period_secs=600,
+                    download_timeout_secs=420,
+                    round_parity="even",
+                    start_stagger_secs=2,
+                    seed_until_secs=480,
+                )
+            ),
+            "env file",
+        )
+        # `CLIENT_INDEX` is half of every instance's start offset: without it
+        # the VM would launch its whole set on the boundary together and the
+        # cohort would not be staggered at all.
+        assert "CLIENT_INDEX=3" in cmds
+        assert "ROUND_PARITY=even" in cmds
+        assert "START_STAGGER_SECS=2" in cmds
+        assert "SEED_UNTIL_SECS=480" in cmds
+
+    def test_an_explicit_zero_stagger_is_written_as_zero(self):
+        # Not defaulted away: `0` is a legitimate explicit setting AND the
+        # default, and the harness refuses a value it cannot parse rather than
+        # guessing.
+        cmds = self._commands(
+            self._run(_browser_env(start_stagger_secs=0, seed_until_secs=0)), "env file"
+        )
+        assert "START_STAGGER_SECS=0" in cmds
+        assert "SEED_UNTIL_SECS=0" in cmds
 
     def test_the_influx_bucket_is_the_wasm_bucket(self):
         from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
@@ -951,3 +1216,257 @@ class TestResultsPipelineIsUntouched:
         }
         hosts = transport_map_from_client_state("DEV-01", state)
         assert hosts == {"DEV-01-ant-client-download-lon1-1": "native"}
+
+
+# --------------------------------------------------------------------------- #
+# the recorded role config (INFRA-532)
+# --------------------------------------------------------------------------- #
+class TestRecordedRoleConfig:
+    """What `clients provision` writes into ``deploy_args`` about the cohort.
+
+    The registry is the only copy that survives teardown, so without the three
+    schedule knobs a cohort's rows cannot be read back as the schedule they
+    actually ran on: the parity says which rounds were this cohort's, the
+    stagger (with ``client_index``) says when each instance started, and the
+    seed window says how long each page stayed available to the others.
+    """
+
+    def _entry(self, **client):
+        from saorsa_deploy.browser_records import browser_config_entry
+
+        base = {
+            "role": ROLE_BROWSER_DOWNLOAD,
+            "region": "lon1",
+            "client_index": 3,
+            "instances": 4,
+            "round_period_secs": 600,
+            "download_timeout_secs": 420,
+        }
+        return browser_config_entry("DEV-01", "browsers", {**base, **client})
+
+    def test_the_schedule_is_recorded(self):
+        entry = self._entry(round_parity="even", start_stagger_secs=2, seed_until_secs=480)
+        assert entry["round_parity"] == "even"
+        assert entry["start_stagger_secs"] == 2
+        assert entry["seed_until_secs"] == 480
+        # `client_index` is half of every instance's offset, so the schedule a
+        # round ran on is not reconstructable without it.
+        assert entry["client_index"] == 3
+
+    def test_an_unrecorded_schedule_takes_the_defaults(self):
+        entry = self._entry()
+        assert entry["round_parity"] == "all"
+        assert entry["start_stagger_secs"] == 0
+        assert entry["seed_until_secs"] == 0
+
+    def test_an_explicit_zero_is_not_defaulted_away(self):
+        # `or` let a recorded 0 take a non-zero default, which makes the
+        # registry describe a schedule the VM was never given. 0 is both the
+        # default AND a legitimate explicit setting for both of these.
+        entry = self._entry(start_stagger_secs=0, seed_until_secs=0)
+        assert entry["start_stagger_secs"] == 0
+        assert entry["seed_until_secs"] == 0
+
+    def test_the_rest_of_the_entry_is_unchanged(self):
+        entry = self._entry()
+        assert entry["hostname"].endswith("-ant-client-browser-download-lon1-3")
+        assert entry["extension"] == "browsers"
+        assert entry["instances"] == 4
+        assert entry["round_period_secs"] == 600
+        assert entry["download_timeout_secs"] == 420
+        # Deliberately absent: this document outlives the VM, and an address
+        # that has been reassigned is worse than none.
+        assert "ip" not in entry
+
+
+# --------------------------------------------------------------------------- #
+# review round 1: resuming a deployment recorded before the schedule existed
+# --------------------------------------------------------------------------- #
+class TestLegacyStateStillMatches:
+    """A browser VM recorded by 1.16.0 carries no `round_parity`,
+    `start_stagger_secs` or `seed_until_secs`. Parsing the identical default
+    spec under this release produces `all` / 0 / 0, so the two sides of
+    `_client_specs_match` have to be normalised the same way — otherwise
+    `clients infra` tells the operator to destroy clients whose layout and
+    schedule have not changed at all, which is the resume path of every existing
+    browser deployment.
+    """
+
+    def _legacy(self):
+        """A recorded spec as 1.16.0 wrote it: the schedule keys absent."""
+        spec = dict(parse_browser_downloader_spec("digital_ocean:lon1"))
+        for key in ("round_parity", "start_stagger_secs", "seed_until_secs"):
+            spec.pop(key)
+        return spec
+
+    def test_legacy_browser_state_matches_a_default_request(self):
+        from saorsa_deploy.cmd.infra_clients import _client_specs_match
+
+        requested = parse_browser_downloader_spec("digital_ocean:lon1")
+        assert _client_specs_match([self._legacy()], [requested])
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "digital_ocean:lon1:round_parity=even",
+            "digital_ocean:lon1:start_stagger_secs=2",
+            "digital_ocean:lon1:download_timeout_secs=420:seed_until_secs=480",
+        ],
+    )
+    def test_a_real_schedule_change_still_mismatches(self, spec):
+        # Normalising absence must not normalise away a CHANGE: that is what the
+        # fields are in the signature for.
+        from saorsa_deploy.cmd.infra_clients import _client_specs_match
+
+        assert not _client_specs_match([self._legacy()], [parse_browser_downloader_spec(spec)])
+
+    def test_an_absent_parity_and_an_explicit_all_sign_the_same(self):
+        from saorsa_deploy.cmd.infra_clients import _spec_signature
+
+        assert _spec_signature(self._legacy()) == _spec_signature(
+            parse_browser_downloader_spec("digital_ocean:lon1:round_parity=all")
+        )
+
+
+# --------------------------------------------------------------------------- #
+# review round 1: an instance whose start is past its own round deadline
+# --------------------------------------------------------------------------- #
+class TestExhaustedStartOffsets:
+    """A stagger long enough to push an instance's start to or past the round's
+    deadline is a start that can never run, and sleeping to it anyway launches
+    Chromium inside the NEXT round — the other cohort's, on a parity-split
+    deployment. The native reader refuses it before the sleep
+    (`hot_file_reader.py`); the harness now does the same.
+
+    The predicate is pinned here against the native reader's, and the ORDER is
+    pinned in the harness source: `node --test` cannot import `harness.mjs`
+    (it imports Playwright, which is not installed in CI), and the guard being
+    after the sleep is exactly the defect.
+    """
+
+    def test_the_reviewer_s_offsets_are_all_past_the_deadline(self):
+        # client_index 8, 4 instances, 30s stagger, 300s deadline -> 840, 870,
+        # 900, 930.
+        from saorsa_deploy.orchestrator.clients import reader_offset_secs
+
+        offsets = [reader_offset_secs(8, i, 4, 30) for i in (1, 2, 3, 4)]
+        assert offsets == [840, 870, 900, 930]
+        assert all(o >= 300 for o in offsets)
+
+    def test_the_harness_refuses_an_exhausted_offset_before_sleeping(self):
+        harness = (HARNESS_DIR / "harness.mjs").read_text()
+        guard = harness.index("startOffsetExhausted(offsetSecs")
+        sleep = harness.index("const waitMs =")
+        launch = harness.index("chromium.launch")
+        assert guard < sleep < launch, "the guard must precede both the sleep and the launch"
+
+    def test_the_harness_rechecks_the_budget_after_the_sleep(self):
+        # A legal offset can still land past the deadline when the harness was
+        # started late, a previous round overran or the VM was paused, and
+        # launching Chromium then spends ~10s of the next round for a download
+        # that cannot be recorded against this one.
+        harness = (HARNESS_DIR / "harness.mjs").read_text()
+        recheck = harness.index("Date.now() >= deadlineAt")
+        launch = harness.index("chromium.launch")
+        assert harness.index("const waitMs =") < recheck < launch
+
+    def test_the_predicate_is_the_native_reader_s_rule(self):
+        # One rule, two implementations that cannot be shared (the reader is
+        # copied verbatim onto a VM and the harness runs under Node), so the
+        # values are pinned together.
+        import re
+
+        rounds = (HARNESS_DIR / "lib" / "rounds.mjs").read_text()
+        assert "export function startOffsetExhausted" in rounds
+        reader = (
+            Path(__file__).resolve().parents[1]
+            / "saorsa_deploy"
+            / "resources"
+            / "scripts"
+            / "hot_file_reader.py"
+        ).read_text()
+        assert re.search(r"if offset >= cfg\.download_timeout_secs:", reader)
+
+
+# --------------------------------------------------------------------------- #
+# review round 1: the download deadline is an absolute instant
+# --------------------------------------------------------------------------- #
+class TestAbsoluteDownloadDeadline:
+    """`timeoutMs` was a DURATION the page started counting at the download
+    race, so the module import and `connect()` were free: with a 300s budget, a
+    100s connect let a 250s download report success at 350s. The outer backstop
+    had been failing those by accident, and moving it out to the seed deadline
+    (so a seeding page is not abandoned) removed the accident.
+
+    The behaviour itself is exercised against the real page function in
+    `test/page-deadline.test.mjs`, which `test_browser_client_source.py` runs.
+    """
+
+    def test_the_page_takes_an_absolute_deadline(self):
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        assert "deadlineAtMs" in page
+        assert "timeoutMs" not in page, "a duration would reintroduce the drift"
+
+    def test_the_harness_passes_the_boundary_based_instant(self):
+        harness = (HARNESS_DIR / "harness.mjs").read_text()
+        assert "deadlineAtMs: deadlineAt" in harness
+        assert "round.boundary * 1000 + config.downloadTimeoutSecs * 1000" in harness
+
+    def test_the_import_and_the_connect_are_both_raced(self):
+        # A connect that never resolves must spend the DOWNLOAD budget and fail,
+        # not sit there consuming the seed window the backstop now allows.
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        assert page.count("untilDeadline()") >= 3
+        assert "client.connect(), untilDeadline()" in page
+
+    def test_only_the_seed_wait_may_outlive_the_deadline(self):
+        harness = (HARNESS_DIR / "harness.mjs").read_text()
+        # The backstop covers the later of the two instants, so a seeding page
+        # is not abandoned; the page's own deadline is what bounds the download.
+        assert "Math.max(deadlineAt, seedUntilMs)" in harness
+
+
+# --------------------------------------------------------------------------- #
+# review round 2: the deadline is checked as an INSTANT, and u64 rooms
+# --------------------------------------------------------------------------- #
+class TestDeadlineInstantAndBigIntRooms:
+    """`Promise.race` cannot enforce a deadline on its own: it only decides
+    between promises that have SETTLED, and the timer callback cannot run while
+    a final synchronous step inside WASM blocks the event loop. So a download
+    that ran from 290 s to 335 s of a 300 s budget won the race and reported
+    success. The behaviour is exercised against the real page function in
+    `test/page-deadline.test.mjs`; this pins the shape it depends on.
+    """
+
+    def test_the_completion_instant_is_compared_with_the_deadline(self):
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        assert "completedAt > deadlineAt" in page
+
+    def test_the_instant_check_precedes_the_size_check_and_the_seed_wait(self):
+        # A late download is late whatever its length, and a page that was
+        # already overdue must not be held open on top of it.
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        late = page.index("completedAt > deadlineAt")
+        assert late < page.index("size mismatch")
+        assert late < page.index("if (seedUntilMs)")
+
+    def test_a_late_completion_classifies_as_a_timeout(self):
+        # The classifier reads "harness deadline" as `timeout`; a kind of
+        # `other` would hide an overrun among the genuine faults.
+        from saorsa_deploy.cmd.record_results import _BROWSER_STATUS  # noqa: F401
+
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        assert "harness deadline (completed" in page
+        classify = (HARNESS_DIR / "lib" / "classify.mjs").read_text()
+        assert 'HARNESS_DIR = "harness deadline"' not in classify  # it is a named export
+        assert 'HARNESS_DEADLINE = "harness deadline"' in classify
+
+    def test_room_counters_are_normalised_before_serialisation(self):
+        # `JSON.stringify` throws on a BigInt and a room's counters are Rust
+        # u64s, so the throw reached the harness's catch and turned a SUCCESSFUL
+        # transfer into `failure` / `other` with the swarm zeroed — the
+        # reporting of the measurement changing the measurement.
+        swarm = (HARNESS_DIR / "lib" / "swarm.mjs").read_text()
+        assert "export function roomsToJson" in swarm
+        assert "normaliseForJson" in swarm
+        assert "JSON.stringify(Array.isArray(rooms)" not in swarm

@@ -547,6 +547,74 @@ def parse_pointer_csv(body: "str | Iterable[str]") -> list[dict]:
     return points
 
 
+#: The swarm counters the `browser_download` measurement carries (INFRA-532).
+#: Deliberately the SAME names, in the same order, as
+#: :data:`HOT_FILE_SWARM_FIELDS` below: one run's native and browser cohorts
+#: measure the same thing and a figure named two ways is a figure no comparison
+#: can make. Named once, because the Flux field allowlist, the CSV parse and the
+#: Postgres row all read this tuple — a counter present in one and absent from
+#: another is a column that silently reads NULL forever.
+BROWSER_SWARM_FIELDS = (
+    "records_from_peers",
+    "bytes_from_peers",
+    "records_rejected",
+    "asks_busy",
+    "asks_missing",
+    "asks_failed",
+    "records_served",
+    "bytes_served",
+    "links",
+    "rooms",
+    "discovery_lookups",
+    "discovery_announces",
+    "discovery_announces_failed",
+    "discovery_announces_timed_out",
+    "discovery_announces_refused",
+    "discovery_bytes_sent",
+    "discovery_bytes_received",
+    "discovery_offers_made",
+    "discovery_offers_delivered",
+    "discovery_offers_received",
+    "discovery_answers_sent",
+    "discovery_answers_received",
+    "discovery_channels_opened",
+    "discovery_links_proven",
+    "discovery_links_failed",
+)
+
+#: Where each chunk of a browser round came from, parsed by the harness out of
+#: the bundle's own download progress messages. Its own tuple because these come
+#: from a different source than the counters above — the progress lines rather
+#: than `swarmStats()` — so a bundle can report one and not the other.
+BROWSER_CHUNK_SOURCE_FIELDS = (
+    "chunks_total",
+    "chunks_from_nodes",
+    "chunks_from_cache",
+    "chunks_from_readers",
+)
+
+#: The non-swarm fields of the measurement.
+BROWSER_BASE_FIELDS = (
+    "status",
+    "error_kind",
+    "error_text",
+    "address",
+    "file_size",
+    "total_ms",
+    "connect_ms",
+    "start_ns",
+    "started_late_ms",
+    "start_offset_ms",
+    "seeded_ms",
+    "seeds",
+    "stalls",
+    "refused_dials",
+    "first_reads",
+    "swarm_present",
+    "swarm_room_tag",
+    "swarm_rooms",
+)
+
 #: The `browser_download` measurement (V2-1617): one point per Chromium instance
 #: per round of a browser-downloader cohort. Fields named explicitly, as the two
 #: queries above do — a `_field == *` pivot would widen every row with whatever a
@@ -559,23 +627,29 @@ def parse_pointer_csv(body: "str | Iterable[str]") -> list[dict]:
 BROWSER_FLUX_TEMPLATE = """from(bucket: "{bucket}")
   |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) => r._measurement == "browser_download")
-  |> filter(fn: (r) =>
-       r._field == "status" or
-       r._field == "error_kind" or
-       r._field == "error_text" or
-       r._field == "address" or
-       r._field == "file_size" or
-       r._field == "total_ms" or
-       r._field == "connect_ms" or
-       r._field == "start_ns" or
-       r._field == "started_late_ms" or
-       r._field == "seeds" or
-       r._field == "stalls" or
-       r._field == "refused_dials" or
-       r._field == "first_reads")
+  |> filter(fn: (r) => contains(value: r._field, set: [{fields}]))
   |> pivot(rowKey: ["_time", "host", "round_id", "instance"], \
 columnKey: ["_field"], valueColumn: "_value")
 """
+
+
+def _browser_flux(bucket: str, start: str, stop: str) -> str:
+    """The rendered browser query.
+
+    `contains(value:, set:)` rather than a chain of `or`-ed comparisons, as the
+    hot-file query does and for the same reason: the field list is forty-seven
+    long since INFRA-532, and a hand-written chain of that length is how a field
+    gets dropped from it.
+    """
+    fields = ", ".join(
+        f'"{name}"'
+        for name in (
+            *BROWSER_BASE_FIELDS,
+            *BROWSER_CHUNK_SOURCE_FIELDS,
+            *BROWSER_SWARM_FIELDS,
+        )
+    )
+    return BROWSER_FLUX_TEMPLATE.format(bucket=bucket, start=start, stop=stop, fields=fields)
 
 
 def fetch_browser_download_points(
@@ -598,7 +672,7 @@ def fetch_browser_download_points(
     does. A browser VM is deliberately never clock-skewed (the measurement IS
     when each instance read), but the default is the safe one and costs nothing.
     """
-    flux = BROWSER_FLUX_TEMPLATE.format(bucket=bucket, start=start, stop=stop)
+    flux = _browser_flux(bucket, start, stop)
     resp = requests.post(
         f"{url.rstrip('/')}/api/v2/query",
         params={"org": org},
@@ -643,6 +717,14 @@ def parse_browser_download_csv(body: "str | Iterable[str]") -> list[dict]:
 
     A row with no ``round_id`` or no ``instance`` is dropped: those two are the
     operation's identity, so a point missing either cannot be stored or counted.
+
+    The swarm fields (INFRA-532) default to **0**, ``""`` and ``[]`` rather than
+    to None, so a point written by a harness that predates them still parses --
+    and reads as what it is, a round that reported no swarm. That is the
+    opposite of the hot-file parse's choice, and deliberately: there a counter's
+    absence had to stay distinguishable from a recorded zero because a RELEASED
+    `ant` writes the zeros itself, whereas every browser point that carries a
+    swarm at all carries `swarm_present` beside it.
     """
     points: list[dict] = []
     reader = csv.reader(_csv_lines(body))
@@ -666,34 +748,44 @@ def parse_browser_download_csv(body: "str | Iterable[str]") -> list[dict]:
         if round_id is None or instance is None:
             continue
         try:
-            points.append(
-                {
-                    "_time": _parse_ts(record["_time"]),
-                    "host": record["host"],
-                    "region": record.get("region", "") or None,
-                    "round_id": round_id,
-                    "instance": instance,
-                    # Absent on a skip that never chose a file — the harness
-                    # drops the tag rather than writing it blank.
-                    "hot_file_index": _parse_int(record.get("hot_file_index", "")),
-                    "status": record.get("status") or "",
-                    "error_kind": record.get("error_kind") or None,
-                    "error_text": record.get("error_text") or None,
-                    "address": record.get("address") or None,
-                    "file_size": _parse_int(record.get("file_size", "")),
-                    "total_ms": _parse_int(record.get("total_ms", "")),
-                    "connect_ms": _parse_int(record.get("connect_ms", "")),
-                    # The round's BOUNDARY in nanoseconds, not the instant the
-                    # browser launched: the harness stamps `round_id x period`.
-                    "start_ns": _parse_int(record.get("start_ns", "")),
-                    "started_late_ms": _parse_int(record.get("started_late_ms", "")),
-                    # A comma-joined list on the wire, an array in Postgres.
-                    "seeds": [s for s in (record.get("seeds") or "").split(",") if s] or None,
-                    "stalls": _parse_int(record.get("stalls", "")),
-                    "refused_dials": _parse_int(record.get("refused_dials", "")),
-                    "first_reads": _parse_json_list(record.get("first_reads")),
-                }
-            )
+            point = {
+                "_time": _parse_ts(record["_time"]),
+                "host": record["host"],
+                "region": record.get("region", "") or None,
+                "round_id": round_id,
+                "instance": instance,
+                # Absent on a skip that never chose a file — the harness
+                # drops the tag rather than writing it blank.
+                "hot_file_index": _parse_int(record.get("hot_file_index", "")),
+                "status": record.get("status") or "",
+                "error_kind": record.get("error_kind") or None,
+                "error_text": record.get("error_text") or None,
+                "address": record.get("address") or None,
+                "file_size": _parse_int(record.get("file_size", "")),
+                "total_ms": _parse_int(record.get("total_ms", "")),
+                "connect_ms": _parse_int(record.get("connect_ms", "")),
+                # The instance's SCHEDULED start in nanoseconds, not the
+                # instant the browser launched: the harness stamps
+                # `round_id x period + offset`, so the round's BOUNDARY is
+                # `start_ns - start_offset_ms` and both are recoverable. With
+                # no stagger the offset is 0 and the two are the same instant,
+                # which is every cohort before INFRA-532.
+                "start_ns": _parse_int(record.get("start_ns", "")),
+                "started_late_ms": _parse_int(record.get("started_late_ms", "")),
+                "start_offset_ms": _parse_int(record.get("start_offset_ms", "")) or 0,
+                "seeded_ms": _parse_int(record.get("seeded_ms", "")) or 0,
+                # A comma-joined list on the wire, an array in Postgres.
+                "seeds": [s for s in (record.get("seeds") or "").split(",") if s] or None,
+                "stalls": _parse_int(record.get("stalls", "")),
+                "refused_dials": _parse_int(record.get("refused_dials", "")),
+                "first_reads": _parse_json_list(record.get("first_reads")),
+                "swarm_present": bool(_parse_int(record.get("swarm_present", "")) or 0),
+                "swarm_room_tag": record.get("swarm_room_tag") or "",
+                "swarm_rooms": _parse_json_list(record.get("swarm_rooms")) or [],
+            }
+            for name in (*BROWSER_CHUNK_SOURCE_FIELDS, *BROWSER_SWARM_FIELDS):
+                point[name] = _parse_int(record.get(name, "")) or 0
+            points.append(point)
         except (KeyError, ValueError):
             continue
     return points

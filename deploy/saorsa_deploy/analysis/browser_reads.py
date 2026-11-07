@@ -49,6 +49,7 @@ from saorsa_deploy.browser_reads import (
 from saorsa_deploy.browser_records import (
     BROWSER_HOT_FILES_KEY,
     expected_instances,
+    expected_instances_for_round,
     recorded_browser_config,
     recorded_hot_files,
     round_period_from_config,
@@ -338,6 +339,12 @@ def _run(args, console) -> int:
         period_secs=period,
         period_source=period_source,
         expected_instances=expected_instances(config),
+        # Per round, from each VM's RECORDED parity: a parity-split deployment's
+        # round is run by one cohort, so the cohort-wide total above is not what
+        # any single round should have produced. An entry with no recorded
+        # parity owns every round, so a deployment from before INFRA-532
+        # computes exactly what it did before.
+        expected_for_round=lambda round_id: expected_instances_for_round(config, round_id),
         window_start=window_start,
         window_end=window_end,
         min_completion=args.min_completion,

@@ -12,6 +12,11 @@ from rich.console import Console
 
 from saorsa_deploy.client_extension import client_vm_name
 from saorsa_deploy.client_roles import (
+    BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+    BROWSER_DEFAULT_INSTANCES,
+    BROWSER_DEFAULT_ROUND_PERIOD_SECS,
+    BROWSER_DEFAULT_SEED_UNTIL_SECS,
+    BROWSER_DEFAULT_START_STAGGER_SECS,
     HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
     HOT_FILE_DEFAULT_INSTANCES,
     HOT_FILE_DEFAULT_ROUND_PERIOD_SECS,
@@ -22,6 +27,7 @@ from saorsa_deploy.client_roles import (
     ROLE_HOT_FILE_READ,
     ROLE_POINTER,
     ROLE_UPLOAD,
+    ROUND_PARITY_ALL,
     is_browser,
     is_hot_file_read,
     is_pointer,
@@ -449,16 +455,35 @@ class AntClientProvisioner:
 
     @staticmethod
     def _browser_env(client: dict) -> dict:
-        """The three knobs one browser-downloader VM runs at.
+        """The six knobs one browser-downloader VM runs at.
 
         Read from the client's own recorded spec, not from a shared default:
-        two cohorts in one deployment may legitimately differ, and the recorded
-        value is the one `clients infra` matched the VM against.
+        two cohorts in one deployment may legitimately differ — a branch bundle
+        on even rounds and a released control on odd is the point of the parity
+        — and the recorded value is the one `clients infra` matched the VM
+        against.
+
+        **A recorded value is defaulted only when it is ABSENT, never when it is
+        falsy**, which is the rule `_hot_file_env` documents at length: `or` let
+        a recorded `0` take a non-zero default, so the VM would run a schedule
+        the validator never saw. `start_stagger_secs` and `seed_until_secs` are
+        both legitimately 0 AND legitimately explicit, so the distinction is not
+        academic here either.
         """
+
+        def _value(key: str, default):
+            recorded = client.get(key)
+            return default if recorded is None else recorded
+
         return {
-            "instances": client.get("instances", 4),
-            "round_period_secs": client.get("round_period_secs", 600),
-            "download_timeout_secs": client.get("download_timeout_secs", 300),
+            "instances": _value("instances", BROWSER_DEFAULT_INSTANCES),
+            "round_period_secs": _value("round_period_secs", BROWSER_DEFAULT_ROUND_PERIOD_SECS),
+            "download_timeout_secs": _value(
+                "download_timeout_secs", BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS
+            ),
+            "round_parity": _value("round_parity", ROUND_PARITY_ALL),
+            "start_stagger_secs": _value("start_stagger_secs", BROWSER_DEFAULT_START_STAGGER_SECS),
+            "seed_until_secs": _value("seed_until_secs", BROWSER_DEFAULT_SEED_UNTIL_SECS),
         }
 
     @staticmethod
@@ -749,9 +774,18 @@ class AntClientProvisioner:
                 "TESTNET_NAME": self.deployment_name,
                 "HOST_ROLE": "browser_downloader",
                 "REGION": env["region"],
+                # 1-based, as `clients infra` allocates it. Load-bearing: it is
+                # half of every instance's start offset, so a VM that did not
+                # receive its own index would launch its whole set of instances
+                # on the boundary together and the cohort would not be staggered
+                # at all.
+                "CLIENT_INDEX": env["client_index"],
                 "INSTANCES": env["instances"],
                 "ROUND_PERIOD_SECS": env["round_period_secs"],
                 "DOWNLOAD_TIMEOUT_SECS": env["download_timeout_secs"],
+                "ROUND_PARITY": env["round_parity"],
+                "START_STAGGER_SECS": env["start_stagger_secs"],
+                "SEED_UNTIL_SECS": env["seed_until_secs"],
                 "BOOTSTRAP_WEBRTC_MULTIADDRS": seeds,
                 # Unsigned HTTPS base of the deployment's address prefix: the
                 # harness GETs the hot-file manifest from under it and signs

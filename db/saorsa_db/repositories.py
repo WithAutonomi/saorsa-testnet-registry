@@ -13,6 +13,12 @@ from saorsa_db.models.hot_file_download_record import (
     DeploymentHotFileDownloadRecord,
 )
 from saorsa_db.models.browser_download_record import (
+    CHUNK_SOURCE_COLUMNS as BROWSER_CHUNK_SOURCE_COLUMNS,
+)
+from saorsa_db.models.browser_download_record import (
+    SWARM_COLUMNS as BROWSER_SWARM_COLUMNS,
+)
+from saorsa_db.models.browser_download_record import (
     DeploymentBrowserDownloadRecord,
 )
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
@@ -427,10 +433,16 @@ class DeploymentRepository(ABC):
         total_ms: int | None = None,
         connect_ms: int | None = None,
         started_late_ms: int | None = None,
+        start_offset_ms: int | None = None,
+        seeded_ms: int | None = None,
         seeds: list | None = None,
         stalls: int | None = None,
         refused_dials: int | None = None,
         first_reads: list | None = None,
+        swarm_present: bool | None = None,
+        swarm_room_tag: str | None = None,
+        swarm_rooms: list | None = None,
+        **swarm_counters,
     ) -> DeploymentBrowserDownloadRecord: ...
 
     @abstractmethod
@@ -1491,10 +1503,22 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         "connect_ms",
         "started_at",
         "started_late_ms",
+        "start_offset_ms",
+        "seeded_ms",
         "seeds",
         "stalls",
         "refused_dials",
         "first_reads",
+        # The swarm half of the round (INFRA-532). OVERWRITTEN, not COALESCEd:
+        # every one of these comes off the Influx point, so a re-run resolves
+        # the same values and a point that reported no swarm carries explicit
+        # zeros with `swarm_present` false beside them -- which is a fact to be
+        # recorded, not an absence to be preserved.
+        "swarm_present",
+        "swarm_room_tag",
+        "swarm_rooms",
+        *BROWSER_CHUNK_SOURCE_COLUMNS,
+        *BROWSER_SWARM_COLUMNS,
     )
     #: The one column the Influx point does not carry, so it may not be
     #: overwritten with None by a re-run that could not resolve it.
@@ -1586,12 +1610,35 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         total_ms: int | None = None,
         connect_ms: int | None = None,
         started_late_ms: int | None = None,
+        start_offset_ms: int | None = None,
+        seeded_ms: int | None = None,
         seeds: list | None = None,
         stalls: int | None = None,
         refused_dials: int | None = None,
         first_reads: list | None = None,
+        swarm_present: bool | None = None,
+        swarm_room_tag: str | None = None,
+        swarm_rooms: list | None = None,
+        **swarm_counters,
     ) -> DeploymentBrowserDownloadRecord:
-        """Record one browser instance's round, keyed on (deployment, host, round, instance)."""
+        """Record one browser instance's round, keyed on (deployment, host, round, instance).
+
+        The twenty-nine swarm counters arrive as keyword arguments rather than
+        as twenty-nine named parameters: they are declared once, in
+        ``CHUNK_SOURCE_COLUMNS`` and ``SWARM_COLUMNS``, and a second hand-written
+        list of them here is how one of the two loses a counter. An unknown name
+        is refused rather than silently dropped.
+        """
+        unknown = (
+            set(swarm_counters)
+            - set(BROWSER_CHUNK_SOURCE_COLUMNS)
+            - set(BROWSER_SWARM_COLUMNS)
+        )
+        if unknown:
+            raise TypeError(
+                f"upsert_browser_download_record() got unexpected keyword "
+                f"argument(s): {', '.join(sorted(unknown))}"
+            )
         self.upsert_browser_download_records(
             [
                 {
@@ -1611,10 +1658,16 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                     "total_ms": total_ms,
                     "connect_ms": connect_ms,
                     "started_late_ms": started_late_ms,
+                    "start_offset_ms": start_offset_ms,
+                    "seeded_ms": seeded_ms,
                     "seeds": seeds,
                     "stalls": stalls,
                     "refused_dials": refused_dials,
                     "first_reads": first_reads,
+                    "swarm_present": swarm_present,
+                    "swarm_room_tag": swarm_room_tag,
+                    "swarm_rooms": swarm_rooms,
+                    **swarm_counters,
                 }
             ]
         )

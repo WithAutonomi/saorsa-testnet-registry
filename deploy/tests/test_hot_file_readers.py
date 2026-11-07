@@ -219,13 +219,27 @@ class TestSpecParsing:
         assert _spec_signature(base) != _spec_signature(stagger)
 
     def test_an_existing_role_s_signature_is_unchanged(self):
-        # The two new fields are None on every other role, so client state
-        # recorded before this release still matches a request that takes the
-        # defaults.
+        # A role with no schedule signs the schedule DEFAULTS, on both sides of
+        # every comparison, so its signature is as stable as it was. The three
+        # are normalised rather than read raw because client state recorded
+        # before the fields existed carries none of them, and a resumed run must
+        # still reuse VMs running precisely what was asked for -- see
+        # `test_legacy_browser_state_matches_a_default_request` for the case
+        # that reached an operator.
         from saorsa_deploy.cmd.infra_clients import _spec_signature, parse_downloader_spec
 
         spec = parse_downloader_spec("digital_ocean:lon1")
-        assert _spec_signature(spec)[-2:] == (None, None)
+        assert _spec_signature(spec)[-3:] == ("all", 0, 0)
+
+    def test_a_reader_s_recorded_state_matches_a_default_request(self):
+        # The hot-file equivalent of the browser case: an entry whose schedule
+        # was recorded by a release that wrote it, against a request that takes
+        # the defaults.
+        from saorsa_deploy.cmd.infra_clients import _client_specs_match
+
+        requested = parse_hot_file_reader_spec("digital_ocean:lon1")
+        recorded = {k: v for k, v in requested.items() if k != "round_parity"}
+        assert _client_specs_match([recorded], [requested])
 
 
 # --------------------------------------------------------------------------- #

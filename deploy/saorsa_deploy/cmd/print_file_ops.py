@@ -939,7 +939,19 @@ def summarise_browser_rounds(points: list[dict]) -> list[dict]:
     out: list[dict] = []
     for round_id in sorted(by_round):
         rows = by_round[round_id]
-        boundaries = [p["start_ns"] for p in rows if p.get("start_ns") is not None]
+        # The boundary is `start_ns - start_offset_ms`, because `start_ns` is
+        # the instance's SCHEDULED start: on a staggered cohort every point of
+        # a round carries a different one, and the minimum is the boundary only
+        # when an unstaggered instance happens to be in the group -- which is
+        # the reading error the hot-file view had to resolve the period to
+        # avoid. Here the offset is on the point, so the arithmetic is exact for
+        # every one of them. An absent offset is 0, which is every point written
+        # before INFRA-532.
+        boundaries = [
+            p["start_ns"] - (p.get("start_offset_ms") or 0) * 1_000_000
+            for p in rows
+            if p.get("start_ns") is not None
+        ]
         successes = [p for p in rows if p.get("status") == "success"]
         failures = [p for p in rows if p.get("status") == "failure"]
         skipped = [p for p in rows if p.get("status") == "skipped"]
@@ -974,6 +986,29 @@ def summarise_browser_rounds(points: list[dict]) -> list[dict]:
                 "refused_dials": sum(
                     p["refused_dials"] for p in rows if p.get("refused_dials") is not None
                 ),
+                # The denominator for the peer-fed rate below. Skips are
+                # excluded from it, exactly as they are from the completion
+                # rate: nine `no_hot_files` skips and one peer-fed success would
+                # otherwise read "1/10 = 10.0%" when the only read ATTEMPTED was
+                # peer-fed. The hot-file view makes the same choice.
+                "attempted": len(successes) + len(failures),
+                # Instances that received at least one record from a PEER rather
+                # than from a node, over the reads that were attempted. The
+                # headline figure: it is the count of instances the swarm
+                # actually reached, which a sum alone cannot say (one instance
+                # served by a peer a thousand times reads the same as a thousand
+                # reached once).
+                "instances_with_peer_records": sum(
+                    1 for p in successes + failures if (p.get("records_from_peers") or 0) >= 1
+                ),
+                "records_from_peers": sum(p.get("records_from_peers") or 0 for p in rows),
+                "bytes_from_peers": sum(p.get("bytes_from_peers") or 0 for p in rows),
+                "records_served": sum(p.get("records_served") or 0 for p in rows),
+                # Per-chunk sources, from the bundle's own progress messages --
+                # a different reading from the counters above, and the one that
+                # says where this round's bytes came from.
+                "chunks_from_readers": sum(p.get("chunks_from_readers") or 0 for p in rows),
+                "chunks_from_nodes": sum(p.get("chunks_from_nodes") or 0 for p in rows),
             }
         )
     return out
@@ -1060,6 +1095,13 @@ def _run_browser_rounds(args, console: Console) -> None:
     table.add_column("p95", justify="right")
     table.add_column("Stalls", justify="right")
     table.add_column("Refused", justify="right")
+    # The swarm half of the round (INFRA-532), beside the per-dial figures.
+    table.add_column("Peer-fed", justify="right")
+    table.add_column("Recs/peers", justify="right")
+    table.add_column("Bytes/peers", justify="right")
+    table.add_column("Recs served", justify="right")
+    table.add_column("Chunks/readers", justify="right")
+    table.add_column("Chunks/nodes", justify="right")
     table.add_column("Failures by kind")
     for entry in rounds:
         table.add_row(
@@ -1073,6 +1115,12 @@ def _run_browser_rounds(args, console: Console) -> None:
             _fmt_duration(entry["p95_ms"]),
             str(entry["stalls"]),
             str(entry["refused_dials"]),
+            _fmt_peer_fed(entry["instances_with_peer_records"], entry["attempted"]),
+            f"{entry['records_from_peers']:,}",
+            f"{entry['bytes_from_peers']:,}",
+            f"{entry['records_served']:,}",
+            f"{entry['chunks_from_readers']:,}",
+            f"{entry['chunks_from_nodes']:,}",
             _fmt_error_kinds(entry["error_kinds"]),
         )
     console.print(table)
@@ -1092,6 +1140,18 @@ def _print_browser_summary(rounds: list[dict], name: str, console: Console) -> N
     table.add_row("Skipped", f"{sum(r['skipped'] for r in rounds):,}")
     table.add_row("Stalls", f"{sum(r['stalls'] for r in rounds):,}")
     table.add_row("Refused dials", f"{sum(r['refused_dials'] for r in rounds):,}")
+    table.add_row(
+        "Peer-fed instances",
+        _fmt_peer_fed(
+            sum(r["instances_with_peer_records"] for r in rounds),
+            sum(r["attempted"] for r in rounds),
+        ),
+    )
+    table.add_row("Records from peers", f"{sum(r['records_from_peers'] for r in rounds):,}")
+    table.add_row("Bytes from peers", f"{sum(r['bytes_from_peers'] for r in rounds):,}")
+    table.add_row("Records served", f"{sum(r['records_served'] for r in rounds):,}")
+    table.add_row("Chunks from readers", f"{sum(r['chunks_from_readers'] for r in rounds):,}")
+    table.add_row("Chunks from nodes", f"{sum(r['chunks_from_nodes'] for r in rounds):,}")
     console.print(table)
     console.print(
         "[dim]Per-chunk holder share, the stall distribution and the gates come "

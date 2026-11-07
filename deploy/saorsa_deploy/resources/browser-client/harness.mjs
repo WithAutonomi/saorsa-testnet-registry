@@ -31,8 +31,16 @@ import { fetchHotFiles } from "./lib/hotfiles.mjs";
 import { buildPoint, submitMetric } from "./lib/influx.mjs";
 import { makeLogger, summaryLine } from "./lib/logger.mjs";
 import { downloadInPage } from "./lib/page.mjs";
-import { hotFileIndexFor, nextBoundaryAfter, roundIdAt } from "./lib/rounds.mjs";
+import {
+  hotFileIndexFor,
+  instanceOffsetSecs,
+  isOurRound,
+  nextBoundaryAfter,
+  roundIdAt,
+  startOffsetExhausted,
+} from "./lib/rounds.mjs";
 import { startBundleServer } from "./lib/server.mjs";
+import { swarmFields } from "./lib/swarm.mjs";
 import { appendTrace, traceLines } from "./lib/trace.mjs";
 
 const config = loadConfig();
@@ -55,7 +63,18 @@ async function emit(result) {
   await submitMetric(config.influx, buildPoint(result));
 }
 
+/** This instance's start offset from the round boundary, in seconds. */
+function offsetSecsFor(instance) {
+  return instanceOffsetSecs(
+    config.clientIndex,
+    instance,
+    config.instances,
+    config.startStaggerSecs,
+  );
+}
+
 function baseResult(round, instance) {
+  const offsetSecs = offsetSecsFor(instance);
   return {
     host: HOST,
     testnetName: config.testnetName,
@@ -64,17 +83,78 @@ function baseResult(round, instance) {
     instance,
     hotFileIndex: round.hotFileIndex,
     seeds: config.seeds.join(","),
-    // The round's boundary in nanoseconds, as a BigInt: 1.66e18 is two orders
-    // of magnitude past Number.MAX_SAFE_INTEGER, so a Number here would round
-    // every recorded start to the nearest 256 ns.
-    startNs: BigInt(round.boundary) * 1_000_000_000n,
-    startedLateMs: Date.now() - round.boundary * 1000,
+    // The instance's SCHEDULED start in nanoseconds, as a BigInt: 1.66e18 is
+    // two orders of magnitude past Number.MAX_SAFE_INTEGER, so a Number here
+    // would round every recorded start to the nearest 256 ns. With no stagger
+    // the offset is 0 and this is the boundary, exactly as it was; with one, the
+    // boundary is `start_ns - start_offset_ms` and the two are both recoverable.
+    startNs: BigInt(round.boundary + offsetSecs) * 1_000_000_000n,
+    startOffsetMs: offsetSecs * 1000,
+    // Measured from the SCHEDULED start, not from the boundary: a staggered
+    // instance is not late for starting when it was told to.
+    startedLateMs: Date.now() - (round.boundary + offsetSecs) * 1000,
+    // Zeros rather than absent fields, so a skip and a download write the same
+    // field set — see `swarmFields`.
+    ...swarmFields(null),
   };
 }
 
 /** One instance's download for one round. Always emits exactly one point. */
 async function runInstance(round, instance, bundleUrl) {
+  const offsetSecs = offsetSecsFor(instance);
+  const deadlineAt = round.boundary * 1000 + config.downloadTimeoutSecs * 1000;
+
+  // An IMPOSSIBLE start is refused BEFORE the sleep, not after it — the rule
+  // `hot_file_reader.py` applies, and for the same two reasons. A stagger long
+  // enough to put an instance's start at or past its own round deadline is a
+  // start that can never run; and sleeping to it anyway does not merely waste
+  // the instance, it launches Chromium inside the NEXT round — which on a
+  // parity-split deployment is the OTHER cohort's, so the contamination lands
+  // in the measurement rather than in this instance's own point. `runRound`
+  // awaits `Promise.all`, so the main loop stops observing boundaries for as
+  // long as the longest sleep, too.
+  //
+  // A long stagger is deliberately allowed (nothing refuses it at
+  // configuration time), so the answer is to record THIS instance's timeout and
+  // leave the others alone. The arithmetic is deterministic, so it fires on the
+  // first round and costs no clock read.
+  if (startOffsetExhausted(offsetSecs, config.downloadTimeoutSecs)) {
+    await emit({
+      ...baseResult(round, instance),
+      status: "failure",
+      errorKind: "timeout",
+      errorText:
+        `start offset ${offsetSecs}s is at or past the ` +
+        `${config.downloadTimeoutSecs}s deadline`,
+    });
+    return;
+  }
+
+  // Slept BEFORE the browser is launched, so a staggered instance costs nothing
+  // until its turn. The `running` guard is already held by the caller, which is
+  // what keeps a long stagger from overlapping the next round for this instance.
+  const waitMs = (round.boundary + offsetSecs) * 1000 - Date.now();
+  if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+
   const result = baseResult(round, instance);
+
+  // The budget checked AGAIN after the sleep, against the clock rather than
+  // against the arithmetic: the offset may be legal and the round still be over
+  // because the harness was started late, a previous round overran, or the VM
+  // was paused. Launching Chromium then spends ~10 s of the next round for a
+  // download that cannot be recorded against this one.
+  if (Date.now() >= deadlineAt) {
+    await emit({
+      ...result,
+      status: "failure",
+      errorKind: "timeout",
+      errorText:
+        `the ${config.downloadTimeoutSecs}s round budget was already spent ` +
+        `${Math.round((Date.now() - deadlineAt) / 1000)}s ago when this ` +
+        "instance's turn came; no browser was launched",
+    });
+    return;
+  }
 
   if (!round.file) {
     // No selection yet. Recorded rather than failed, and no browser launched:
@@ -95,12 +175,20 @@ async function runInstance(round, instance, bundleUrl) {
     page.on("console", (msg) => log.log(`page[${instance}]: ${msg.text()}`));
     await page.goto(bundleUrl, { waitUntil: "load" });
 
-    // The deadline is measured from the round BOUNDARY, not from now: it is a
-    // round's budget, and an instance that started late has already spent part
-    // of it. A round whose budget is gone before the browser is up still emits
-    // its point, which is what makes a missing point a real finding.
-    const remainingMs = round.boundary * 1000 + config.downloadTimeoutSecs * 1000 - Date.now();
-    const timeoutMs = Math.max(remainingMs, 1000);
+    // Absolute, both of them, because the page has to answer to wall-clock
+    // instants the whole cohort agrees on rather than to durations of its own.
+    //
+    // **`deadlineAtMs` is the download budget and it is not negotiable.** It
+    // was a DURATION computed here, which the page then started counting from
+    // the moment its race began — after the module import and after
+    // `connect()`. So a 100 s connect inside a 300 s budget bought the download
+    // 300 s more, and the only thing that had been failing those late downloads
+    // was the outer backstop; moving that out to the seed deadline let a 350 s
+    // download report success against a 300 s deadline. The page now enforces
+    // the instant across the import, the connect AND the download, and the seed
+    // wait is the one thing allowed past it.
+    const seedUntilMs =
+      config.seedUntilSecs > 0 ? round.boundary * 1000 + config.seedUntilSecs * 1000 : 0;
     // Two deadlines, and the inner one is meant to win. The in-page race (see
     // `downloadInPage`) returns a result WITH its trace, which is the whole
     // value of the round. But it only covers the download: a `connect()` or a
@@ -110,18 +198,34 @@ async function runInstance(round, instance, bundleUrl) {
     // the instance's contribution for the life of the deployment. So the outer
     // one is a backstop with a grace period, and it gives up the trace to keep
     // the instance.
+    //
+    // With seeding on, the backstop moves out to the seed deadline: the page is
+    // MEANT to sit there after its download, and a backstop still measured from
+    // the download deadline would abandon every seeding page — losing its trace,
+    // its swarm counters and the whole point of holding it open. That extension
+    // is safe only because the page's own deadline is now absolute: it buys the
+    // SEED wait more time, never the download.
+    //
+    // Never below the grace period itself, so a round whose budget is already
+    // spent still gets the page a moment to answer rather than being abandoned
+    // before it starts.
+    const backstopMs = Math.max(
+      Math.max(deadlineAt, seedUntilMs) - Date.now() + PAGE_GRACE_MS,
+      PAGE_GRACE_MS,
+    );
     const outcome = await Promise.race([
       page.evaluate(downloadInPage, {
         bundleUrl,
         address: round.file.address,
         expectedBytes: round.file.bytes || 0,
         seeds: config.seeds,
-        timeoutMs,
+        deadlineAtMs: deadlineAt,
+        seedUntilMs,
       }),
       new Promise((resolve) =>
         setTimeout(
           () => resolve({ ok: false, error: "harness deadline (page unresponsive)", trace: [] }),
-          timeoutMs + PAGE_GRACE_MS,
+          backstopMs,
         ),
       ),
     ]);
@@ -173,6 +277,10 @@ async function runInstance(round, instance, bundleUrl) {
       stalls: derived.stalls,
       refusedDials: derived.refused_dials,
       firstReads: derived.first_reads,
+      seededMs: outcome.seededMs,
+      // The per-chunk sources and the client's own counters, which is what says
+      // whether the swarm served this download rather than merely existing.
+      ...swarmFields(outcome),
     });
   } catch (e) {
     // A browser that would not launch, a page that would not load, a crashed
@@ -242,6 +350,8 @@ async function main() {
   log.log(
     `browser-downloader up: ${config.instances} instance(s), ` +
       `round ${config.roundPeriodSecs}s, timeout ${config.downloadTimeoutSecs}s, ` +
+      `parity ${config.roundParity}, stagger ${config.startStaggerSecs}s, ` +
+      `seed ${config.seedUntilSecs}s, client_index ${config.clientIndex}, ` +
       `${config.seeds.length} seed(s), bundle ${bundleUrl}`,
   );
 
@@ -251,6 +361,14 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, Math.max(boundary * 1000 - Date.now(), 0)));
 
     const roundId = roundIdAt(boundary, config.roundPeriodSecs);
+    if (!isOurRound(roundId, config.roundParity)) {
+      // A round that is not this cohort's produces NOTHING: no browser, no
+      // point, one line. A skip point would be indistinguishable from a round
+      // the harness failed to run, and the other cohort's rounds are not this
+      // one's series to report on.
+      log.log(`round=${roundId} parity=skip`);
+      continue;
+    }
     const manifest = await fetchHotFiles(config.addressesBaseUrl);
     const files = manifest ? manifest.files : [];
     const hotFileIndex = hotFileIndexFor(roundId, files.length);

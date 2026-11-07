@@ -612,9 +612,19 @@ def _client_line(c: dict) -> str:
         instances = c.get("instances") or "?"
         period = c.get("round_period_secs") or "?"
         deadline = c.get("download_timeout_secs") or "?"
+        # The schedule, which is what a reader of the post needs to tell two
+        # cohorts on one deployment apart. Rendered with an explicit `0` rather
+        # than omitted, as the hot-file line does: "stagger 0s" says the
+        # instances all start on the boundary, where silence says nothing.
+        parity = c.get("round_parity") or "?"
+        stagger = c.get("start_stagger_secs")
+        stagger_str = "0" if stagger in (None, "") else str(stagger)
+        seed = c.get("seed_until_secs")
+        seed_str = "0" if seed in (None, "") else str(seed)
         return (
             f"• browser-download — {region} ({vm_size}, {instances} Chromium, "
-            f"round {period}s, deadline {deadline}s){fwd_str}{rust_str}"
+            f"round {period}s, deadline {deadline}s, parity {parity}, "
+            f"stagger {stagger_str}s, seed {seed_str}s){fwd_str}{rust_str}"
         )
     if is_hot_file_read(role):
         # Tested BEFORE is_upload (it is a download role, so it would otherwise

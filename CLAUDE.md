@@ -1914,6 +1914,105 @@ clients` extension too, which is the normal way to use it.
   unlike workloads. **One point per instance per round, always**: a round with no
   point is itself a finding, which only reads that way if a skip is a point. No
   hot files yet → `skipped`/`no_hot_files`, no browser launched.
+- **Three scheduling knobs, the native role's semantics exactly** (INFRA-532),
+  because a parity-split run configures a branch cohort and a released control
+  side by side and two vocabularies between them would be a trap.
+  `round_parity` (`even|odd|all`, default `all`) — a round that is not the
+  cohort's produces **nothing**: no browser, no point, one `round=<id>
+  parity=skip` line, since a skip POINT is indistinguishable from a round the
+  harness failed to run. `start_stagger_secs` (default 0) overlaps the instances
+  in time, which is what makes a swarm form at all; the offset is
+  `((client_index − 1) × instances + (instance − 1)) × stagger`, so the cohort
+  spaces itself out with no coordinator, and an extension's indexes CONTINUE
+  from the deployment's — which is why an offset at or past
+  `download_timeout_secs` is **refused before the sleep**, as on the native
+  reader: such a start can never run, and sleeping to it anyway launches
+  Chromium inside the NEXT round, which on a parity-split deployment is the
+  OTHER cohort's, so the contamination lands in the measurement rather than in
+  the wasted instance's own point (`runRound` awaits every instance, so the main
+  loop also stops seeing boundaries for the length of the longest sleep). The
+  budget is re-checked against the clock after the sleep too. `seed_until_secs` (default 0) holds a page whose
+  download **SUCCEEDED** open, client connected, until `boundary +
+  seed_until_secs`, so it goes on serving the instances that started later; a
+  failure or a short read closes at once. Bounded `download_timeout_secs ≤
+  seed_until_secs < round_period_secs − 30` in the schema, the spec parser AND
+  `lib/config.mjs` — the last being the only one that sees what reached the VM:
+  below the deadline a page is shut while still downloading, above the gap it
+  holds a WebRTC session the next round's instance needs.
+- **The download deadline is an absolute INSTANT, and the seed window does not
+  extend it.** The page is given `boundary + download_timeout_secs` and enforces
+  it across the module import, `connect()` and the transfer alike; only the
+  post-success seed wait is allowed past it, which is what makes it safe for the
+  harness's outer backstop to move out to the seed deadline (and a seeding page
+  therefore not to be abandoned). As a DURATION the page started counting at the
+  download race, so the import and the connect were free: with a 300 s budget a
+  100 s connect let a 250 s download report **success at 350 s**, and the only
+  thing failing those was the outer backstop, by accident. A connect that never
+  resolves now fails on the download budget instead of consuming the seed
+  window, and `total_ms` spans the same stretch the deadline does. **The
+  completion INSTANT is compared with it too**: a `Promise.race` only decides
+  between promises that have SETTLED, and the timer callback cannot run while a
+  final synchronous step inside WASM blocks the event loop — so a download from
+  290 s to 335 s of a 300 s budget won the race and reported success. A late
+  completion is a `timeout` failure, checked before the length check and before
+  the seed wait.
+- **No shape of the swarm reporting may change the transfer's status.** A room's
+  counters are Rust `u64`s and `JSON.stringify` throws on a BigInt, so an
+  unhandled `swarmRoomStats()` threw out of `swarmFields` into the harness's
+  catch and turned a SUCCESSFUL transfer into `failure` / `other` with every
+  swarm figure zeroed. `roomsToJson` normalises BigInts recursively and guards
+  the stringify: an unserialisable room payload costs the rooms detail and
+  nothing else.
+- **The report's start spread is over ACTUAL starts** (`start_offset_ms +
+  started_late_ms`), since `started_late_ms` is measured from the SCHEDULED
+  start: four on-time instances of a 10 s stagger read as a 0 ms spread, and
+  four starting together on a VM that resumed 30 s late read as 30,000 ms. The
+  desync flag fires on the **excess over `scheduled_spread_ms`**, so a
+  deliberate stagger is not a fault while an instance 40 s behind its own slot
+  is; unstaggered, the scheduled spread is 0 and the flag is the rule it was.
+- **The report's per-round expectation comes from each VM's recorded parity**, not
+  from the cohort-wide instance sum: a parity-split round is run by ONE cohort,
+  so summing a 4-instance `even` cohort and a 4-instance `odd` one applied 8 to
+  every round and invented 4 missing points for each complete one. An entry with
+  no recorded parity owns every round, so an older deployment's report is
+  unchanged. The document's top-level `instances_expected` stays the cohort
+  total.
+- **The three schedule fields are NORMALISED in `_spec_signature`, not read
+  raw.** A browser VM recorded before 1.17.0 carries none of them while a
+  default request now parses to `("all", 0, 0)`, so reading them raw made
+  `_client_specs_match` false and `clients infra` told the operator to destroy
+  clients whose layout and schedule had not changed — the resume path of every
+  existing browser deployment. A real change still mismatches, which is what the
+  fields are in the signature for.
+- **`start_ns` is the instance's SCHEDULED start, so the boundary is
+  `start_ns − start_offset_ms`.** `started_late_ms` is measured from that
+  scheduled start — a staggered instance is not late for starting when it was
+  told to. With no stagger the offset is 0 and the two are the same instant,
+  which is every point and row written before INFRA-532, so nothing is
+  backfilled and nothing needs to be. `analysis browser-reads`'s period
+  FALLBACK subtracts the offset before dividing; without that it would decline
+  for exactly the staggered cohorts the swarm run is made of.
+- **The swarm figures are TWO readings, and a bundle that has neither must not
+  break the round.** `swarmStats()` / `swarmRoomStats()` on the client give the
+  **same twenty-five counters** `hot_file_download` carries (one vocabulary: a
+  figure named two ways is a figure no comparison can make) plus
+  `swarm_room_tag` and `swarm_rooms`; the bundle's own progress messages
+  (`Downloaded chunk {n}/{total} from {from} after {attempts} attempts`) give
+  `chunks_total` / `chunks_from_nodes` / `chunks_from_cache` /
+  `chunks_from_readers`, where `{from}` is a hex peer id, `cache` or `a reader`
+  — and **anything that is neither of the last two counts as a NODE**, so a
+  bundle rendering a peer id differently does not have its chunks vanish. A
+  pinned older bundle records zeros with **`swarm_present=0`**, which is what
+  tells those zeros from a swarm that formed and shared nothing. The two come
+  from different places, so a bundle can report one and not the other. Every
+  swarm field is on **every** point, a skip included: Influx types a field on
+  first write, and a field present on some points and absent on others is one no
+  per-round sum can read. The counting lives in `lib/swarm.mjs` over the raw
+  progress lines the page returns — `node --test` can reach it there, and the
+  per-dial trace already crosses the same Playwright boundary at three orders of
+  magnitude more volume. Both namings (snake_case and camelCase) are read off
+  the stats object, since which one the bundle serialises is not a fact the
+  harness should have to be re-released over.
 - **The derived fields are shaped by what `setBrowserTrace` ACTUALLY emits**
   (`{id, operation, target, peer, phase, elapsed_ms, detail}`, `detail` always a
   **string**), and none of them reads the way its name suggests. A chunk read is
@@ -1968,9 +2067,20 @@ no fetch step and no S3 archive.
   a synchronised cohort's reads of ONE file with a client's reads of random files
   would let any rate or percentile average the two — the same reason the harness
   writes its own measurement. Keyed `(deployment, host, round_id, instance)`.
-- **`started_at` is the round's BOUNDARY**, not when the browser came up
-  (`started_late_ms` carries that), which is what makes a window selection over
-  these rows select whole rounds. The window is half-open on `round_id × period`.
+  The swarm columns (INFRA-532) are all **OVERWRITTEN, never COALESCEd**: every
+  one comes off the Influx point, so a re-run resolves the same values, and a
+  round that reported no swarm carries explicit zeros with `swarm_present` false
+  beside them — a fact to be recorded, not an absence to be preserved. NULL
+  throughout is a row from before the columns existed, and **nothing is
+  backfilled**. The twenty-five counters are IMPORTED from the hot-file record's
+  tuple rather than re-declared, in the model, the upsert list, the Flux
+  allowlist and the migration alike.
+- **`started_at` is the instance's SCHEDULED start**, not when the browser came
+  up (`started_late_ms` carries that) — the round's BOUNDARY is
+  `started_at − start_offset_ms`, which is what makes a window selection over
+  these rows select whole rounds. The window is half-open on
+  `round_id × period`. Unstaggered, the offset is 0 and `started_at` IS the
+  boundary, which is every row written before INFRA-532.
 - **`extension` COALESCEs on upsert**, because the Influx point does not carry
   it, so a re-run that cannot resolve it would erase what an earlier pass
   recorded. It is resolved from state teardown deletes, so a re-run after
@@ -1984,7 +2094,9 @@ no fetch step and no S3 archive.
   BEFORE teardown.** Everything off the Influx point comes from the rows (which
   survive the cohort); §4 and G3 come from the forwarded trace records, and
   `elastic destroy` takes those with it. `clients provision`
-  denormalises the round period and instance count into
+  denormalises the round period, the instance count and the SCHEDULE — parity,
+  stagger, seed window and each VM's `client_index`, without which the schedule
+  a round ran on is not reconstructable after teardown — into
   `deploy_args.browser_downloaders` (rebuilt from every client tier each pass —
   a shallow merge cannot append — and without it the period is derived from the
   recorded boundaries). `record-results` snapshots the hot-file selection into

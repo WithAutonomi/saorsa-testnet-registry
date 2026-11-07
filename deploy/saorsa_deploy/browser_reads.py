@@ -100,10 +100,18 @@ def derive_period_secs(rows) -> int | None:
     """The round period implied by the rows themselves, or None.
 
     The fallback for a deployment whose role config was never recorded (no
-    ``DATABASE_URL`` at `clients provision` time). ``started_at`` IS the
-    boundary, so ``started_at / round_id`` is the period exactly — and it is
-    only trusted when every row agrees and divides evenly, because a single
-    disagreement means the assumption behind the arithmetic does not hold.
+    ``DATABASE_URL`` at `clients provision` time). The round's BOUNDARY is
+    ``started_at - start_offset_ms``, so ``boundary / round_id`` is the period
+    exactly — and it is only trusted when every row agrees and divides evenly,
+    because a single disagreement means the assumption behind the arithmetic
+    does not hold.
+
+    **The offset has to be subtracted** (INFRA-532): ``started_at`` is the
+    instance's SCHEDULED start, so on a STAGGERED cohort it is the boundary plus
+    a few seconds and the division no longer comes out even. Without this the
+    fallback would decline for exactly the cohorts the swarm run is made of. A
+    NULL or 0 offset is every row written before the stagger existed, and for
+    those the two are the same instant.
     """
     periods = set()
     for row in rows:
@@ -111,7 +119,8 @@ def derive_period_secs(rows) -> int | None:
         started_at = _field(row, "started_at")
         if not round_id or started_at is None:
             continue
-        epoch = int(as_utc(started_at).timestamp())
+        offset_ms = _field(row, "start_offset_ms") or 0
+        epoch = int(as_utc(started_at).timestamp()) - int(offset_ms) // 1000
         if epoch % round_id:
             return None
         periods.add(epoch // round_id)
@@ -190,7 +199,29 @@ def summarise_rounds(rows, period_secs: int) -> list[dict]:
         # The spread, not the max: a cohort that all started 40 s late is still
         # reading simultaneously, which is what is being measured. One instance
         # 40 s behind the rest is not.
-        spread_ms = (max(lates) - min(lates)) if len(lates) > 1 else 0
+        #
+        # **The spread is over ACTUAL starts, which are
+        # `start_offset_ms + started_late_ms`.** `started_late_ms` is measured
+        # from each instance's SCHEDULED start (INFRA-532), so lateness alone is
+        # no longer where an instance began: four on-time instances of a 10 s
+        # stagger reported a 0 ms spread when they started 30 s apart, and the
+        # same four all starting together on a VM that resumed 30 s late
+        # reported 30,000 ms when their actual spread was zero. An absent offset
+        # is 0, which is every row written before the stagger existed, so an
+        # unstaggered cohort's figure does not move.
+        starts = [
+            (_field(r, "start_offset_ms") or 0) + _field(r, "started_late_ms")
+            for r in group
+            if _field(r, "started_late_ms") is not None
+        ]
+        spread_ms = (max(starts) - min(starts)) if len(starts) > 1 else 0
+        # What the SCHEDULE asked for, so the flag can fire on the deviation
+        # from it rather than on the stagger itself. Reporting a deliberate
+        # 30 s stagger as a desynchronised round would be the report calling a
+        # supported schedule a fault -- and on an unstaggered cohort this is 0,
+        # which makes the flag exactly the rule it was.
+        offsets = [_field(r, "start_offset_ms") or 0 for r in group]
+        scheduled_spread_ms = (max(offsets) - min(offsets)) if len(offsets) > 1 else 0
         out.append(
             {
                 "round_id": round_id,
@@ -209,7 +240,12 @@ def summarise_rounds(rows, period_secs: int) -> list[dict]:
                 "error_kinds": _error_kinds(group),
                 "started_late_ms_max": max(lates) if lates else None,
                 "started_spread_ms": spread_ms,
-                "desynchronised": spread_ms > ROUND_SPREAD_FLAG_MS,
+                "scheduled_spread_ms": scheduled_spread_ms,
+                # The EXCESS over what the schedule asked for, so a deliberate
+                # stagger is not reported as a fault while a real desync still
+                # is. Identical to the old rule on an unstaggered cohort, where
+                # the scheduled spread is 0.
+                "desynchronised": (spread_ms - scheduled_spread_ms) > ROUND_SPREAD_FLAG_MS,
                 "stalls": sum(
                     _field(r, "stalls") or 0 for r in group if _field(r, "stalls") is not None
                 ),
@@ -496,6 +532,7 @@ def build_report(
     min_completion: float,
     max_holder_share: float,
     max_refused: int,
+    expected_for_round=None,
 ) -> dict:
     """The whole report as one JSON-ready document.
 
@@ -504,14 +541,34 @@ def build_report(
     ``trace_docs``, which are the normalised Elasticsearch trace records for
     those rounds (see :mod:`saorsa_deploy.browser_traces`) and are the sole
     input to the per-chunk section and G3.
+
+    ``expected_instances`` is the COHORT's configured instance count and stays
+    the document's top-level figure. ``expected_for_round`` is an optional
+    ``round_id -> int | None`` resolver for the PER-ROUND expectation, which on
+    a parity-split deployment is not the same number
+    (:func:`browser_records.expected_instances_for_round` is what the command
+    passes). Omitting it keeps the cohort total on every round, which is what
+    this did before INFRA-532 and what a deployment with no recorded parity
+    still gets.
     """
     round_summaries = summarise_rounds(rows, period_secs)
     for entry in round_summaries:
-        entry["instances_expected"] = expected_instances
+        # Per round, through the caller's resolver when it supplied one: on a
+        # parity-split deployment a round is run by ONE of the cohorts, so the
+        # cohort-wide total is not what the round should have produced. Summing
+        # both made every healthy round of a 4-instance `even` cohort beside a
+        # 4-instance `odd` one report 4 against an expectation of 8, which is
+        # the report inventing four missing points for a supported schedule.
+        #
+        # Without a resolver (and for every VM whose config records no parity,
+        # which is every one before INFRA-532) this is the cohort total, exactly
+        # as it was.
+        per_round = (
+            expected_for_round(entry["round_id"]) if expected_for_round else expected_instances
+        )
+        entry["instances_expected"] = per_round
         entry["instances_missing"] = (
-            expected_instances - entry["instances_reporting"]
-            if expected_instances is not None
-            else None
+            per_round - entry["instances_reporting"] if per_round is not None else None
         )
     chunk_report = summarise_chunks(trace_docs, rows, min_first_reads=MIN_FIRST_READS_FOR_GATE)
     chunk_summaries = chunk_report["chunks"]
@@ -692,6 +749,11 @@ def render_markdown(report: dict) -> str:
             "n/a" if entry["instances_expected"] is None else str(entry["instances_expected"])
         )
         spread = f"{entry['started_spread_ms']:,} ms"
+        # The schedule's own span, named only when there is one: the spread of a
+        # staggered cohort is meant to be wide, and a reader comparing the two
+        # numbers is what tells an intended spread from a desync.
+        if entry.get("scheduled_spread_ms"):
+            spread += f" (sched {entry['scheduled_spread_ms']:,} ms)"
         if entry["desynchronised"]:
             spread += " **⚠ desync**"
         lines.append(
