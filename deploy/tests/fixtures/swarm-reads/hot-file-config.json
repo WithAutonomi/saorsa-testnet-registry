@@ -1,0 +1,50 @@
+[
+  {
+    "hostname": "DEV-03-swarm-ant-client-hot-file-read-lon1-1",
+    "extension": "swarm",
+    "recorded_at": "2026-10-18T08:50:00Z",
+    "region": "lon1",
+    "client_index": 1,
+    "instances": 2,
+    "round_period_secs": 600,
+    "download_timeout_secs": 300,
+    "round_parity": "even",
+    "start_stagger_secs": 0
+  },
+  {
+    "hostname": "DEV-03-swarm-ant-client-hot-file-read-nyc3-1",
+    "extension": "swarm",
+    "recorded_at": "2026-10-18T08:50:00Z",
+    "region": "nyc3",
+    "client_index": 1,
+    "instances": 2,
+    "round_period_secs": 600,
+    "download_timeout_secs": 300,
+    "round_parity": "even",
+    "start_stagger_secs": 0
+  },
+  {
+    "hostname": "DEV-03-control-ant-client-hot-file-read-lon1-1",
+    "extension": "control",
+    "recorded_at": "2026-10-18T08:50:00Z",
+    "region": "lon1",
+    "client_index": 1,
+    "instances": 2,
+    "round_period_secs": 600,
+    "download_timeout_secs": 300,
+    "round_parity": "odd",
+    "start_stagger_secs": 0
+  },
+  {
+    "hostname": "DEV-03-control-ant-client-hot-file-read-nyc3-1",
+    "extension": "control",
+    "recorded_at": "2026-10-18T08:50:00Z",
+    "region": "nyc3",
+    "client_index": 1,
+    "instances": 2,
+    "round_period_secs": 600,
+    "download_timeout_secs": 300,
+    "round_parity": "odd",
+    "start_stagger_secs": 0
+  }
+]

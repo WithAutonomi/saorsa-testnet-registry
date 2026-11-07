@@ -2334,10 +2334,86 @@ together.
   the rounds are not split and prints them anyway, because this is a read-only
   diagnostic.
   `print-recorded-results` gains a "Hot-file reads" section; `slack-post`
-  renders the tier under `_Hot-file readers (native):_`. **No gate**: a swarm
-  figure has no calibration yet, and gating it would need one nobody has.
+  renders the tier under `_Hot-file readers (native):_`. **No staging gate**:
+  `deployments compare` is untouched, because a swarm figure has no calibration
+  there. The run's own gates are `analysis swarm-reads`' (below), which compares
+  the two cohorts against each other rather than against a calibrated floor.
 
 See `deploy/README.md` §"Hot-file reader VMs (native, swarm cohort)".
+
+#### The swarm report (`analysis swarm-reads`, INFRA-533)
+
+`analysis swarm-reads --name N [--id ID] --window-start … --window-end …
+--swarm-extension X --control-extension Y` is the report an ADR-0026 run is
+judged by — what `analysis browser-reads` is for ADR-0023, and the only analysis
+the DEV-03 smoke and DEV-01 run issues cite. It reads **three** sources, so it
+must run BEFORE teardown: the rows from Postgres (both tables, narrowed by
+`extension`, so `record-results` first), the hot file's **chunk set** and the
+browsers' own GETs from the run's Elasticsearch **client** index, and the fleet's
+`get_rpc` documents from its **node** index.
+
+- **The arm of a round is its PARITY, and both arms are in one deployment.**
+  Even rounds are the swarm cohort's (native readers on the branch `ant` plus the
+  branch bundle's browsers), odd ones the control's (released native). That is
+  what makes it a comparison: the same fleet, the same chunk set, the same hour —
+  and the reason there is no option to compare two deployments. A recorded parity
+  that **contradicts** its arm (a swarm host `odd`, a control host `even`) is
+  refused naming each host; such a host reads on the rounds the other arm's
+  figures come from, and every number would describe a blend. **Two cohorts
+  recording different periods is also a refusal, not an average** — a `round_id`
+  is `floor(epoch / period)`, so they do not share round numbers at all.
+- **`get_rpc` counts NATIVE-path GETs, which is exactly why the comparison
+  works.** Every native-path chunk GET on every node emits one INFO `get_rpc` on
+  the `ant_node::storage::rpc_latency` target (`tail.message`, with
+  `tail.request`/`chunk_address`/`storage_outcome`/`duration_ms` beside it). The
+  **browser listener emits no per-GET event** — only `get_service_count` in its
+  300 s summary — so the documents are each cohort's native readers plus the
+  deployment's own native downloaders, which draw random files and almost never
+  touch the hot file. 16 native swarm readers against 16 native control readers
+  is therefore like-for-like. One query per round, filtered to the chunk set and
+  **half-open** on the round's upper bound; **served** is
+  `storage_outcome = success` with that bucket's own p50/p95, since a `not_found`
+  is answered from the index alone. A clock-skewed node stamps its documents
+  outside their true round and is lost to the count — constant on both arms.
+- **The chunk set is the FILE's, from the swarm rounds' browser traces.** An
+  `rpc` record's `target` is the chunk hex, and the control arm is native-only
+  and emits no trace, so the distinct targets over the swarm rounds are the
+  file's records (root DataMap included). That one set filters the GETs on
+  **both** arms. Fewer than **three** addresses is a refusal: a 300 MiB file is
+  hundreds of records, and dividing one stray address by another is not a
+  measurement.
+- **A round whose own arm produced no row is MISSING, not zero**, named in §1 and
+  out of the gates' medians. Every round in the window is still queried, so a
+  missing round HAS an empty GET response — and that is the point: it leaves the
+  medians by being missing, not by its count. A round nobody ran is not a round
+  that served nothing. **An off-parity row is counted and excluded** too: a
+  `round_parity: all` cohort reads on the other arm's rounds, and an odd round is
+  the control's measurement, so folding those reads in would contaminate the
+  baseline the ratio divides by.
+- **The peer share's denominator is the ATTEMPTED rows.** A read that failed may
+  still have taken records from a peer, and one that never got going cannot have;
+  a `skipped` row is stored, counted and in no denominator, as everywhere else.
+- **Four gates, and only G1–G3 reach the verdict** (G4 is excluded by NAME, so
+  reordering cannot promote it). G1 completion ≥ `--min-completion` (0.95) for
+  each arm's natives and the swarm arm's browsers — three figures, all must pass,
+  and a cohort that attempted nothing is NOT ASSESSED rather than 0%. G2 the
+  share of rows with `records_from_peers ≥ 1` ≥ `--min-peer-share` (0.80) in
+  **every** swarm round, natives and browsers alike — per round, because a swarm
+  that failed to form for one round and recovered has still had an outage. G3
+  median served `get_rpc` over the swarm rounds ÷ the median over the control
+  rounds ≤ `--max-get-ratio` (0.80), **NOT ASSESSED** below two present rounds in
+  either arm and when the control arm served **none** (a ratio over a zero
+  denominator is a measurement that did not happen, not a pass). G4 native p50,
+  swarm against control, **reported as PASS/WARN only** — no threshold for it has
+  been calibrated.
+- **The control arm's zeros are expected and `swarm_present` is what makes them
+  readable.** A control row that *does* claim a swarm is reported as a count:
+  it means the control extension is not the released build, and the ratio would
+  be one binary against itself.
+- **Exit 0 / 1 / 2**, and 2 ("I measured nothing") is deliberately not 1 ("the
+  swarm made the read path worse").
+
+See `deploy/README.md` §"The swarm report (`analysis swarm-reads`)".
 
 ### The pointer client tier (`clients.pointers[]`)
 
