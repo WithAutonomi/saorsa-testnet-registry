@@ -50,3 +50,75 @@ test("a timeout that can outlive its round is refused", () => {
 test("a non-integer knob is refused rather than silently defaulted", () => {
   assert.throws(() => loadConfig({ ...BASE, INSTANCES: "four" }), /not an integer/);
 });
+
+test("the scheduling knobs default to the pre-INFRA-532 behaviour", () => {
+  // Every existing cohort runs every round, starts on the boundary and closes
+  // its page the moment its download ends.
+  const config = loadConfig(BASE);
+  assert.equal(config.roundParity, "all");
+  assert.equal(config.startStaggerSecs, 0);
+  assert.equal(config.seedUntilSecs, 0);
+  assert.equal(config.clientIndex, 1);
+});
+
+test("the three knobs are read from the env file", () => {
+  const config = loadConfig({
+    ...BASE,
+    CLIENT_INDEX: "3",
+    ROUND_PARITY: "even",
+    START_STAGGER_SECS: "2",
+    SEED_UNTIL_SECS: "480",
+    DOWNLOAD_TIMEOUT_SECS: "420",
+  });
+  assert.equal(config.clientIndex, 3);
+  assert.equal(config.roundParity, "even");
+  assert.equal(config.startStaggerSecs, 2);
+  assert.equal(config.seedUntilSecs, 480);
+});
+
+test("an unknown parity is refused rather than silently taken as `all`", () => {
+  assert.throws(() => loadConfig({ ...BASE, ROUND_PARITY: "EVEN" }), /ROUND_PARITY must be one of/);
+  assert.throws(() => loadConfig({ ...BASE, ROUND_PARITY: "third" }), /ROUND_PARITY must be one of/);
+});
+
+test("a negative stagger is refused", () => {
+  assert.throws(() => loadConfig({ ...BASE, START_STAGGER_SECS: "-1" }), /must be >= 0/);
+});
+
+test("a seed window shorter than the deadline is refused", () => {
+  // It would shut a page that was still downloading, which is a failure the
+  // cohort would read as the network's.
+  assert.throws(
+    () => loadConfig({ ...BASE, DOWNLOAD_TIMEOUT_SECS: "420", SEED_UNTIL_SECS: "400" }),
+    /must be >= DOWNLOAD_TIMEOUT_SECS/,
+  );
+});
+
+test("a seed window that runs into the next round is refused", () => {
+  // A page still seeding when the next round launches holds a session the next
+  // instance needs, and every node refuses the fifth from one address.
+  assert.throws(
+    () => loadConfig({ ...BASE, ROUND_PERIOD_SECS: "600", SEED_UNTIL_SECS: "590" }),
+    /must be < ROUND_PERIOD_SECS - 30/,
+  );
+  assert.throws(
+    () => loadConfig({ ...BASE, ROUND_PERIOD_SECS: "600", SEED_UNTIL_SECS: "570" }),
+    /must be < ROUND_PERIOD_SECS - 30/,
+  );
+});
+
+test("the widest legal seed window is accepted", () => {
+  const config = loadConfig({
+    ...BASE,
+    ROUND_PERIOD_SECS: "600",
+    DOWNLOAD_TIMEOUT_SECS: "420",
+    SEED_UNTIL_SECS: "569",
+  });
+  assert.equal(config.seedUntilSecs, 569);
+});
+
+test("the two seed bounds do not apply when seeding is off", () => {
+  // 0 is "close as soon as the download ends", so neither bound is meaningful.
+  const config = loadConfig({ ...BASE, DOWNLOAD_TIMEOUT_SECS: "420", SEED_UNTIL_SECS: "0" });
+  assert.equal(config.seedUntilSecs, 0);
+});

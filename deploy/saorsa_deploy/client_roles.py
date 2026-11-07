@@ -98,6 +98,19 @@ BROWSER_DEFAULT_ROUND_PERIOD_SECS = 600
 #: the cohort stops being synchronised in any useful sense.
 BROWSER_MIN_ROUND_PERIOD_SECS = 120
 BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS = 300
+#: Seconds between consecutive browser-instance starts, cohort-wide. 0 (the
+#: default) launches every instance on the boundary together, which is what
+#: every cohort before INFRA-532 did.
+BROWSER_DEFAULT_START_STAGGER_SECS = 0
+#: How long after the boundary a page whose download SUCCEEDED stays open,
+#: client connected, going on serving the readers that started later in the
+#: stagger. 0 (the default) closes it the moment its own download ends.
+BROWSER_DEFAULT_SEED_UNTIL_SECS = 0
+#: Seconds of slack a seeding page must leave before the next round is due. A
+#: page still seeding when the next round's browser launches is holding a WebRTC
+#: session the next instance needs, and a node refuses the fifth from one source
+#: address -- so the seed window has to end clear of the boundary, not at it.
+BROWSER_SEED_TAIL_GAP_SECS = 30
 #: Four Chromium instances each holding ~4x a 50 MiB file in WASM memory need
 #: more than 4 GB, so the browser role's default is a size up from every other
 #: client role's.
@@ -133,6 +146,18 @@ HOT_FILE_PARITY_ALL = "all"
 HOT_FILE_PARITY_EVEN = "even"
 HOT_FILE_PARITY_ODD = "odd"
 HOT_FILE_PARITIES = (HOT_FILE_PARITY_EVEN, HOT_FILE_PARITY_ODD, HOT_FILE_PARITY_ALL)
+
+#: The SAME vocabulary under role-neutral names, because the browser role takes
+#: a parity too (INFRA-532) and the two are configured side by side in one
+#: manifest: a cohort split across the native and browser roles must be able to
+#: say `even` once and mean it in both places. Aliases rather than a second
+#: tuple -- two spellings of "even" between the two roles would be a trap, and
+#: the `HOT_FILE_*` names are kept because that role's code and its tests are
+#: written in terms of them.
+ROUND_PARITY_ALL = HOT_FILE_PARITY_ALL
+ROUND_PARITY_EVEN = HOT_FILE_PARITY_EVEN
+ROUND_PARITY_ODD = HOT_FILE_PARITY_ODD
+ROUND_PARITIES = HOT_FILE_PARITIES
 
 #: The hot-file manifest, written by `clients select-hot-files` into the
 #: deployment's address prefix and read by every browser instance at every round

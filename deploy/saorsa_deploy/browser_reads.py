@@ -100,10 +100,18 @@ def derive_period_secs(rows) -> int | None:
     """The round period implied by the rows themselves, or None.
 
     The fallback for a deployment whose role config was never recorded (no
-    ``DATABASE_URL`` at `clients provision` time). ``started_at`` IS the
-    boundary, so ``started_at / round_id`` is the period exactly — and it is
-    only trusted when every row agrees and divides evenly, because a single
-    disagreement means the assumption behind the arithmetic does not hold.
+    ``DATABASE_URL`` at `clients provision` time). The round's BOUNDARY is
+    ``started_at - start_offset_ms``, so ``boundary / round_id`` is the period
+    exactly — and it is only trusted when every row agrees and divides evenly,
+    because a single disagreement means the assumption behind the arithmetic
+    does not hold.
+
+    **The offset has to be subtracted** (INFRA-532): ``started_at`` is the
+    instance's SCHEDULED start, so on a STAGGERED cohort it is the boundary plus
+    a few seconds and the division no longer comes out even. Without this the
+    fallback would decline for exactly the cohorts the swarm run is made of. A
+    NULL or 0 offset is every row written before the stagger existed, and for
+    those the two are the same instant.
     """
     periods = set()
     for row in rows:
@@ -111,7 +119,8 @@ def derive_period_secs(rows) -> int | None:
         started_at = _field(row, "started_at")
         if not round_id or started_at is None:
             continue
-        epoch = int(as_utc(started_at).timestamp())
+        offset_ms = _field(row, "start_offset_ms") or 0
+        epoch = int(as_utc(started_at).timestamp()) - int(offset_ms) // 1000
         if epoch % round_id:
             return None
         periods.add(epoch // round_id)

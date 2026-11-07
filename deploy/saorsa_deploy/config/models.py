@@ -19,8 +19,11 @@ from saorsa_deploy.client_roles import (
     BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
     BROWSER_DEFAULT_INSTANCES,
     BROWSER_DEFAULT_ROUND_PERIOD_SECS,
+    BROWSER_DEFAULT_SEED_UNTIL_SECS,
+    BROWSER_DEFAULT_START_STAGGER_SECS,
     BROWSER_MAX_INSTANCES,
     BROWSER_MIN_ROUND_PERIOD_SECS,
+    BROWSER_SEED_TAIL_GAP_SECS,
     HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
     HOT_FILE_DEFAULT_INSTANCES,
     HOT_FILE_DEFAULT_ROUND_PERIOD_SECS,
@@ -28,6 +31,8 @@ from saorsa_deploy.client_roles import (
     HOT_FILE_MAX_INSTANCES,
     HOT_FILE_MIN_ROUND_PERIOD_SECS,
     HOT_FILE_PARITIES,
+    ROUND_PARITIES,
+    ROUND_PARITY_ALL,
 )
 from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES as _WASM_MAX_FILE_BYTES
 from saorsa_deploy.providers import PROVIDERS
@@ -705,8 +710,25 @@ class BrowserDownloader(_Base):
     # Rounds begin on wall-clock multiples of this, which is what makes the
     # cohort simultaneous without any coordination between VMs.
     round_period_secs: int = BROWSER_DEFAULT_ROUND_PERIOD_SECS
-    # Harness deadline per download, measured from the round boundary.
+    # Harness deadline per download, measured from the round boundary -- not
+    # from the instance's own staggered start: what the deadline is for is that
+    # every instance has finished before the next round is due.
     download_timeout_secs: int = BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS
+    # `even` | `odd` | `all`. Two cohorts on one deployment -- a branch bundle on
+    # `even` and a released control on `odd` -- then never read the same file at
+    # the same moment, so neither is inside the other's swarm. The native
+    # hot-file role takes the same three values and means the same thing by them.
+    round_parity: str = ROUND_PARITY_ALL
+    # Seconds between consecutive instance starts, cohort-wide. Overlapping the
+    # readers in time is what makes a swarm form at all: with no stagger every
+    # instance dials the nodes at the same instant and none of them has records
+    # to share yet.
+    start_stagger_secs: int = BROWSER_DEFAULT_START_STAGGER_SECS
+    # Seconds after the boundary that a page whose download SUCCEEDED stays
+    # open, client connected, going on serving the instances that started later.
+    # 0 closes it as soon as its own download ends, which is what every cohort
+    # before INFRA-532 did.
+    seed_until_secs: int = BROWSER_DEFAULT_SEED_UNTIL_SECS
     # Forward the harness stdout+stderr to the deployment's Elasticsearch
     # instance (index telegraf-ant-clients-{name}). Requires elastic.enabled.
     forward_logs: Optional[bool] = None
@@ -750,6 +772,44 @@ class BrowserDownloader(_Base):
                 f"({self.round_period_secs}), or a round can still be running when "
                 "the next one is due and the cohort stops being simultaneous."
             )
+        if self.round_parity not in ROUND_PARITIES:
+            raise ValueError(
+                f"clients.browser_downloaders: round_parity must be one of "
+                f"{', '.join(ROUND_PARITIES)}, got '{self.round_parity}'."
+            )
+        if self.start_stagger_secs < 0:
+            raise ValueError(
+                f"clients.browser_downloaders: start_stagger_secs must be >= 0 "
+                f"(0 = every instance starts on the boundary), got "
+                f"{self.start_stagger_secs}."
+            )
+        if self.seed_until_secs < 0:
+            raise ValueError(
+                f"clients.browser_downloaders: seed_until_secs must be >= 0 "
+                f"(0 = the page closes as soon as its download ends), got "
+                f"{self.seed_until_secs}."
+            )
+        if self.seed_until_secs > 0:
+            # Both bounds only apply to a cohort that seeds: 0 means the page
+            # closes with its download, so neither "before its own deadline" nor
+            # "into the next round" is a question that arises.
+            if self.seed_until_secs < self.download_timeout_secs:
+                raise ValueError(
+                    f"clients.browser_downloaders: seed_until_secs "
+                    f"({self.seed_until_secs}) must be >= download_timeout_secs "
+                    f"({self.download_timeout_secs}), or a page would be shut "
+                    "while its own download was still allowed to be running."
+                )
+            if self.seed_until_secs >= self.round_period_secs - BROWSER_SEED_TAIL_GAP_SECS:
+                raise ValueError(
+                    f"clients.browser_downloaders: seed_until_secs "
+                    f"({self.seed_until_secs}) must be < round_period_secs - "
+                    f"{BROWSER_SEED_TAIL_GAP_SECS} "
+                    f"({self.round_period_secs - BROWSER_SEED_TAIL_GAP_SECS}). A page "
+                    "still seeding when the next round's browser launches holds a "
+                    "WebRTC session the next instance needs, and a node refuses the "
+                    "fifth session from one source address."
+                )
         return self
 
 

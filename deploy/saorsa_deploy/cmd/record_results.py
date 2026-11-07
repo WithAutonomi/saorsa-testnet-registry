@@ -57,6 +57,8 @@ from saorsa_deploy.hot_file_records import (
     snapshot_hot_files as snapshot_hot_file_reader_files,
 )
 from saorsa_deploy.influx import (
+    BROWSER_CHUNK_SOURCE_FIELDS,
+    BROWSER_SWARM_FIELDS,
     HOT_FILE_SWARM_FIELDS,
     aggregate_file_results,
     fetch_all_operation_points,
@@ -659,33 +661,46 @@ def _record_browser_downloads(
         if status is None or start_ns is None:
             unusable += 1
             continue
-        # `start_ns` is the round's BOUNDARY, which is what makes a window
-        # selection over these rows select whole rounds.
+        # `start_ns` is the instance's SCHEDULED start -- the round's boundary
+        # plus its stagger offset -- so the boundary, which is what makes a
+        # window selection over these rows select whole rounds, is
+        # `started_at - start_offset_ms`. With no stagger the offset is 0 and the
+        # two are the same instant, which is every cohort before INFRA-532.
         started_at = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
-        browser_rows.append(
-            {
-                "deployment_id": deployment.id,
-                "client_hostname": point["host"],
-                "round_id": point["round_id"],
-                "instance": point["instance"],
-                "status": status,
-                "started_at": started_at,
-                "extension": extension_for_host.get(point["host"]),
-                "region": point.get("region"),
-                "hot_file_index": point.get("hot_file_index"),
-                "address": point.get("address"),
-                "file_size_bytes": point.get("file_size"),
-                "error_kind": point.get("error_kind"),
-                "error_text": point.get("error_text"),
-                "total_ms": point.get("total_ms"),
-                "connect_ms": point.get("connect_ms"),
-                "started_late_ms": point.get("started_late_ms"),
-                "seeds": point.get("seeds"),
-                "stalls": point.get("stalls"),
-                "refused_dials": point.get("refused_dials"),
-                "first_reads": point.get("first_reads"),
-            }
-        )
+        row = {
+            "deployment_id": deployment.id,
+            "client_hostname": point["host"],
+            "round_id": point["round_id"],
+            "instance": point["instance"],
+            "status": status,
+            "started_at": started_at,
+            "extension": extension_for_host.get(point["host"]),
+            "region": point.get("region"),
+            "hot_file_index": point.get("hot_file_index"),
+            "address": point.get("address"),
+            "file_size_bytes": point.get("file_size"),
+            "error_kind": point.get("error_kind"),
+            "error_text": point.get("error_text"),
+            "total_ms": point.get("total_ms"),
+            "connect_ms": point.get("connect_ms"),
+            "started_late_ms": point.get("started_late_ms"),
+            "start_offset_ms": point.get("start_offset_ms"),
+            "seeded_ms": point.get("seeded_ms"),
+            "seeds": point.get("seeds"),
+            "stalls": point.get("stalls"),
+            "refused_dials": point.get("refused_dials"),
+            "first_reads": point.get("first_reads"),
+            "swarm_present": point.get("swarm_present"),
+            "swarm_room_tag": point.get("swarm_room_tag"),
+            "swarm_rooms": point.get("swarm_rooms"),
+        }
+        # The twenty-nine swarm counters, copied by NAME from the one tuple the
+        # parse and the row both read. Spelling them out here would be a third
+        # list to keep in step, and the counter that fell out of it would read
+        # NULL forever.
+        for name in (*BROWSER_CHUNK_SOURCE_FIELDS, *BROWSER_SWARM_FIELDS):
+            row[name] = point.get(name)
+        browser_rows.append(row)
         recorded += 1
 
     repo.upsert_browser_download_records(browser_rows)

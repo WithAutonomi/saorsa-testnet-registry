@@ -32,7 +32,10 @@ from saorsa_deploy.client_extension import client_extension_tiers, client_vm_nam
 from saorsa_deploy.client_roles import (
     BROWSER_DEFAULT_INSTANCES,
     BROWSER_DEFAULT_ROUND_PERIOD_SECS,
+    BROWSER_DEFAULT_SEED_UNTIL_SECS,
+    BROWSER_DEFAULT_START_STAGGER_SECS,
     ROLE_BROWSER_DOWNLOAD,
+    ROUND_PARITY_ALL,
     is_browser,
 )
 
@@ -62,6 +65,17 @@ def client_hostname(deployment: str, extension: str | None, client: dict) -> str
     )
 
 
+def _value(client: dict, key: str, default):
+    """A recorded spec value, defaulted only when it is ABSENT.
+
+    The same rule `AntClientProvisioner._browser_env` applies, and for the same
+    reason: `or` let a recorded `0` take a non-zero default, which makes the
+    registry describe a schedule the VM was never given.
+    """
+    recorded = client.get(key)
+    return default if recorded is None else recorded
+
+
 def browser_config_entry(deployment: str, extension: str | None, client: dict) -> dict:
     """One browser VM's recorded role config.
 
@@ -79,6 +93,22 @@ def browser_config_entry(deployment: str, extension: str | None, client: dict) -
         "instances": client.get("instances") or BROWSER_DEFAULT_INSTANCES,
         "round_period_secs": (client.get("round_period_secs") or BROWSER_DEFAULT_ROUND_PERIOD_SECS),
         "download_timeout_secs": client.get("download_timeout_secs"),
+        # The schedule knobs (INFRA-532). Recorded because the registry is the
+        # only copy that survives teardown, and without them a cohort's rows
+        # cannot be read back as the schedule they actually ran on: the parity
+        # says which rounds were this cohort's, the stagger (with
+        # ``client_index``) says when each instance started, and the seed window
+        # says how long each page stayed available to the others.
+        #
+        # Defaulted only when ABSENT, never when falsy: 0 is both the default
+        # AND a legitimate explicit setting for the last two, so `or` would make
+        # the registry describe a schedule the VM was never given -- the rule
+        # `AntClientProvisioner._hot_file_env` documents.
+        "round_parity": _value(client, "round_parity", ROUND_PARITY_ALL),
+        "start_stagger_secs": _value(
+            client, "start_stagger_secs", BROWSER_DEFAULT_START_STAGGER_SECS
+        ),
+        "seed_until_secs": _value(client, "seed_until_secs", BROWSER_DEFAULT_SEED_UNTIL_SECS),
     }
 
 

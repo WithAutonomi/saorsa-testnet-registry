@@ -65,3 +65,50 @@ test("a bundle with no trace hook is reported, not ignored", () => {
   // instrument.
   assert.ok(downloadInPage.toString().includes("traceHook"));
 });
+
+test("the progress callback is the THIRD argument of downloadPublicFile", () => {
+  // The second is the concurrency, and the client's own default has to govern
+  // it (INFRA-493): passing a number there would make this role measure a
+  // concurrency nothing else in the run uses.
+  const source = downloadInPage.toString();
+  assert.ok(source.includes("client.downloadPublicFile(address, undefined, onProgress)"));
+});
+
+test("the progress lines are returned raw, not counted in the page", () => {
+  // Counted by `lib/swarm.mjs`, where `node --test` can reach the parser.
+  const source = downloadInPage.toString();
+  assert.ok(source.includes("progress.push"));
+  assert.ok(source.includes("progress,"));
+});
+
+test("the swarm stats are read before the client is closed", () => {
+  // The counters are the client's own, and a closed one has nothing to report.
+  const source = downloadInPage.toString();
+  assert.ok(source.indexOf("swarmStats") < source.indexOf("client.close"));
+  assert.ok(source.includes("client.swarmRoomStats"));
+});
+
+test("a bundle with neither swarm method is tolerated", () => {
+  // The pinned-older-client case: `swarm_present = 0` and zeros, never a round
+  // that failed over a method that does not exist.
+  const source = downloadInPage.toString();
+  assert.ok(source.includes('typeof client.swarmStats === "function"'));
+  assert.ok(source.includes('typeof client.swarmRoomStats === "function"'));
+});
+
+test("totalMs is taken when the download completed, not when the page returns", () => {
+  // A seeding page returns minutes later, and a `totalMs` that included the
+  // wait would put the seed window into every transfer percentile.
+  const source = downloadInPage.toString();
+  assert.ok(source.includes("const completedAt = Date.now()"));
+  assert.ok(source.includes("completedAt - startedAt"));
+});
+
+test("only a successful download is held open to seed", () => {
+  // A short read or a failure holds nothing worth serving, so both close at
+  // once, exactly as they did before seeding existed.
+  const source = downloadInPage.toString();
+  const mismatch = source.indexOf("size mismatch");
+  const seedWait = source.indexOf("if (seedUntilMs)");
+  assert.ok(mismatch < seedWait, "the size-mismatch return must precede the seed wait");
+});

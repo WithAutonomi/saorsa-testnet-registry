@@ -1456,13 +1456,16 @@ clients:
       vm_size: s-4vcpu-8gb         # default
       instances: 4                 # Chromium instances per VM, 1..4. Default 4
       round_period_secs: 600       # rounds start on multiples of this. Default 600
-      download_timeout_secs: 300   # harness deadline per download. Default 300
+      download_timeout_secs: 420   # harness deadline per download. Default 300
+      round_parity: even           # which rounds are this cohort's. Default all
+      start_stagger_secs: 2        # seconds between instance starts. Default 0
+      seed_until_secs: 480         # hold a successful page open this long. Default 0
       forward_logs: true           # harness streams → the deployment's Elasticsearch
       count: 1                     # identical VMs from this entry (default 1)
 ```
 
 CLI parity: `clients infra --browser-downloader
-provider:region[:vm_size][:instances=N][:round_period_secs=N][:download_timeout_secs=N][:forward_logs=BOOL]`,
+provider:region[:vm_size][:instances=N][:round_period_secs=N][:download_timeout_secs=N][:round_parity=even|odd|all][:start_stagger_secs=N][:seed_until_secs=N][:forward_logs=BOOL]`,
 repeatable. `clients provision` / `start` / `stop` / `destroy` / `clean` handle
 the role like any other. Declarable in a `kind: clients` extension manifest too,
 which is the normal way to use it — see below.
@@ -1479,7 +1482,10 @@ rather than a deployment, which is how this role shipped unusable in 1.4.0 and
 | `vm_size` | `s-4vcpu-8gb` | A size up from the other roles: four instances each holding ~4x their file in WASM memory do not fit in 4 GB |
 | `instances` | `4` | **1..4.** See the per-IP quota below |
 | `round_period_secs` | `600` | Minimum 120 |
-| `download_timeout_secs` | `300` | Must be **<** `round_period_secs` |
+| `download_timeout_secs` | `300` | Must be **<** `round_period_secs`. Measured from the round BOUNDARY, not from a staggered instance's own start |
+| `round_parity` | `all` | `even` \| `odd` \| `all`. A round that is not the cohort's produces nothing — no browser, no point, one `round=<id> parity=skip` line |
+| `start_stagger_secs` | `0` | Seconds between consecutive instance starts, cohort-wide. Instance `i` on the VM with `client_index = k` launches at `boundary + ((k − 1) × instances + (i − 1)) × start_stagger_secs` |
+| `seed_until_secs` | `0` | `0` closes the page when its download ends. Above 0 a page whose download **succeeded** stays open, client connected, until `boundary + seed_until_secs`. Must satisfy `download_timeout_secs ≤ seed_until_secs < round_period_secs − 30` |
 | `forward_logs` | unset | Requires `elastic.enabled: true` |
 | `count` | `1` | **This role only.** Expands to N VMs with consecutive `client_index` values; `plan` prints each one |
 
@@ -1487,6 +1493,46 @@ There is deliberately no `clock_skew`, `network` or `rust_log` on this role: wha
 is measured is *when* each instance read and *which holder served it*, and a
 shifted clock or a shaped link distorts exactly that. All three are refused by
 name rather than dropped silently.
+
+#### Scheduling: the parity, the stagger and the seed window
+
+The three keys exist for ADR-0026 (the peer swarm: readers of one file share its
+records with each other over WebRTC data channels), and they are the same three
+the native `hot_file_readers` role takes, with the same semantics — a parity-split
+run puts a branch cohort and a released control on one deployment and the two
+have to be configurable in one vocabulary.
+
+- **`round_parity`** says which rounds are this cohort's. A round that is not
+  produces **nothing at all**: no browser launched, no point written, one
+  `round=<id> parity=skip` line in the harness log. A skip POINT would be
+  indistinguishable from a round the harness failed to run, and the other
+  cohort's rounds are not this one's series to report on.
+- **`start_stagger_secs`** overlaps the instances in time, which is what makes a
+  swarm form at all: with every instance dialling at the same instant none of
+  them has records to share yet. The offset is derived from the inventory —
+  `((client_index − 1) × instances + (instance − 1)) × start_stagger_secs` — so
+  the whole cohort spaces itself out with no coordinator, and a cohort of 4 VMs ×
+  4 instances with a 2 s stagger starts one instance every two seconds for thirty
+  seconds. An extension's `client_index` values CONTINUE from whatever the
+  deployment already uses, so a second cohort of four VMs is indexes 5..8 and its
+  last instance starts far later than a first cohort's would.
+- **`seed_until_secs`** keeps a page that SUCCEEDED open, its client connected,
+  so it goes on serving the instances that started later in the stagger. Without
+  it the page closes the moment its own download ends and a staggered cohort
+  never overlaps. A failed or timed-out download closes at once — nothing it
+  holds is worth serving. The lower bound (`≥ download_timeout_secs`) stops a
+  page being shut while its own download was still allowed to be running; the
+  upper bound (`< round_period_secs − 30`) stops a page still seeding when the
+  next round's browser launches, which would hold a WebRTC session the next
+  instance needs. Both are checked in the manifest schema, in the spec parser and
+  again in the harness's own config, because only the last of those sees what
+  actually reached the VM.
+
+`started_late_ms` is measured from the instance's **scheduled** start, not from
+the boundary: a staggered instance is not late for starting when it was told to.
+`start_offset_ms` carries the offset, so the boundary — which is what a window
+selection selects whole rounds by — stays recoverable from the point and the row
+alone.
 
 #### Three facts the design rests on
 
@@ -1596,7 +1642,38 @@ are two unlike workloads, and sharing a series would let any panel average them.
   `round_id`, `instance`, `hot_file_index`.
 - Fields: `status` (`success` / `failure` / `skipped`), `error_kind`,
   `error_text`, `address`, `file_size`, `total_ms`, `connect_ms`, `start_ns`,
-  `started_late_ms`, `seeds`, `stalls`, `refused_dials`, `first_reads`.
+  `started_late_ms`, `start_offset_ms`, `seeded_ms`, `seeds`, `stalls`,
+  `refused_dials`, `first_reads`.
+- Swarm fields (INFRA-532), **on every point including a skip**, because Influx
+  types a field on first write and a field present on some points and absent on
+  others is one no per-round sum can read:
+  - `swarm_present` (`1` / `0`), `swarm_room_tag`, `swarm_rooms` (a JSON array as
+    a string field);
+  - `chunks_total`, `chunks_from_nodes`, `chunks_from_cache`,
+    `chunks_from_readers` — parsed by the harness out of the bundle's own
+    `Downloaded chunk {n}/{total} from {from} after {attempts} attempts` progress
+    messages, where `{from}` is a node's hex peer id, the literal `cache` or the
+    literal `a reader`. Anything that is neither of the last two counts as a
+    NODE rather than being matched against a hex pattern, so a bundle that
+    renders a peer id differently does not have its chunks vanish from every
+    count;
+  - the **same twenty-five counters** `hot_file_download` carries
+    (`records_from_peers` … `discovery_links_failed`), read off the client's
+    `swarmStats()` / `swarmRoomStats()`. The same names on purpose: one run puts
+    a browser cohort and a native cohort on the same file, and a figure named two
+    ways is a figure no comparison can make.
+
+`start_ns` is the instance's **scheduled** start (`round_id × period + offset`),
+so the round's boundary is `start_ns − start_offset_ms`. With no stagger the
+offset is 0 and the two are the same instant, which is every point written before
+INFRA-532.
+
+**A bundle without `swarmStats()` must not break the harness**, and does not:
+the counters are written as 0 with `swarm_present = 0` beside them. That flag is
+what tells a pinned older bundle's zeros from a swarm that formed and shared
+nothing — the same distinction it carries on the native role. The chunk-source
+counts come from a different place (the progress messages), so a bundle can
+report one and not the other.
 
 `error_kind` is classified from the thrown message, first match winning in this
 order: `are busy` → `busy`; `not found` → `not_found`; `payment` → `payment`;
@@ -1608,7 +1685,14 @@ download, and nothing else would notice it.
 
 `deployments print-downloads --name <n> --browser` is the **live** view of them:
 one row per round with the boundary, the instances reporting, the status counts,
-p50/p95 of the successes and the summed stalls and refused dials.
+p50/p95 of the successes, the summed stalls and refused dials, and the swarm
+figures — instances that received at least one record from a PEER over the reads
+ATTEMPTED (skips are out of that denominator, as they are out of the completion
+rate), the summed `records_from_peers`, `bytes_from_peers` and `records_served`,
+and the per-chunk `chunks_from_readers` / `chunks_from_nodes`. The peer-fed count
+is the headline: it is how many instances the swarm actually reached, which a sum
+alone cannot say, since one instance served by a peer a thousand times reads the
+same as a thousand reached once.
 `--window`/`--recent`/`--summary` behave as for the native view, and the flag is
 mutually exclusive with it in one invocation — a synchronised cohort reading one
 file and a client drawing random files are two unlike workloads, so nothing
@@ -1636,10 +1720,16 @@ summaries.
 | `region`, `hot_file_index`, `address`, `file_size_bytes` | `hot_file_index` is NULL on a `skipped` row, which never chose a file |
 | `status` | the shared `oprecordstatus` enum: `success` / `failure` / `skipped`. A `skipped` row is STORED but excluded from every denominator |
 | `error_kind`, `error_text` | a plain string column, not an enum: the classifier lives in the harness and a kind it gains must be recordable without a migration |
-| `total_ms`, `connect_ms`, `started_late_ms` | |
-| `started_at` | the round's **boundary**, not the instant the browser launched (`started_late_ms` carries that) — which is what makes a window selection over these rows select whole rounds |
+| `total_ms`, `connect_ms`, `started_late_ms` | `started_late_ms` is measured from the instance's SCHEDULED start, not from the boundary |
+| `started_at` | the instance's **scheduled start** (`round_id × period + offset`), not the instant the browser launched (`started_late_ms` carries that). The round's BOUNDARY is `started_at − start_offset_ms`, which is what makes a window selection over these rows select whole rounds; with no stagger the two are the same instant, which is every row written before INFRA-532 |
+| `start_offset_ms` | this instance's offset from the boundary, in milliseconds. Recorded on the ROW rather than only derivable from the cohort's config, because the config is what `clients provision` happened to write last and this is what the round actually ran |
+| `seeded_ms` | how long the page stayed open AFTER its download, serving the instances that started later. 0 when the page closed with its download, which is every failed round and every row before INFRA-532 |
 | `seeds` | the bootstrap multiaddrs this instance was given, as an array. Every download dials every seed, so this is what makes the per-round session load on each bootstrap computable |
 | `stalls`, `refused_dials`, `first_reads` | the derived fields, exactly as the point carried them. `first_reads` records the peer each chunk's first GET was **sent to**, which is why §4 of the report does not use it — see §"The report" |
+| `swarm_present` | whether the page's client could report a swarm at all — that is, whether the bundle has `swarmStats()`. What makes a zero readable, exactly as on the native table |
+| `swarm_room_tag`, `swarm_rooms` | the room this download joined, and `swarmRoomStats()` verbatim as JSON. A JSON column rather than a second table: it is a per-operation detail read alongside its row, never joined or aggregated across rows |
+| `chunks_total`, `chunks_from_nodes`, `chunks_from_cache`, `chunks_from_readers` | where this round's chunks came from, off the progress messages |
+| `records_from_peers` … `discovery_links_failed` | the twenty-five swarm counters, **imported** from the hot-file record's tuple rather than re-declared, so the two tables cannot drift into two vocabularies. All `BIGINT` and all nullable: NULL means NOT RECORDED, which a counter's 0 does not, and **nothing is backfilled** |
 
 There is deliberately **no pointer to the raw trace**: the records are forwarded
 to the run's Elasticsearch as they are produced (see §"The trace" below), so
@@ -1656,17 +1746,31 @@ the two cannot disagree, since the extension name is part of the hostname. A
 an edge one: that is where a run's procedure puts the second pass.
 
 `print-recorded-results --id <id>` gains a **Browser downloads** section: rounds,
-VMs, instances, totals by status and by `error_kind`. Deliberately a summary —
-the per-round, per-region and per-chunk reading is `analysis browser-reads`,
-which also carries the gates.
+VMs, instances, totals by status and by `error_kind`, how many rounds reported a
+swarm at all, and a **Swarm by round** table carrying the live view's figures —
+peer-fed instances over attempted reads, `records_from_peers`, `bytes_from_peers`,
+`records_served`, `chunks_from_readers` and `chunks_from_nodes`. That table is
+printed only when something carries a swarm figure, so every run recorded before
+the columns existed renders exactly as it did, and so does a cohort that ran a
+bundle with no `swarmStats()`. Deliberately a summary — the per-round, per-region
+and per-chunk reading is `analysis browser-reads`, which also carries the gates.
+
+`analysis browser-reads` is unchanged by INFRA-532 and keeps working on rows that
+carry the new columns. One line of it moved: the period fallback for a deployment
+whose role config was never recorded now subtracts `start_offset_ms` before
+dividing, since on a staggered cohort `started_at` is not the boundary and the
+division would no longer come out even — which would have made the fallback
+decline for exactly the cohorts the swarm run is made of.
 
 **Two things the report needs are held in S3 state that teardown deletes, so
 both are snapshotted into the registry beside the rows.** The report reads
 Postgres alone by design, and is meant to be run after the cohort is gone.
 
-- **`clients provision` denormalises the tier's round period and instance count
-  into `deploy_args.browser_downloaders`** (the S3 client state carrying them
-  goes with `clients destroy`). The list is rebuilt from every client tier on
+- **`clients provision` denormalises the tier's round period, instance count and
+  schedule into `deploy_args.browser_downloaders`** — the parity, the stagger,
+  the seed window and each VM's `client_index`, without which the schedule a
+  round actually ran on cannot be reconstructed after teardown (the S3 client
+  state carrying them goes with `clients destroy`). The list is rebuilt from every client tier on
   each provision pass rather than appended to, so it converges whichever tier
   was provisioned last; best-effort, and without it the report derives the
   period from the recorded boundaries instead.

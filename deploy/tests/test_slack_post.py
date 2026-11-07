@@ -1236,15 +1236,51 @@ class TestBrowserCohortRendering:
                 "download_timeout_secs": 300,
             }
         )
+        # The schedule reads `parity ?` because this entry is a VM whose client
+        # state predates INFRA-532 and so records none: a `?` says "not
+        # recorded", where defaulting it to `all` here would assert a schedule
+        # nothing wrote down.
         assert line == (
-            "• browser-download — lon1 (s-4vcpu-8gb, 4 Chromium, round 600s, deadline 300s)"
+            "• browser-download — lon1 (s-4vcpu-8gb, 4 Chromium, round 600s, "
+            "deadline 300s, parity ?, stagger 0s, seed 0s)"
+        )
+
+    def test_browser_line_carries_the_schedule(self):
+        # The parity, the stagger and the seed window are what tell two cohorts
+        # on one deployment apart (INFRA-532) -- a branch bundle on even rounds
+        # and a released control on odd read the same file, and the post is
+        # where an operator sees which is which.
+        from saorsa_deploy.cmd.slack_post import _client_line
+
+        line = _client_line(
+            {
+                "role": "browser-download",
+                "region": "lon1",
+                "vm_size": "s-4vcpu-8gb",
+                "instances": 4,
+                "round_period_secs": 600,
+                "download_timeout_secs": 420,
+                "round_parity": "even",
+                "start_stagger_secs": 2,
+                "seed_until_secs": 480,
+            }
+        )
+        assert line == (
+            "• browser-download — lon1 (s-4vcpu-8gb, 4 Chromium, round 600s, "
+            "deadline 420s, parity even, stagger 2s, seed 480s)"
         )
 
     def test_browser_line_renders_a_missing_field_as_a_question_mark(self):
         from saorsa_deploy.cmd.slack_post import _client_line
 
         line = _client_line({"role": "browser-download", "region": "lon1"})
-        assert line == "• browser-download — lon1 (?, ? Chromium, round ?s, deadline ?s)"
+        # The two integer schedule knobs render an explicit `0` rather than a
+        # `?`, as the hot-file line does: "stagger 0s" says the instances all
+        # start on the boundary, where silence says nothing at all.
+        assert line == (
+            "• browser-download — lon1 (?, ? Chromium, round ?s, deadline ?s, "
+            "parity ?, stagger 0s, seed 0s)"
+        )
 
     def test_browser_entries_get_their_own_heading(self):
         from saorsa_deploy.cmd.slack_post import _clients_block

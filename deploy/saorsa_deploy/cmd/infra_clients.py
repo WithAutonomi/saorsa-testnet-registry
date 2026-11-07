@@ -14,9 +14,12 @@ from saorsa_deploy.client_roles import (  # noqa: F401  (re-exported for callers
     BROWSER_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
     BROWSER_DEFAULT_INSTANCES,
     BROWSER_DEFAULT_ROUND_PERIOD_SECS,
+    BROWSER_DEFAULT_SEED_UNTIL_SECS,
+    BROWSER_DEFAULT_START_STAGGER_SECS,
     BROWSER_DEFAULT_VM_SIZE,
     BROWSER_MAX_INSTANCES,
     BROWSER_MIN_ROUND_PERIOD_SECS,
+    BROWSER_SEED_TAIL_GAP_SECS,
     HOT_FILE_DEFAULT_DOWNLOAD_TIMEOUT_SECS,
     HOT_FILE_DEFAULT_INSTANCES,
     HOT_FILE_DEFAULT_ROUND_PERIOD_SECS,
@@ -35,6 +38,8 @@ from saorsa_deploy.client_roles import (  # noqa: F401  (re-exported for callers
     ROLE_UPLOAD,
     ROLE_WASM_DOWNLOAD,
     ROLE_WASM_UPLOAD,
+    ROUND_PARITIES,
+    ROUND_PARITY_ALL,
     UPLOAD_ROLES,
     WASM_ROLES,
     is_pointer,
@@ -103,6 +108,9 @@ _VALID_BROWSER_DOWNLOADER_KEYS = (
     "instances",
     "round_period_secs",
     "download_timeout_secs",
+    "round_parity",
+    "start_stagger_secs",
+    "seed_until_secs",
     "forward_logs",
 )
 # A hot-file reader takes no wallet, no clock skew and no network shaping, for
@@ -427,11 +435,12 @@ def parse_browser_downloader_spec(spec: str) -> dict:
     """Parse a browser-downloader spec.
 
     Format: ``provider:region[:vm_size][:instances=N][:round_period_secs=N]``
-    ``[:download_timeout_secs=N][:forward_logs=BOOL]``
+    ``[:download_timeout_secs=N][:round_parity=even|odd|all]``
+    ``[:start_stagger_secs=N][:seed_until_secs=N][:forward_logs=BOOL]``
 
     Positionals match ``--downloader`` (nothing is uploaded and there is no file
-    size — the file is named by `clients select-hot-files`). The three integer
-    options carry the same limits the manifest schema enforces, so a hand-typed
+    size — the file is named by `clients select-hot-files`). Every limit the
+    manifest schema enforces is enforced here too, so a hand-typed
     `clients infra` cannot stand up a cohort a manifest would have refused.
     """
     parsed = _parse_downloader_like(
@@ -494,10 +503,59 @@ def parse_browser_downloader_spec(spec: str) -> dict:
             f"or a round can still be running when the next one is due and the "
             f"cohort stops being simultaneous."
         )
+    parity = options.get("round_parity", ROUND_PARITY_ALL)
+    if parity not in ROUND_PARITIES:
+        raise ValueError(
+            f"Invalid browser downloader spec '{spec}': round_parity must be one "
+            f"of {', '.join(ROUND_PARITIES)}, got '{parity}'."
+        )
+    stagger = (
+        _parse_browser_int(spec, "start_stagger_secs", options["start_stagger_secs"])
+        if "start_stagger_secs" in options
+        else BROWSER_DEFAULT_START_STAGGER_SECS
+    )
+    if stagger < 0:
+        raise ValueError(
+            f"Invalid browser downloader spec '{spec}': start_stagger_secs must be "
+            f">= 0 (0 = every instance starts on the boundary), got {stagger}."
+        )
+    seed_until = (
+        _parse_browser_int(spec, "seed_until_secs", options["seed_until_secs"])
+        if "seed_until_secs" in options
+        else BROWSER_DEFAULT_SEED_UNTIL_SECS
+    )
+    if seed_until < 0:
+        raise ValueError(
+            f"Invalid browser downloader spec '{spec}': seed_until_secs must be "
+            f">= 0 (0 = the page closes as soon as its download ends), got "
+            f"{seed_until}."
+        )
+    if seed_until > 0:
+        # Both bounds apply only to a cohort that seeds, as in the manifest
+        # schema: 0 closes the page with its own download.
+        if seed_until < download_timeout:
+            raise ValueError(
+                f"Invalid browser downloader spec '{spec}': seed_until_secs "
+                f"({seed_until}) must be >= download_timeout_secs "
+                f"({download_timeout}), or a page would be shut while its own "
+                f"download was still allowed to be running."
+            )
+        if seed_until >= round_period - BROWSER_SEED_TAIL_GAP_SECS:
+            raise ValueError(
+                f"Invalid browser downloader spec '{spec}': seed_until_secs "
+                f"({seed_until}) must be < round_period_secs - "
+                f"{BROWSER_SEED_TAIL_GAP_SECS} "
+                f"({round_period - BROWSER_SEED_TAIL_GAP_SECS}). A page still "
+                f"seeding when the next round's browser launches holds a WebRTC "
+                f"session the next instance needs."
+            )
 
     parsed["instances"] = instances
     parsed["round_period_secs"] = round_period
     parsed["download_timeout_secs"] = download_timeout
+    parsed["round_parity"] = parity
+    parsed["start_stagger_secs"] = stagger
+    parsed["seed_until_secs"] = seed_until
     return parsed
 
 
@@ -763,11 +821,18 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("instances"),
         spec.get("round_period_secs"),
         spec.get("download_timeout_secs"),
-        # Hot-file reader knobs, in the signature for the same reason: changing
-        # the parity or the stagger must be a spec MISMATCH, not a silent reuse
-        # of VMs still running the old schedule. `None` on every other role.
+        # Round-schedule knobs, shared by the hot-file reader and the browser
+        # downloader and in the signature for the same reason: changing the
+        # parity or the stagger must be a spec MISMATCH, not a silent reuse of
+        # VMs still running the old schedule. `None` on every other role.
         spec.get("round_parity"),
         spec.get("start_stagger_secs"),
+        # `or 0` for this one, as `transfer_interval_secs` above: 0 IS the
+        # default and "the key is absent" means exactly the same thing (no
+        # seeding), so without it a browser VM recorded before INFRA-532 would
+        # MISMATCH a request taking the default and a resumed run would refuse
+        # to reuse VMs running precisely what was asked for.
+        spec.get("seed_until_secs") or 0,
     )
 
 

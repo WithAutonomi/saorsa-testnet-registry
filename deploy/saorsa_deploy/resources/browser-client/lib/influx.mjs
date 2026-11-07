@@ -16,6 +16,12 @@
  * role's whole point is when the read happened.
  */
 
+import {
+  CHUNK_SOURCE_COUNTS,
+  SWARM_COUNTERS,
+  SWARM_DISCOVERY_COUNTERS,
+} from "./swarm.mjs";
+
 export const MEASUREMENT = "browser_download";
 
 export function escapeTag(value) {
@@ -112,6 +118,15 @@ export function buildPoint(result) {
     // integer range by two orders of magnitude.
     start_ns: result.startNs === undefined ? 0n : BigInt(result.startNs),
     started_late_ms: { int: Math.round(result.startedLateMs || 0) },
+    // This instance's offset from the round boundary. Recorded because
+    // `start_ns` is the SCHEDULED start, so the boundary — which is what makes
+    // a window selection select whole rounds — is `start_ns - start_offset_ms`
+    // and is recoverable from the point alone. 0 on an unstaggered cohort, where
+    // the two are the same instant.
+    start_offset_ms: { int: Math.round(result.startOffsetMs || 0) },
+    // How long this page stayed open AFTER its download, serving the readers
+    // that started later. 0 when not seeding.
+    seeded_ms: { int: Math.round(result.seededMs || 0) },
     seeds: result.seeds || "",
     stalls: { int: result.stalls || 0 },
     refused_dials: { int: result.refusedDials || 0 },
@@ -119,6 +134,47 @@ export function buildPoint(result) {
     // it cannot be tags (unbounded cardinality) or numeric fields; the
     // persistence issue unpacks it into rows.
     first_reads: JSON.stringify(result.firstReads || []),
+    // The swarm half of the point (INFRA-532): the per-chunk sources, the
+    // client's own twenty-five counters, the room tag and `swarm_present`.
+    // Written on EVERY point including a skip, because Influx types a field on
+    // first write and a field present on some points and absent on others is
+    // one no per-round sum can read.
+    ...swarmPointFields(result),
   };
   return buildLine(MEASUREMENT, tags, fields);
 }
+
+/**
+ * The swarm fields of one point, from the result the harness assembled.
+ *
+ * `swarm_room_tag` and `swarm_rooms` are STRING fields; everything else is an
+ * integer. `swarm_present` is an integer rather than a boolean for the same
+ * reason the prod download kinds' `status` is: a boolean field and an integer
+ * one are different Influx types and a bucket that has seen one drops the
+ * other.
+ */
+function swarmPointFields(result) {
+  const fields = {
+    swarm_present: { int: result.swarm_present || 0 },
+    swarm_room_tag: result.swarm_room_tag || "",
+    swarm_rooms: result.swarm_rooms || "[]",
+  };
+  for (const name of SWARM_POINT_COUNTERS) {
+    fields[name] = { int: result[name] || 0 };
+  }
+  return fields;
+}
+
+/**
+ * Every integer swarm field of the measurement, in the order it is written.
+ *
+ * The four chunk-source counts come from the page's progress messages; the
+ * twenty-five others are the client's own counters, named exactly as
+ * `hot_file_download` names them (`HOT_FILE_SWARM_FIELDS` in `influx.py`) so
+ * one run's native and browser cohorts are read with one vocabulary.
+ */
+export const SWARM_POINT_COUNTERS = [
+  ...CHUNK_SOURCE_COUNTS,
+  ...SWARM_COUNTERS,
+  ...SWARM_DISCOVERY_COUNTERS.map((name) => `discovery_${name}`),
+];

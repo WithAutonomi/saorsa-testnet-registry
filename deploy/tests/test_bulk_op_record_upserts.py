@@ -579,3 +579,119 @@ def test_record_browser_downloads_calls_the_bulk_method_once():
 
     assert len(repo.calls["browser"]) == 1
     assert len(repo.calls["browser"][0]) == 4
+
+
+# ---------------------------------------------------------------------------
+# The swarm columns (INFRA-532)
+# ---------------------------------------------------------------------------
+
+
+def test_the_browser_swarm_columns_are_overwritten_not_coalesced(repo):
+    """Every swarm figure comes off the Influx point, so a second pass reading
+    the same point writes the same value -- and a round that reported no swarm
+    carries explicit zeros with `swarm_present` false beside them, which is a
+    fact to be recorded rather than an absence to be preserved."""
+    d = _deployment(repo)
+    repo.upsert_browser_download_records(
+        [
+            _browser_row(
+                d.id,
+                swarm_present=True,
+                swarm_room_tag="ab12",
+                records_from_peers=7,
+                chunks_from_readers=3,
+                discovery_links_proven=24,
+                swarm_rooms=[{"tag": "ab12"}],
+            )
+        ]
+    )
+    row = repo.list_browser_download_records_for_deployment(d.id)[0]
+    assert (row.swarm_present, row.records_from_peers, row.chunks_from_readers) == (True, 7, 3)
+    assert row.discovery_links_proven == 24
+    assert row.swarm_rooms == [{"tag": "ab12"}]
+
+    repo.upsert_browser_download_records(
+        [
+            _browser_row(
+                d.id,
+                swarm_present=False,
+                swarm_room_tag="",
+                records_from_peers=0,
+                chunks_from_readers=0,
+                discovery_links_proven=0,
+                swarm_rooms=[],
+            )
+        ]
+    )
+    row = repo.list_browser_download_records_for_deployment(d.id)[0]
+    assert row.swarm_present is False
+    assert row.records_from_peers == 0
+    assert row.swarm_rooms == []
+
+
+def test_every_swarm_counter_is_in_the_overwrite_list(repo):
+    """Asserted on the tuple: a counter declared on the model and missing from
+    the statement is a column that reads NULL forever, and nothing else in the
+    pipeline would say so."""
+    from saorsa_db.models.browser_download_record import (
+        CHUNK_SOURCE_COLUMNS,
+        SWARM_COLUMNS,
+    )
+
+    overwritten = set(type(repo)._BROWSER_RECORD_OVERWRITE_COLUMNS)
+    assert set(CHUNK_SOURCE_COLUMNS) <= overwritten
+    assert set(SWARM_COLUMNS) <= overwritten
+    for column in (
+        "swarm_present",
+        "swarm_room_tag",
+        "swarm_rooms",
+        "start_offset_ms",
+        "seeded_ms",
+    ):
+        assert column in overwritten, column
+
+
+def test_the_browser_counters_are_the_hot_file_counters(repo):
+    """One vocabulary across the two cohorts of one run: the browser model
+    IMPORTS the tuple rather than re-declaring it, and a comparison between a
+    native and a browser cohort is only possible while that holds."""
+    from saorsa_db.models.browser_download_record import SWARM_COLUMNS
+    from saorsa_db.models.hot_file_download_record import SWARM_COUNTER_COLUMNS
+
+    assert SWARM_COLUMNS == SWARM_COUNTER_COLUMNS
+
+
+def test_the_single_row_helper_refuses_an_unknown_counter(repo):
+    """The counters arrive as **kwargs, so a typo would otherwise be dropped on
+    the floor and the column would read NULL."""
+    d = _deployment(repo)
+    with pytest.raises(TypeError, match="records_from_peerz"):
+        repo.upsert_browser_download_record(
+            deployment_id=d.id,
+            client_hostname="h",
+            round_id=1,
+            instance=0,
+            status=OpRecordStatus.SUCCESS,
+            started_at=T0,
+            records_from_peerz=1,
+        )
+
+
+def test_the_single_row_helper_writes_the_swarm_figures(repo):
+    d = _deployment(repo)
+    repo.upsert_browser_download_record(
+        deployment_id=d.id,
+        client_hostname="h",
+        round_id=1,
+        instance=0,
+        status=OpRecordStatus.SUCCESS,
+        started_at=T0,
+        start_offset_ms=8000,
+        seeded_ms=452_000,
+        swarm_present=True,
+        records_from_peers=7,
+        chunks_from_cache=2,
+    )
+    row = repo.list_browser_download_records_for_deployment(d.id)[0]
+    assert (row.start_offset_ms, row.seeded_ms) == (8000, 452_000)
+    assert (row.swarm_present, row.records_from_peers, row.chunks_from_cache) == (True, 7, 2)

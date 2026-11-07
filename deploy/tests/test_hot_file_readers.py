@@ -219,13 +219,16 @@ class TestSpecParsing:
         assert _spec_signature(base) != _spec_signature(stagger)
 
     def test_an_existing_role_s_signature_is_unchanged(self):
-        # The two new fields are None on every other role, so client state
+        # The schedule fields are None on every other role, so client state
         # recorded before this release still matches a request that takes the
-        # defaults.
+        # defaults. `seed_until_secs` (INFRA-532) is the exception and is `or
+        # 0`-ed: 0 IS its default, so an absent key and an explicit 0 have to
+        # give the same signature or a resumed run would refuse to reuse VMs
+        # running precisely what was asked for.
         from saorsa_deploy.cmd.infra_clients import _spec_signature, parse_downloader_spec
 
         spec = parse_downloader_spec("digital_ocean:lon1")
-        assert _spec_signature(spec)[-2:] == (None, None)
+        assert _spec_signature(spec)[-3:] == (None, None, 0)
 
 
 # --------------------------------------------------------------------------- #

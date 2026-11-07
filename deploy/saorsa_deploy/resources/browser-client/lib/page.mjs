@@ -42,8 +42,31 @@ export const PAGE_HTML =
  *   a healthy network. (`result.hash` is a blake3 hex of the same bytes and a
  *   stronger integrity check than the length; it is left to V2-1618, which owns
  *   the result schema.)
+ * * **The progress messages are returned RAW, and counted on the harness side**
+ *   (`lib/swarm.mjs`). The branch bundle names the source of every chunk — a
+ *   node, `cache`, or `a reader` — in `downloadPublicFile`'s third argument, and
+ *   that is the one reading which says the swarm actually served this download.
+ *   Parsing it here would put the parser somewhere `node --test` cannot reach
+ *   it; the lines cross the Playwright boundary beside the per-dial trace, which
+ *   is three orders of magnitude larger.
+ * * **A page that SUCCEEDED can be held open to go on seeding** (`seedUntilMs`,
+ *   from the manifest's `seed_until_secs`). The client stays connected, so the
+ *   readers that started later in the stagger can still fetch records from it;
+ *   without that the page closes the instant its own download ends and a swarm
+ *   of staggered readers never overlaps. A failed or timed-out download closes
+ *   at once, because nothing it holds is worth serving.
+ * * **The stats are read while the client is still alive**, immediately before
+ *   `close()`, and a bundle that has neither method is reported as
+ *   `swarm_present = 0` rather than failing the round.
  */
-export async function downloadInPage({ bundleUrl, address, expectedBytes, seeds, timeoutMs }) {
+export async function downloadInPage({
+  bundleUrl,
+  address,
+  expectedBytes,
+  seeds,
+  timeoutMs,
+  seedUntilMs,
+}) {
   // Declared inside, not imported: Playwright serialises this function's own
   // source and evaluates it in the page, so it can close over nothing.
   const resultByteLength = (value) => {
@@ -67,6 +90,17 @@ export async function downloadInPage({ bundleUrl, address, expectedBytes, seeds,
     }
   };
 
+  // Every progress message, as a string, in the order the client emitted them.
+  // Counted by `lib/swarm.mjs` on the harness side — see the note above.
+  const progress = [];
+  const onProgress = (message) => {
+    try {
+      progress.push(typeof message === "string" ? message : String(message));
+    } catch {
+      /* a progress line that will not stringify must not fail the download */
+    }
+  };
+
   const mod = await import(`${bundleUrl}/pkg/ant_core.js`);
   await mod.default();
 
@@ -81,6 +115,46 @@ export async function downloadInPage({ bundleUrl, address, expectedBytes, seeds,
   let client;
   let connectMs = 0;
   let byteLength = 0;
+  let swarmStats;
+  let swarmRoomStats;
+  let seededMs = 0;
+  // Read while the client is still connected and always before `close()`: the
+  // counters are the client's own and a closed one has nothing to report. Each
+  // method is optional and each call is guarded on its own, so a bundle that has
+  // one and not the other still reports what it has — and a bundle with neither
+  // reports `swarm_present = 0`, which is a fact about the build rather than a
+  // failed round.
+  const readSwarm = async () => {
+    try {
+      if (client && typeof client.swarmStats === "function") {
+        swarmStats = await client.swarmStats();
+      }
+    } catch {
+      /* a client that will not report its swarm must not fail the round */
+    }
+    try {
+      if (client && typeof client.swarmRoomStats === "function") {
+        swarmRoomStats = await client.swarmRoomStats();
+      }
+    } catch {
+      /* ditto */
+    }
+  };
+  // Bound to a name so the three return paths cannot carry three different
+  // field sets: Influx types a field on first write, and a point missing one
+  // reads as a zero wherever the per-round sums add it up.
+  const finish = (extra, totalMs) => ({
+    ...extra,
+    trace,
+    traceHook,
+    connectMs,
+    totalMs,
+    byteLength,
+    progress,
+    swarmStats,
+    swarmRoomStats,
+    seededMs,
+  });
   try {
     const connectStart = performance.now();
     client = new mod.BrowserNetworkClient(seeds);
@@ -90,37 +164,47 @@ export async function downloadInPage({ bundleUrl, address, expectedBytes, seeds,
     const deadline = new Promise((_resolve, reject) => {
       setTimeout(() => reject(new Error("harness deadline")), timeoutMs);
     });
-    const result = await Promise.race([client.downloadPublicFile(address), deadline]);
+    // `undefined` for the second argument (concurrency), so the client's own
+    // default governs it, exactly as INFRA-493 left the Node WASM CLI; the
+    // third is the progress callback this role exists to read.
+    const result = await Promise.race([
+      client.downloadPublicFile(address, undefined, onProgress),
+      deadline,
+    ]);
+    // Taken HERE, not at the return: a seeding page returns minutes after its
+    // download finished, and a `totalMs` that included the wait would put the
+    // seed window into every transfer percentile.
+    const completedAt = Date.now();
     byteLength = resultByteLength(result);
     if (expectedBytes && byteLength !== expectedBytes) {
-      return {
-        ok: false,
-        error: `size mismatch: got ${byteLength}`,
-        trace,
-        traceHook,
-        connectMs,
-        totalMs: Date.now() - startedAt,
-        byteLength,
-      };
+      // A short read is not a success, so nothing it holds is worth serving:
+      // the page closes at once, as it did before seeding existed.
+      await readSwarm();
+      return finish(
+        { ok: false, error: `size mismatch: got ${byteLength}` },
+        completedAt - startedAt,
+      );
     }
-    return {
-      ok: true,
-      trace,
-      traceHook,
-      connectMs,
-      totalMs: Date.now() - startedAt,
-      byteLength,
-    };
+    if (seedUntilMs) {
+      // Held open so the readers that started later in the stagger can still
+      // fetch records from this page. The client stays connected; nothing else
+      // happens here.
+      const remaining = seedUntilMs - Date.now();
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+      await readSwarm();
+      // Measured from the download completing to the stats read, which is
+      // exactly the window this page spent available to its cohort.
+      seededMs = Date.now() - completedAt;
+    } else {
+      await readSwarm();
+    }
+    return finish({ ok: true }, completedAt - startedAt);
   } catch (e) {
-    return {
-      ok: false,
-      error: String((e && e.message) || e),
-      trace,
-      traceHook,
-      connectMs,
-      totalMs: Date.now() - startedAt,
-      byteLength,
-    };
+    await readSwarm();
+    return finish(
+      { ok: false, error: String((e && e.message) || e) },
+      Date.now() - startedAt,
+    );
   } finally {
     // Both, in this order, and never allowed to mask the result: `close()`
     // shuts the transport down and `free()` releases the WASM allocation. A

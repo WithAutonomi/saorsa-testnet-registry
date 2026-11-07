@@ -9,7 +9,7 @@ the deployment's own tier, and the pointer to each round's archived trace.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -27,7 +27,11 @@ from saorsa_deploy.cmd.print_recorded_results import (
     _print_browser_downloads_section,
 )
 from saorsa_deploy.cmd.record_results import _record_browser_downloads
-from saorsa_deploy.influx import parse_browser_download_csv
+from saorsa_deploy.influx import (
+    BROWSER_CHUNK_SOURCE_FIELDS,
+    BROWSER_SWARM_FIELDS,
+    parse_browser_download_csv,
+)
 
 T0 = datetime(2026, 10, 18, 9, 10, tzinfo=timezone.utc)
 #: 2987191 x 600 = 2026-10-18T09:10:00Z, the boundary the harness stamps.
@@ -630,3 +634,395 @@ def test_the_migration_drops_the_column_and_leaves_one_head():
     # to hit it). The property worth keeping is single-headedness.
     heads = sorted(set(revisions) - set(downs))
     assert len(heads) == 1, f"expected one migration head, found {heads}"
+
+
+# ---------------------------------------------------------------------------
+# The swarm half of the round (INFRA-532)
+# ---------------------------------------------------------------------------
+
+#: The CSV header a current harness's points pivot into: the base fields plus
+#: the schedule, the chunk sources and the twenty-five counters. Built from the
+#: tuples the query and the parse both read, so a field added to one of them
+#: without the other fails here rather than reading NULL forever in Postgres.
+_SWARM_COLUMNS = (
+    "start_offset_ms",
+    "seeded_ms",
+    "swarm_present",
+    "swarm_room_tag",
+    "swarm_rooms",
+    *BROWSER_CHUNK_SOURCE_FIELDS,
+    *BROWSER_SWARM_FIELDS,
+)
+
+
+def _swarm_csv(values: dict) -> str:
+    """One pivoted row carrying every swarm column, defaulted to 0/""/[]."""
+    header = _CSV_HEADER + "," + ",".join(_SWARM_COLUMNS)
+    base = (
+        f",_result,0,2026-10-18T09:10:09Z,browser_download,{HOST},browser_downloader,"
+        f"lon1,{ROUND},2,1,DEV-03,abcd,812,,,52428800,[],0,seed-a,1,{BOUNDARY_NS},"
+        f"480,success,9120"
+    )
+    defaults = {name: 0 for name in _SWARM_COLUMNS}
+    defaults["swarm_room_tag"] = ""
+    defaults["swarm_rooms"] = "[]"
+    defaults.update(values)
+    cells = []
+    for name in _SWARM_COLUMNS:
+        cell = str(defaults[name])
+        # Quoted whenever the value carries a comma OR a doubled quote, which is
+        # how a JSON array arrives in a CSV cell.
+        cells.append(f'"{cell}"' if ("," in cell or '"' in cell) else cell)
+    return header + "\n" + base + "," + ",".join(cells) + "\n"
+
+
+def test_a_point_parses_with_every_swarm_field():
+    body = _swarm_csv(
+        {
+            "start_offset_ms": 8000,
+            "seeded_ms": 452000,
+            "swarm_present": 1,
+            "swarm_room_tag": "ab12cd34",
+            "swarm_rooms": '[{""tag"": ""ab12cd34""}]',
+            "chunks_total": 300,
+            "chunks_from_nodes": 120,
+            "chunks_from_cache": 5,
+            "chunks_from_readers": 175,
+            "records_from_peers": 7,
+            "bytes_from_peers": 7340032,
+            "discovery_links_proven": 24,
+        }
+    )
+    point = parse_browser_download_csv(body)[0]
+    assert point["start_offset_ms"] == 8000
+    assert point["seeded_ms"] == 452000
+    assert point["swarm_present"] is True
+    assert point["swarm_room_tag"] == "ab12cd34"
+    assert point["swarm_rooms"] == [{"tag": "ab12cd34"}]
+    assert point["chunks_total"] == 300
+    assert point["chunks_from_readers"] == 175
+    assert point["records_from_peers"] == 7
+    assert point["bytes_from_peers"] == 7340032
+    assert point["discovery_links_proven"] == 24
+
+
+def test_a_point_from_a_harness_predating_the_fields_still_parses():
+    """The pre-INFRA-532 CSV, which is every point already in a live bucket. The
+    swarm fields default to 0 / "" / [] rather than to None: the round reported
+    no swarm, which is what those values say."""
+    body = _csv(
+        f",_result,0,2026-10-18T09:10:09Z,browser_download,{HOST},browser_downloader,"
+        f"lon1,{ROUND},2,1,DEV-03,abcd,812,,,52428800,[],0,seed-a,1,{BOUNDARY_NS},"
+        f"480,success,9120"
+    )
+    point = parse_browser_download_csv(body)[0]
+    assert point["start_offset_ms"] == 0
+    assert point["seeded_ms"] == 0
+    assert point["swarm_present"] is False
+    assert point["swarm_room_tag"] == ""
+    assert point["swarm_rooms"] == []
+    for name in (*BROWSER_CHUNK_SOURCE_FIELDS, *BROWSER_SWARM_FIELDS):
+        assert point[name] == 0, name
+
+
+def test_the_query_asks_for_every_field_the_parse_reads():
+    """The defect this guards is the one `reason` hit: a field absent from the
+    Flux allowlist reaches no consumer at all, however carefully the parse and
+    the column are written."""
+    from saorsa_deploy.influx import _browser_flux
+
+    flux = _browser_flux("wasm-client-metrics", "0", "2050-01-01T00:00:00Z")
+    for name in _SWARM_COLUMNS:
+        assert f'"{name}"' in flux, name
+
+
+def test_the_browser_counters_are_the_hot_file_counters():
+    """One vocabulary across the two cohorts of one run -- the whole reason a
+    swarm comparison between a native and a browser cohort is possible."""
+    from saorsa_deploy.influx import HOT_FILE_SWARM_FIELDS
+
+    assert BROWSER_SWARM_FIELDS == HOT_FILE_SWARM_FIELDS
+
+
+def _swarm_point(**extra):
+    point = _point()
+    point.update(
+        {
+            "start_offset_ms": 8000,
+            "seeded_ms": 452000,
+            "swarm_present": True,
+            "swarm_room_tag": "ab12cd34",
+            "swarm_rooms": [{"tag": "ab12cd34"}],
+            **{name: 0 for name in (*BROWSER_CHUNK_SOURCE_FIELDS, *BROWSER_SWARM_FIELDS)},
+        }
+    )
+    point.update(extra)
+    return point
+
+
+def test_the_swarm_figures_reach_the_row(repo):
+    deployment = _deployment(repo)
+    _record(
+        repo,
+        deployment,
+        [
+            _swarm_point(
+                chunks_total=300,
+                chunks_from_readers=175,
+                chunks_from_nodes=120,
+                records_from_peers=7,
+                bytes_from_peers=7340032,
+                records_served=5,
+                discovery_links_proven=24,
+            )
+        ],
+    )
+    (row,) = repo.list_browser_download_records_for_deployment(deployment.id)
+    assert row.start_offset_ms == 8000
+    assert row.seeded_ms == 452000
+    assert row.swarm_present is True
+    assert row.swarm_room_tag == "ab12cd34"
+    assert row.swarm_rooms == [{"tag": "ab12cd34"}]
+    assert (row.chunks_total, row.chunks_from_readers, row.chunks_from_nodes) == (300, 175, 120)
+    assert (row.records_from_peers, row.bytes_from_peers, row.records_served) == (7, 7340032, 5)
+    assert row.discovery_links_proven == 24
+    assert "records_from_peers" in row.to_dict()
+
+
+def test_a_staggered_round_s_boundary_is_recoverable_from_the_row(repo):
+    """`started_at` is the instance's SCHEDULED start, so the boundary is
+    `started_at - start_offset_ms` -- which is what keeps a window selection over
+    these rows selecting whole rounds."""
+    deployment = _deployment(repo)
+    offset_ms = 8000
+    _record(
+        repo,
+        deployment,
+        [_swarm_point(start_ns=BOUNDARY_NS + offset_ms * 1_000_000, start_offset_ms=offset_ms)],
+    )
+    (row,) = repo.list_browser_download_records_for_deployment(deployment.id)
+    started = row.started_at.replace(tzinfo=timezone.utc)
+    assert started == T0 + timedelta(milliseconds=offset_ms)
+    assert started - timedelta(milliseconds=row.start_offset_ms) == T0
+
+
+def test_the_period_is_still_derivable_from_a_staggered_cohort_s_rows():
+    """The fallback for a deployment whose role config was never recorded. On a
+    staggered cohort `started_at` is not the boundary, so without subtracting
+    the offset the division no longer comes out even and the report would
+    decline for exactly the cohorts the swarm run is made of."""
+    from saorsa_deploy.browser_reads import derive_period_secs
+
+    rows = [
+        SimpleNamespace(
+            round_id=ROUND,
+            started_at=T0 + timedelta(seconds=offset),
+            start_offset_ms=offset * 1000,
+        )
+        for offset in (0, 2, 4, 6)
+    ]
+    assert derive_period_secs(rows) == 600
+
+
+def test_the_period_derivation_is_unchanged_for_an_unstaggered_cohort():
+    """Every row written before INFRA-532 has no offset at all, and a NULL must
+    read as 0 rather than breaking the arithmetic."""
+    from saorsa_deploy.browser_reads import derive_period_secs
+
+    assert (
+        derive_period_secs([SimpleNamespace(round_id=ROUND, started_at=T0, start_offset_ms=None)])
+        == 600
+    )
+
+
+# ---------------------------------------------------------------------------
+# The live `--browser` view
+# ---------------------------------------------------------------------------
+
+
+def test_the_round_summary_counts_the_swarm():
+    rounds = summarise_browser_rounds(
+        [
+            _swarm_point(instance=1, records_from_peers=7, bytes_from_peers=100, records_served=2),
+            _swarm_point(instance=2, records_from_peers=0, chunks_from_nodes=300),
+            _swarm_point(instance=3, status="failure", error_kind="timeout", records_from_peers=3),
+            _swarm_point(instance=4, status="skipped", error_kind="no_hot_files"),
+        ]
+    )
+    (entry,) = rounds
+    # Over ATTEMPTED reads: the skip launched no browser, so counting it would
+    # report a peer-fed rate the round never had the chance to reach.
+    assert entry["attempted"] == 3
+    assert entry["instances_with_peer_records"] == 2
+    assert entry["records_from_peers"] == 10
+    assert entry["bytes_from_peers"] == 100
+    assert entry["records_served"] == 2
+    assert entry["chunks_from_nodes"] == 300
+
+
+def test_the_round_summary_reads_a_pre_swarm_point_as_zero():
+    """A point written before the fields existed carries none of them, and the
+    view must render rather than raise."""
+    (entry,) = summarise_browser_rounds([_point()])
+    assert entry["instances_with_peer_records"] == 0
+    assert entry["records_from_peers"] == 0
+    assert entry["chunks_from_readers"] == 0
+
+
+def test_the_recorded_section_prints_the_swarm_table(repo):
+    deployment = _deployment(repo)
+    _record(
+        repo,
+        deployment,
+        [
+            _swarm_point(instance=1, records_from_peers=7, chunks_from_readers=175),
+            _swarm_point(instance=2, records_from_peers=0, chunks_from_nodes=300),
+        ],
+    )
+    console = Console(record=True, width=200)
+    _print_browser_downloads_section(
+        repo.list_browser_download_records_for_deployment(deployment.id),
+        deployment.name,
+        console,
+    )
+    text = console.export_text()
+    assert "Swarm by round" in text
+    assert "rounds reporting a swarm" in text
+    # Peer-fed over attempted reads, and the two per-chunk source sums.
+    assert "1/2" in text
+    assert "175" in text
+    assert "300" in text
+
+
+def test_the_recorded_section_omits_the_swarm_table_for_a_pre_swarm_run(repo):
+    """Every run recorded before the columns existed renders exactly as it did:
+    its rows carry NULL throughout, which is "not recorded" and not a swarm that
+    shared nothing."""
+    deployment = _deployment(repo)
+    _record(repo, deployment, [_point()])
+    console = Console(record=True, width=200)
+    _print_browser_downloads_section(
+        repo.list_browser_download_records_for_deployment(deployment.id),
+        deployment.name,
+        console,
+    )
+    assert "Swarm by round" not in console.export_text()
+
+
+# ---------------------------------------------------------------------------
+# The migration
+# ---------------------------------------------------------------------------
+
+
+def _swarm_migration():
+    """The revision that adds the swarm columns, imported by path."""
+    import importlib.util
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "db"
+        / "alembic"
+        / "versions"
+        / "d1a9c37f6b48_add_browser_swarm_columns.py"
+    )
+    spec = importlib.util.spec_from_file_location("browser_swarm_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _pre_swarm_table(metadata):
+    """The table as it was BEFORE the revision: the model's columns minus the
+    ones the revision adds. Built from the model rather than written out, so it
+    cannot drift from what the previous revision actually created."""
+    from saorsa_db.models.browser_download_record import DeploymentBrowserDownloadRecord
+    from sqlalchemy import Column, Table
+
+    module = _swarm_migration()
+    added = {
+        "swarm_rooms",
+        "swarm_present",
+        "swarm_room_tag",
+        *module._MS_COLUMNS,
+        *module._CHUNK_SOURCE_COUNTERS,
+        *module._SWARM_COUNTERS,
+    }
+    columns = [
+        Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable)
+        for c in DeploymentBrowserDownloadRecord.__table__.columns
+        if c.name not in added
+    ]
+    return Table(DeploymentBrowserDownloadRecord.__tablename__, metadata, *columns)
+
+
+def test_the_migration_adds_every_column_the_model_declares():
+    """Executed, not just read. The whole chain cannot be run here -- earlier
+    revisions are Postgres-only (`ALTER TYPE`) -- so this applies the one
+    revision to a SQLite table built from the model minus the new columns. That
+    is enough to catch what a structural read cannot: a column type with no
+    SQLite rendering, which is what a bare `JSONB` is."""
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from saorsa_db.models.browser_download_record import DeploymentBrowserDownloadRecord
+    from sqlalchemy import MetaData, inspect
+
+    module = _swarm_migration()
+    engine = create_engine("sqlite://")
+    metadata = MetaData()
+    table = _pre_swarm_table(metadata)
+    before = set(table.columns.keys())
+    metadata.create_all(engine)
+    with engine.begin() as conn:
+        with Operations.context(MigrationContext.configure(conn)):
+            module.upgrade()
+
+    columns = {c["name"] for c in inspect(engine).get_columns(module._TABLE)}
+    # Set equality with the model: a column in one and not the other is a row
+    # the upsert cannot write or a column that reads NULL forever.
+    assert columns == set(DeploymentBrowserDownloadRecord.__table__.columns.keys())
+
+    with engine.begin() as conn:
+        with Operations.context(MigrationContext.configure(conn)):
+            module.downgrade()
+    assert {c["name"] for c in inspect(engine).get_columns(module._TABLE)} == before
+
+
+def test_the_migration_revises_the_previous_head():
+    module = _swarm_migration()
+    assert module.revision == "d1a9c37f6b48"
+    assert module.down_revision == "c3f8d41b6e92"
+
+
+def test_the_migration_lists_the_same_counters_as_the_model():
+    from saorsa_db.models.browser_download_record import (
+        CHUNK_SOURCE_COLUMNS,
+        SWARM_COLUMNS,
+    )
+
+    module = _swarm_migration()
+    assert set(module._SWARM_COUNTERS) == set(SWARM_COLUMNS)
+    assert set(module._CHUNK_SOURCE_COUNTERS) == set(CHUNK_SOURCE_COLUMNS)
+
+
+def test_the_round_boundary_is_exact_for_a_staggered_cohort():
+    """`start_ns` is the instance's SCHEDULED start, so every point of a
+    staggered round carries a different one. The minimum would be the boundary
+    only when an unstaggered instance happens to be in the group -- the reading
+    error the hot-file view had to resolve the period to avoid. Here the offset
+    is on the point."""
+    rounds = summarise_browser_rounds(
+        [
+            _swarm_point(
+                instance=i,
+                start_ns=BOUNDARY_NS + offset * 1_000_000_000,
+                start_offset_ms=offset * 1000,
+            )
+            for i, offset in enumerate((2, 4, 6), start=2)
+        ]
+    )
+    assert rounds[0]["boundary"] == T0
+
+
+def test_the_round_boundary_is_unchanged_without_an_offset():
+    (entry,) = summarise_browser_rounds([_point()])
+    assert entry["boundary"] == T0
