@@ -1949,7 +1949,27 @@ clients` extension too, which is the normal way to use it.
   100 s connect let a 250 s download report **success at 350 s**, and the only
   thing failing those was the outer backstop, by accident. A connect that never
   resolves now fails on the download budget instead of consuming the seed
-  window, and `total_ms` spans the same stretch the deadline does.
+  window, and `total_ms` spans the same stretch the deadline does. **The
+  completion INSTANT is compared with it too**: a `Promise.race` only decides
+  between promises that have SETTLED, and the timer callback cannot run while a
+  final synchronous step inside WASM blocks the event loop — so a download from
+  290 s to 335 s of a 300 s budget won the race and reported success. A late
+  completion is a `timeout` failure, checked before the length check and before
+  the seed wait.
+- **No shape of the swarm reporting may change the transfer's status.** A room's
+  counters are Rust `u64`s and `JSON.stringify` throws on a BigInt, so an
+  unhandled `swarmRoomStats()` threw out of `swarmFields` into the harness's
+  catch and turned a SUCCESSFUL transfer into `failure` / `other` with every
+  swarm figure zeroed. `roomsToJson` normalises BigInts recursively and guards
+  the stringify: an unserialisable room payload costs the rooms detail and
+  nothing else.
+- **The report's start spread is over ACTUAL starts** (`start_offset_ms +
+  started_late_ms`), since `started_late_ms` is measured from the SCHEDULED
+  start: four on-time instances of a 10 s stagger read as a 0 ms spread, and
+  four starting together on a VM that resumed 30 s late read as 30,000 ms. The
+  desync flag fires on the **excess over `scheduled_spread_ms`**, so a
+  deliberate stagger is not a fault while an instance 40 s behind its own slot
+  is; unstaggered, the scheduled spread is 0 and the flag is the rule it was.
 - **The report's per-round expectation comes from each VM's recorded parity**, not
   from the cohort-wide instance sum: a parity-split round is run by ONE cohort,
   so summing a 4-instance `even` cohort and a 4-instance `odd` one applied 8 to

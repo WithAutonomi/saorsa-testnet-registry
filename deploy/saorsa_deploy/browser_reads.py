@@ -199,7 +199,29 @@ def summarise_rounds(rows, period_secs: int) -> list[dict]:
         # The spread, not the max: a cohort that all started 40 s late is still
         # reading simultaneously, which is what is being measured. One instance
         # 40 s behind the rest is not.
-        spread_ms = (max(lates) - min(lates)) if len(lates) > 1 else 0
+        #
+        # **The spread is over ACTUAL starts, which are
+        # `start_offset_ms + started_late_ms`.** `started_late_ms` is measured
+        # from each instance's SCHEDULED start (INFRA-532), so lateness alone is
+        # no longer where an instance began: four on-time instances of a 10 s
+        # stagger reported a 0 ms spread when they started 30 s apart, and the
+        # same four all starting together on a VM that resumed 30 s late
+        # reported 30,000 ms when their actual spread was zero. An absent offset
+        # is 0, which is every row written before the stagger existed, so an
+        # unstaggered cohort's figure does not move.
+        starts = [
+            (_field(r, "start_offset_ms") or 0) + _field(r, "started_late_ms")
+            for r in group
+            if _field(r, "started_late_ms") is not None
+        ]
+        spread_ms = (max(starts) - min(starts)) if len(starts) > 1 else 0
+        # What the SCHEDULE asked for, so the flag can fire on the deviation
+        # from it rather than on the stagger itself. Reporting a deliberate
+        # 30 s stagger as a desynchronised round would be the report calling a
+        # supported schedule a fault -- and on an unstaggered cohort this is 0,
+        # which makes the flag exactly the rule it was.
+        offsets = [_field(r, "start_offset_ms") or 0 for r in group]
+        scheduled_spread_ms = (max(offsets) - min(offsets)) if len(offsets) > 1 else 0
         out.append(
             {
                 "round_id": round_id,
@@ -218,7 +240,12 @@ def summarise_rounds(rows, period_secs: int) -> list[dict]:
                 "error_kinds": _error_kinds(group),
                 "started_late_ms_max": max(lates) if lates else None,
                 "started_spread_ms": spread_ms,
-                "desynchronised": spread_ms > ROUND_SPREAD_FLAG_MS,
+                "scheduled_spread_ms": scheduled_spread_ms,
+                # The EXCESS over what the schedule asked for, so a deliberate
+                # stagger is not reported as a fault while a real desync still
+                # is. Identical to the old rule on an unstaggered cohort, where
+                # the scheduled spread is 0.
+                "desynchronised": (spread_ms - scheduled_spread_ms) > ROUND_SPREAD_FLAG_MS,
                 "stalls": sum(
                     _field(r, "stalls") or 0 for r in group if _field(r, "stalls") is not None
                 ),
@@ -722,6 +749,11 @@ def render_markdown(report: dict) -> str:
             "n/a" if entry["instances_expected"] is None else str(entry["instances_expected"])
         )
         spread = f"{entry['started_spread_ms']:,} ms"
+        # The schedule's own span, named only when there is one: the spread of a
+        # staggered cohort is meant to be wide, and a reader comparing the two
+        # numbers is what tells an intended spread from a desync.
+        if entry.get("scheduled_spread_ms"):
+            spread += f" (sched {entry['scheduled_spread_ms']:,} ms)"
         if entry["desynchronised"]:
             spread += " **⚠ desync**"
         lines.append(

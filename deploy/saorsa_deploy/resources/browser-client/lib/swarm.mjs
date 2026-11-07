@@ -225,8 +225,47 @@ export function mapSwarmStats(stats, rooms) {
   for (const name of SWARM_DISCOVERY_COUNTERS) {
     out[`discovery_${name}`] = discovery ? pick(discovery, name) : 0;
   }
-  out.swarm_rooms = JSON.stringify(Array.isArray(rooms) ? rooms : []);
+  out.swarm_rooms = roomsToJson(rooms);
   return out;
+}
+
+/**
+ * `swarmRoomStats()` as a JSON string, and it can neither throw nor lose the
+ * rooms.
+ *
+ * **`JSON.stringify` throws on a BigInt** ("Do not know how to serialize a
+ * BigInt"), and a room's counters are Rust `u64`s — which is exactly the
+ * representation `counter()` above goes out of its way to accept at the top
+ * level. Unhandled, that throw propagated out of `swarmFields` into the
+ * harness's catch and turned a SUCCESSFUL transfer into
+ * `status=failure, error_kind=other` with every swarm figure zeroed: the
+ * reporting of the measurement changing the measurement, which is the one thing
+ * it must never do.
+ *
+ * So every value is normalised first (BigInt to Number, recursively, since the
+ * counters are nested one level inside the array), and the stringify is still
+ * guarded: a future room payload carrying something else unserialisable — a
+ * circular reference, a `Symbol` — must cost the rooms detail and nothing more.
+ */
+export function roomsToJson(rooms) {
+  if (!Array.isArray(rooms)) return "[]";
+  try {
+    return JSON.stringify(normaliseForJson(rooms));
+  } catch {
+    return "[]";
+  }
+}
+
+/** A value with every BigInt turned into a Number, structure preserved. */
+function normaliseForJson(value) {
+  if (typeof value === "bigint") return Number(value);
+  if (Array.isArray(value)) return value.map(normaliseForJson);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, inner] of Object.entries(value)) out[key] = normaliseForJson(inner);
+    return out;
+  }
+  return value;
 }
 
 /**

@@ -1424,3 +1424,49 @@ class TestAbsoluteDownloadDeadline:
         # The backstop covers the later of the two instants, so a seeding page
         # is not abandoned; the page's own deadline is what bounds the download.
         assert "Math.max(deadlineAt, seedUntilMs)" in harness
+
+
+# --------------------------------------------------------------------------- #
+# review round 2: the deadline is checked as an INSTANT, and u64 rooms
+# --------------------------------------------------------------------------- #
+class TestDeadlineInstantAndBigIntRooms:
+    """`Promise.race` cannot enforce a deadline on its own: it only decides
+    between promises that have SETTLED, and the timer callback cannot run while
+    a final synchronous step inside WASM blocks the event loop. So a download
+    that ran from 290 s to 335 s of a 300 s budget won the race and reported
+    success. The behaviour is exercised against the real page function in
+    `test/page-deadline.test.mjs`; this pins the shape it depends on.
+    """
+
+    def test_the_completion_instant_is_compared_with_the_deadline(self):
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        assert "completedAt > deadlineAt" in page
+
+    def test_the_instant_check_precedes_the_size_check_and_the_seed_wait(self):
+        # A late download is late whatever its length, and a page that was
+        # already overdue must not be held open on top of it.
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        late = page.index("completedAt > deadlineAt")
+        assert late < page.index("size mismatch")
+        assert late < page.index("if (seedUntilMs)")
+
+    def test_a_late_completion_classifies_as_a_timeout(self):
+        # The classifier reads "harness deadline" as `timeout`; a kind of
+        # `other` would hide an overrun among the genuine faults.
+        from saorsa_deploy.cmd.record_results import _BROWSER_STATUS  # noqa: F401
+
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        assert "harness deadline (completed" in page
+        classify = (HARNESS_DIR / "lib" / "classify.mjs").read_text()
+        assert 'HARNESS_DIR = "harness deadline"' not in classify  # it is a named export
+        assert 'HARNESS_DEADLINE = "harness deadline"' in classify
+
+    def test_room_counters_are_normalised_before_serialisation(self):
+        # `JSON.stringify` throws on a BigInt and a room's counters are Rust
+        # u64s, so the throw reached the harness's catch and turned a SUCCESSFUL
+        # transfer into `failure` / `other` with the swarm zeroed — the
+        # reporting of the measurement changing the measurement.
+        swarm = (HARNESS_DIR / "lib" / "swarm.mjs").read_text()
+        assert "export function roomsToJson" in swarm
+        assert "normaliseForJson" in swarm
+        assert "JSON.stringify(Array.isArray(rooms)" not in swarm

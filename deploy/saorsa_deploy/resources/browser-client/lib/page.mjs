@@ -206,6 +206,28 @@ export async function downloadInPage({
     // seed window into every transfer percentile.
     const completedAt = Date.now();
     byteLength = resultByteLength(result);
+    // **The INSTANT is checked, not just the timer.** A `Promise.race` only
+    // decides between promises that have settled, and the deadline's timer
+    // callback cannot run while the event loop is blocked -- which a final
+    // synchronous step inside WASM does. So a download that ran from 290 s to
+    // 335 s of a 300 s budget settled first, won the race, and reported
+    // `success` with a `totalMs` past its own deadline; the outer backstop used
+    // to catch it by accident and no longer does, because it now waits for the
+    // seed deadline. Compared before the size check and before the seed wait:
+    // a late download is late whatever its length, and a page that was already
+    // overdue must not be held open on top of it.
+    if (completedAt > deadlineAt) {
+      await readSwarm();
+      return finish(
+        {
+          ok: false,
+          // "harness deadline" is what the classifier reads as `timeout`; the
+          // overrun is in the text so an operator can see how far past.
+          error: `harness deadline (completed ${completedAt - deadlineAt}ms late)`,
+        },
+        completedAt - startedAt,
+      );
+    }
     if (expectedBytes && byteLength !== expectedBytes) {
       // A short read is not a success, so nothing it holds is worth serving:
       // the page closes at once, as it did before seeding existed.

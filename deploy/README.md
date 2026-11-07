@@ -1549,6 +1549,17 @@ report success at 350 s. A connect that never resolves therefore fails on the
 download budget rather than consuming the seed window, and `total_ms` spans the
 same stretch the deadline does.
 
+**The completion INSTANT is compared with the deadline too, not just the timer.**
+A `Promise.race` only decides between promises that have settled, and the
+deadline's timer callback cannot run while the event loop is blocked — which a
+final synchronous step inside WASM does. So a download running from 290 s to
+335 s of a 300 s budget settled first, won the race and reported `success` with a
+`total_ms` past its own deadline; the outer backstop used to fail it by accident
+and no longer does. A completion past the instant is a `failure` with
+`error_kind` `timeout` and an `error_text` naming the overrun, checked before the
+length check and before the seed wait: a late download is late whatever its
+length, and an already-overdue page is not held open on top of it.
+
 `started_late_ms` is measured from the instance's **scheduled** start, not from
 the boundary: a staggered instance is not late for starting when it was told to.
 `start_offset_ms` carries the offset, so the boundary — which is what a window
@@ -1667,7 +1678,12 @@ are two unlike workloads, and sharing a series would let any panel average them.
   `refused_dials`, `first_reads`.
 - Swarm fields (INFRA-532), **on every point including a skip**, because Influx
   types a field on first write and a field present on some points and absent on
-  others is one no per-round sum can read:
+  others is one no per-round sum can read (and **no shape of them may change the
+  transfer's status**: a room's counters are Rust `u64`s, which `JSON.stringify`
+  refuses as BigInts, and that throw used to reach the harness's catch and turn a
+  successful transfer into `failure` / `other` with every swarm figure zeroed —
+  so they are normalised before serialisation and the serialisation itself is
+  guarded):
   - `swarm_present` (`1` / `0`), `swarm_room_tag`, `swarm_rooms` (a JSON array as
     a string field);
   - `chunks_total`, `chunks_from_nodes`, `chunks_from_cache`,
@@ -1841,6 +1857,18 @@ flag on a round whose instances started more than 10 s apart), **3 per region**,
 **4 per chunk**, **5 stalls**, **6 refusals**, **7 bootstrap load** and **8
 gates**. `skipped` rows are excluded from every denominator and listed
 separately.
+
+**§2's start spread is over ACTUAL starts** — `start_offset_ms +
+started_late_ms` — because `started_late_ms` is measured from each instance's
+SCHEDULED start, so lateness alone is no longer where an instance began: four
+on-time instances of a 10 s stagger reported a 0 ms spread when they started 30 s
+apart, and the same four all starting together on a VM that resumed 30 s late
+reported 30,000 ms when their real spread was zero. `scheduled_spread_ms` carries
+what the schedule asked for, and the **desync flag fires on the excess over it**,
+so a deliberate stagger is not reported as a fault while one instance 40 s behind
+its own slot still is. On an unstaggered cohort the scheduled spread is 0 and the
+flag is exactly the rule it was. `started_late_ms_max` is unchanged and remains
+the lateness metric.
 
 **§2's expectation is per round, from each VM's recorded `round_parity`.** A
 round of a parity-split deployment is run by one of its cohorts, so the

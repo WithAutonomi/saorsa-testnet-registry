@@ -16,6 +16,7 @@ import {
   countChunkSources,
   mapSwarmStats,
   parseProgressLine,
+  roomsToJson,
   swarmFields,
 } from "../lib/swarm.mjs";
 
@@ -235,4 +236,47 @@ test("an outcome's chunk counts and stats are both in the field set", () => {
   assert.equal(fields.chunks_from_readers, 1);
   assert.equal(fields.records_from_peers, 7);
   assert.equal(fields.swarm_present, 1);
+});
+
+test("a room's u64 counters serialise rather than throwing", () => {
+  // `JSON.stringify` throws "Do not know how to serialize a BigInt", and a
+  // room's counters are Rust u64s — the representation `counter()` accepts at
+  // the top level. Unhandled, that throw reached the harness's catch and turned
+  // a SUCCESSFUL transfer into `failure` / `other` with the swarm zeroed.
+  const rooms = [{ tag: "r", records_from_peers: 7n, bytes_from_peers: 7_340_032n }];
+  assert.deepEqual(JSON.parse(roomsToJson(rooms)), [
+    { tag: "r", records_from_peers: 7, bytes_from_peers: 7340032 },
+  ]);
+});
+
+test("a BigInt nested deeper than one level is normalised too", () => {
+  const rooms = [{ tag: "r", links: [{ peer: "p1", bytes: 10n }], inner: { n: 2n } }];
+  assert.deepEqual(JSON.parse(roomsToJson(rooms)), [
+    { tag: "r", links: [{ peer: "p1", bytes: 10 }], inner: { n: 2 } },
+  ]);
+});
+
+test("the whole mapping survives BigInt rooms", () => {
+  const mapped = mapSwarmStats(
+    { records_from_peers: 7n, discovery: { lookups: 11n } },
+    [{ tag: "r", records_from_peers: 7n }],
+  );
+  assert.equal(mapped.records_from_peers, 7);
+  assert.equal(mapped.discovery_lookups, 11);
+  assert.deepEqual(JSON.parse(mapped.swarm_rooms), [{ tag: "r", records_from_peers: 7 }]);
+});
+
+test("a room payload that cannot be serialised costs the detail and nothing more", () => {
+  // A circular reference, a Symbol: the rooms are a diagnostic, and no shape of
+  // them may change the transfer's status.
+  const circular = { tag: "r" };
+  circular.self = circular;
+  assert.equal(roomsToJson([circular]), "[]");
+  assert.equal(roomsToJson([{ tag: "r", weird: Symbol("x") }]), '[{"tag":"r"}]');
+});
+
+test("rooms that are not an array are still recorded as none", () => {
+  assert.equal(roomsToJson(undefined), "[]");
+  assert.equal(roomsToJson({ tag: "x" }), "[]");
+  assert.equal(roomsToJson([]), "[]");
 });

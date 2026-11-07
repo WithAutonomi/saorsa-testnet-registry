@@ -37,6 +37,7 @@ from saorsa_deploy.browser_reads import (
     derive_period_secs,
     render_markdown,
     rounds_in_window,
+    summarise_rounds,
 )
 from saorsa_deploy.browser_traces import normalise_trace_doc, summarise_chunks
 
@@ -1154,3 +1155,89 @@ def test_the_per_round_expectation_is_the_cohort_total_without_a_resolver(spread
     every caller that does not know about parity gets."""
     for entry in spread["rounds"]:
         assert entry["instances_expected"] == 8
+
+
+# ---------------------------------------------------------------------------
+# review round 2: the start spread is over ACTUAL starts
+# ---------------------------------------------------------------------------
+
+
+def _staggered(offsets_and_lates):
+    """One round's rows, each with its scheduled offset and its lateness."""
+    return [
+        SimpleNamespace(
+            round_id=R0,
+            client_hostname="h1",
+            instance=i + 1,
+            hot_file_index=0,
+            status="success",
+            error_kind=None,
+            total_ms=8000,
+            started_late_ms=late,
+            start_offset_ms=offset,
+            stalls=0,
+            refused_dials=0,
+            region="lon1",
+            seeds=["s1"],
+            first_reads=[],
+        )
+        for i, (offset, late) in enumerate(offsets_and_lates)
+    ]
+
+
+def test_a_staggered_cohort_s_spread_is_its_real_spread():
+    """`started_late_ms` is measured from each instance's SCHEDULED start, so
+    lateness alone is no longer where an instance began: four on-time instances
+    of a 10 s stagger started 30 s apart and reported a 0 ms spread."""
+    (entry,) = summarise_rounds(_staggered([(0, 0), (10_000, 0), (20_000, 0), (30_000, 0)]), PERIOD)
+    assert entry["started_spread_ms"] == 30_000
+    assert entry["scheduled_spread_ms"] == 30_000
+    # And it is NOT a desync: the schedule asked for exactly that spread, and
+    # reporting it as a fault is the report calling a supported schedule broken.
+    assert entry["desynchronised"] is False
+    # Lateness is kept separately and is its own metric.
+    assert entry["started_late_ms_max"] == 0
+
+
+def test_a_late_vm_whose_instances_start_together_has_no_spread():
+    """The reviewer's converse: the VM resumes 30 s late, so every instance
+    starts at once and each one's lateness is its own offset backwards. The
+    actual spread is zero, and lateness alone reported 30,000 ms."""
+    (entry,) = summarise_rounds(
+        _staggered([(0, 30_000), (10_000, 20_000), (20_000, 10_000), (30_000, 0)]), PERIOD
+    )
+    assert entry["started_spread_ms"] == 0
+    assert entry["desynchronised"] is False
+    assert entry["started_late_ms_max"] == 30_000
+
+
+def test_a_real_desync_on_a_staggered_cohort_is_still_flagged():
+    """The flag fires on the EXCESS over the schedule, so a staggered cohort
+    does not lose the signal: one instance 40 s behind its own slot is a desync
+    whatever the stagger is."""
+    (entry,) = summarise_rounds(
+        _staggered([(0, 0), (10_000, 0), (20_000, 0), (30_000, 40_000)]), PERIOD
+    )
+    assert entry["started_spread_ms"] == 70_000
+    assert entry["scheduled_spread_ms"] == 30_000
+    assert entry["desynchronised"] is True
+
+
+def test_an_unstaggered_cohort_s_flag_is_the_rule_it_was():
+    """Every row before INFRA-532 carries no offset, so the scheduled spread is
+    0 and the flag is exactly `spread > 10 s` — which is what the fixture-based
+    test above pins."""
+    (entry,) = summarise_rounds(_staggered([(None, 0), (None, 11_500)]), PERIOD)
+    assert entry["started_spread_ms"] == 11_500
+    assert entry["scheduled_spread_ms"] == 0
+    assert entry["desynchronised"] is True
+
+
+def test_the_markdown_names_the_scheduled_spread_when_there_is_one(spread):
+    """So a reader comparing the two numbers can tell an intended spread from a
+    desync. Absent on an unstaggered cohort, whose rendering is unchanged."""
+    assert "(sched" not in render_markdown(spread)
+    report = dict(spread)
+    report["rounds"] = [dict(r) for r in spread["rounds"]]
+    report["rounds"][0]["scheduled_spread_ms"] = 30_000
+    assert "(sched 30,000 ms)" in render_markdown(report)
