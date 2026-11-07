@@ -1105,17 +1105,6 @@ def _print_browser_summary(rounds: list[dict], name: str, console: Console) -> N
 # ---------------------------------------------------------------------------
 
 
-def _earliest_start_secs(rows: list[dict]) -> int | None:
-    """The earliest scheduled start in a round group, in epoch seconds.
-
-    Not the boundary -- it carries a reader's offset. It is used only to ask
-    WHICH schedule was in force when the round ran, and an offset is far smaller
-    than the gap between two provisions.
-    """
-    starts = [p["start_ns"] for p in rows if p.get("start_ns") is not None]
-    return min(starts) // 1_000_000_000 if starts else None
-
-
 def _hot_file_round_boundary(round_id: int, period_secs):
     """The round's BOUNDARY: ``round_id x period``, from the RESOLVED period.
 
@@ -1158,21 +1147,41 @@ def summarise_hot_file_rounds(points: list[dict], period_for=None) -> list[dict]
     and from the success denominator: a round that ran before the operator chose
     a hot file is part of the series, not a failure.
 
+    Split by the round's BOUNDARY too, which is what makes the grouping
+    schedule-qualified: a `round_id` is `floor(epoch / period)`, so the same
+    number names a different instant under a different period, and a cohort
+    recreated under the same name with a different one has two real rounds
+    called 20833. Pooling them averages two eras. Where the period cannot be
+    resolved the boundary is None for every point and the grouping collapses to
+    one bucket per round, exactly as it was -- which is the same `-` the
+    boundary column shows.
+
     ``extension`` is NOT on the Influx point (it is resolved from state at
     record time), so the key here comes from whatever the caller put on the
-    point -- which, on the live Influx view, is nothing. The grouping is then
-    one bucket per round, exactly as the browser view's is.
+    point -- which, on the live Influx view, is nothing.
     """
     grouped: dict[tuple, list[dict]] = {}
+    boundaries: dict[tuple, object] = {}
     for point in points:
         round_id = point.get("round_id")
         if round_id is None:
             continue
-        grouped.setdefault((round_id, point.get("extension")), []).append(point)
+        extension = point.get("extension")
+        start_ns = point.get("start_ns")
+        period = (
+            period_for(extension, start_ns // 1_000_000_000 if start_ns is not None else None)
+            if period_for
+            else None
+        )
+        boundary = _hot_file_round_boundary(round_id, period)
+        key = (round_id, extension, boundary)
+        grouped.setdefault(key, []).append(point)
+        boundaries[key] = boundary
 
     out: list[dict] = []
-    for round_id, extension in sorted(grouped, key=lambda k: (k[0], k[1] or "")):
-        rows = grouped[(round_id, extension)]
+    for key in sorted(grouped, key=lambda k: (k[0], k[1] or "", str(k[2]))):
+        round_id, extension, _ = key
+        rows = grouped[key]
         successes = [p for p in rows if p.get("status") == "success"]
         failures = [p for p in rows if p.get("status") == "failure"]
         skipped = [p for p in rows if p.get("status") == "skipped"]
@@ -1185,14 +1194,10 @@ def summarise_hot_file_rounds(points: list[dict], period_for=None) -> list[dict]
             {
                 "round_id": round_id,
                 "extension": extension,
-                # The period THIS round ran on, resolved per round rather than
-                # per cohort: an extension recreated under the same name with a
-                # different period would otherwise have the newest one applied
-                # to every earlier round.
-                "boundary": _hot_file_round_boundary(
-                    round_id,
-                    period_for(extension, _earliest_start_secs(rows)) if period_for else None,
-                ),
+                # Resolved per POINT above, so a cohort recreated with a
+                # different period has its two eras in two rows rather than
+                # one averaged together.
+                "boundary": boundaries[key],
                 # Distinct (host, instance): one point per reader per round, so
                 # a count of rows would hide a duplicate and a count of readers
                 # would hide a VM that reported nothing.

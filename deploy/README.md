@@ -2240,8 +2240,22 @@ on a testnet whose manifests skew client clocks on purpose.
 table in the same pass as the file-op, pointer and browser records — a command
 an operator has to remember separately does not get run. Always full-range
 (`--window` narrows only the file-op aggregate). Keyed
-`(deployment, client_hostname, round_id, instance)`, so a re-run revises rather
-than duplicates.
+`(deployment, client_hostname, round_id, instance, started_at)`, so a re-run
+revises rather than duplicates.
+
+**`started_at` is in that key, and it is what makes the identity
+schedule-qualified.** A `round_id` is `floor(epoch / period)`, so the same
+number names a different instant under a different period: recreate a cohort
+under the same name and hostname with 86401 s instead of 86400 s and round
+20833 is 2027-01-15 00:00:00 on the first schedule and 05:47:13 on the second.
+Both schedules validate, so both reads are real — and on the four-column key
+they collided, the later silently destroying the earlier. `started_at` is the
+reader's SCHEDULED start (`round_id × period + offset`), stable for a given
+reader, round and schedule, so it keeps the upsert idempotent while separating
+exactly what the schedule separates. The round GROUPING in both views is
+qualified the same way, by the round's resolved boundary; where the period
+cannot be resolved the two eras collapse into one bucket with a `-` boundary,
+which is a reporting limit rather than a lost read.
 
 Its own table, not more rows in `deployment_download_records`, for the same
 reason it writes its own measurement: pooling the two would let any rate or

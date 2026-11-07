@@ -100,11 +100,25 @@ class DeploymentHotFileDownloadRecord(Base):
         # One point per reader per round, always -- including the rounds that
         # did nothing -- so this is the operation's identity and a re-run of
         # `record-results` revises rather than duplicates.
+        #
+        # **``started_at`` is part of it, and that is what makes the identity
+        # SCHEDULE-QUALIFIED.** A `round_id` is `floor(epoch / period)`, so the
+        # same number names a different instant under a different period --
+        # recreate a cohort under the same name and hostname with 86401 s
+        # instead of 86400 and round 20833 is 2027-01-15 00:00:00 on the first
+        # schedule and 05:47:13 on the second. Both schedules validate, so both
+        # reads are real; on the four-column key they collided and the later
+        # one silently destroyed the earlier. `started_at` is the reader's
+        # SCHEDULED start, derived from `round_id x period + offset`, so it is
+        # stable for a given (reader, round, schedule) -- a `record-results`
+        # re-run still revises its own row rather than inserting beside it --
+        # and differs exactly when the schedule does.
         UniqueConstraint(
             "deployment_id",
             "client_hostname",
             "round_id",
             "instance",
+            "started_at",
             name="uq_deployment_hot_file_download_records_round",
         ),
     )
@@ -156,7 +170,8 @@ class DeploymentHotFileDownloadRecord(Base):
     # The reader's SCHEDULED start (`round_id × period + offset`), not the
     # instant it actually got going -- which is what makes a window selection
     # over these rows select whole rounds. How late it actually started is
-    # `started_late_ms`.
+    # `started_late_ms`. Part of the unique key: see the constraint above, where
+    # it is what keeps two schedules' reads of one `round_id` apart.
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

@@ -2141,6 +2141,55 @@ class TestHotFileRoundSummary:
         )
         assert row["boundary"] == datetime.fromtimestamp(boundary, tz=timezone.utc)
 
+    def test_two_eras_of_one_round_are_two_rows(self):
+        """The live grouping is schedule-qualified by the round's boundary.
+
+        A `round_id` is `floor(epoch / period)`, so a cohort recreated under the
+        same name with 86401 s instead of 86400 s has two real rounds called
+        20833 — 2027-01-15 00:00:00 and 05:47:13. Pooling them averages two
+        schedules.
+        """
+        from saorsa_deploy.cmd.print_file_ops import summarise_hot_file_rounds
+        from saorsa_deploy.hot_file_records import merge_hot_file_config, period_resolver
+
+        host = "DEV-03-ctl-ant-client-hot-file-read-lon1-1"
+        schedule = {
+            "hostname": host,
+            "extension": "ctl",
+            "client_index": 1,
+            "instances": 1,
+            "download_timeout_secs": 300,
+            "round_parity": "all",
+            "start_stagger_secs": 0,
+        }
+        # The re-provision falls BETWEEN the two starts, which is the realistic
+        # shape: rounds before it ran on the old period, rounds after it on the
+        # new one.
+        resolve = period_resolver(
+            merge_hot_file_config(
+                [{**schedule, "round_period_secs": 86400, "recorded_at": "2027-01-01T00:00:00Z"}],
+                [{**schedule, "round_period_secs": 86401, "recorded_at": "2027-01-15T03:00:00Z"}],
+            )
+        )
+
+        def _reader(period):
+            return _summary_point(
+                round_id=20833,
+                host=host,
+                extension="ctl",
+                start_ns=20833 * period * 1_000_000_000,
+            )
+
+        rows = summarise_hot_file_rounds([_reader(86400), _reader(86401)], resolve)
+        assert [r["boundary"] for r in rows] == [
+            datetime(2027, 1, 15, 0, 0, tzinfo=timezone.utc),
+            datetime(2027, 1, 15, 5, 47, 13, tzinfo=timezone.utc),
+        ]
+        # And with no resolver the two collapse into one bucket with no
+        # boundary, exactly as before — the accepted display limitation.
+        (row,) = summarise_hot_file_rounds([_reader(86400), _reader(86401)])
+        assert row["boundary"] is None
+
     def test_an_unresolved_period_shows_no_boundary(self):
         # A dash is a worse reading than a time but a better one than a wrong
         # time, and the recorded role config exists so this is answerable.

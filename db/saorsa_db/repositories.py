@@ -1643,11 +1643,16 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .all()
         )
 
+    #: ``started_at`` is in the KEY, not merely stored: a `round_id` means a
+    #: different instant under a different period, so two schedules' reads of
+    #: one round are two reads and must not share a key. See the model's
+    #: `UniqueConstraint`.
     _HOT_FILE_RECORD_KEY_COLUMNS = (
         "deployment_id",
         "client_hostname",
         "round_id",
         "instance",
+        "started_at",
     )
     _HOT_FILE_RECORD_OVERWRITE_COLUMNS = (
         "region",
@@ -1659,7 +1664,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         "error_text",
         "total_ms",
         "client_elapsed_ms",
-        "started_at",
         "started_late_ms",
         "verify_status",
         "swarm_present",

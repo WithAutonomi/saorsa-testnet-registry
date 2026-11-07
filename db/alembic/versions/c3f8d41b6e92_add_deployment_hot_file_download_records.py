@@ -20,6 +20,11 @@ the result object WITHOUT `swarm`, so the control cohort of a branch-vs-release
 comparison carries zeros throughout, and without the flag those would be
 indistinguishable from a swarm that formed and shared nothing.
 
+The unique key carries `started_at` as well as the round and the reader,
+because a `round_id` means a different instant under a different period: a
+cohort recreated under the same name with 86401 s instead of 86400 s gives round
+20833 two real reads, and the four-column key let the later destroy the earlier.
+
 `oprecordstatus` is REUSED (`create_type=False`), not redeclared: the three
 values are exactly success / failure / skipped and they mean exactly what they
 mean on a file op. The downgrade therefore does NOT drop the type -- it belongs
@@ -145,11 +150,17 @@ def upgrade() -> None:
             ["deployment_id"], ["deployments.id"], ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id"),
+        # `started_at` is part of the identity, not merely stored: a `round_id`
+        # is `floor(epoch / period)`, so the same number names a different
+        # instant under a different period, and two schedules' reads of one
+        # round are two reads. Without it the later silently destroyed the
+        # earlier.
         sa.UniqueConstraint(
             "deployment_id",
             "client_hostname",
             "round_id",
             "instance",
+            "started_at",
             name="uq_deployment_hot_file_download_records_round",
         ),
     )

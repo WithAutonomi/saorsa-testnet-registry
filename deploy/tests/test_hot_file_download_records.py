@@ -1015,3 +1015,182 @@ def test_the_recorded_section_s_peer_fed_rate_excludes_skips(repo):
     text = console.export_text()
     assert "1/1" in text
     assert "1/10" not in text
+
+
+# ---------------------------------------------------------------------------
+# two schedules must not collide on one read key (round-6 finding 1)
+# ---------------------------------------------------------------------------
+
+#: `floor(epoch / 86400)` and `floor(epoch / 86401)` both reach 20833, so the
+#: same round number names 2027-01-15 00:00:00 under one period and 05:47:13
+#: under the other. Both periods pass `HotFileReader` validation.
+_COLLIDING_ROUND = 20833
+
+
+def _scheduled_point(period, address, **extra):
+    """One point for round 20833 under `period`, at that schedule's own start."""
+    start = _COLLIDING_ROUND * period
+    return _point(
+        round_id=_COLLIDING_ROUND,
+        instance=1,
+        address=address,
+        start_ns=start * 1_000_000_000,
+        **extra,
+    )
+
+
+def test_two_schedules_reads_of_one_round_are_two_rows(repo):
+    """The read key is SCHEDULE-QUALIFIED by `started_at`.
+
+    A cohort recreated under the same name and hostname with 86401 s instead of
+    86400 s gives round 20833 two real reads at two different instants. On the
+    four-column key they collided, and recording the second silently destroyed
+    the first — a stored result gone, which no amount of schedule history
+    recovers.
+    """
+    deployment = _deployment(repo)
+    _record(repo, deployment, [_scheduled_point(86400, "aa")])
+    _record(repo, deployment, [_scheduled_point(86401, "bb")])
+
+    rows = repo.list_hot_file_download_records_for_deployment(deployment.id)
+    assert len(rows) == 2
+    assert sorted(r.address for r in rows) == ["aa", "bb"]
+    assert sorted(r.started_at.replace(tzinfo=timezone.utc) for r in rows) == [
+        datetime(2027, 1, 15, 0, 0, tzinfo=timezone.utc),
+        datetime(2027, 1, 15, 5, 47, 13, tzinfo=timezone.utc),
+    ]
+
+
+def test_both_schedules_in_one_pass_are_two_rows(repo):
+    # `_dedupe_last` keys on the same tuple as the ON CONFLICT, so one pass
+    # carrying both points collapsed them before the statement even ran.
+    deployment = _deployment(repo)
+    _record(
+        repo,
+        deployment,
+        [_scheduled_point(86400, "aa"), _scheduled_point(86401, "bb")],
+    )
+    rows = repo.list_hot_file_download_records_for_deployment(deployment.id)
+    assert sorted(r.address for r in rows) == ["aa", "bb"]
+
+
+def test_a_re_run_still_revises_rather_than_duplicating(repo):
+    # The point `started_at` is a reader's SCHEDULED start, derived from
+    # `round_id x period + offset`, so it is stable for a given (reader, round,
+    # schedule) — which is what keeps the upsert idempotent now that it is part
+    # of the key.
+    deployment = _deployment(repo)
+    points = [_scheduled_point(86400, "aa"), _scheduled_point(86401, "bb")]
+    _record(repo, deployment, points)
+    _record(repo, deployment, points)
+    assert len(repo.list_hot_file_download_records_for_deployment(deployment.id)) == 2
+    # And a revision of one of them still lands on its own row.
+    _record(repo, deployment, [_scheduled_point(86400, "aa", total_ms=9999)])
+    rows = repo.list_hot_file_download_records_for_deployment(deployment.id)
+    assert len(rows) == 2
+    assert {r.address: r.total_ms for r in rows}["aa"] == 9999
+
+
+def test_the_unique_key_names_started_at():
+    from saorsa_db.models.hot_file_download_record import DeploymentHotFileDownloadRecord
+    from saorsa_db.repositories import SqlAlchemyDeploymentRepository
+
+    (constraint,) = [
+        c
+        for c in DeploymentHotFileDownloadRecord.__table__.constraints
+        if getattr(c, "name", "") == "uq_deployment_hot_file_download_records_round"
+    ]
+    assert [c.name for c in constraint.columns] == [
+        "deployment_id",
+        "client_hostname",
+        "round_id",
+        "instance",
+        "started_at",
+    ]
+    # The repository's upsert must key on exactly the same tuple, and must no
+    # longer treat `started_at` as an overwritable column.
+    assert SqlAlchemyDeploymentRepository._HOT_FILE_RECORD_KEY_COLUMNS == (
+        "deployment_id",
+        "client_hostname",
+        "round_id",
+        "instance",
+        "started_at",
+    )
+    assert "started_at" not in SqlAlchemyDeploymentRepository._HOT_FILE_RECORD_OVERWRITE_COLUMNS
+
+
+def test_the_migration_declares_the_same_key():
+    module = _migration()
+    body = open(module.__file__).read()
+    start = body.index("sa.UniqueConstraint(")
+    end = body.index("uq_deployment_hot_file_download_records_round", start)
+    for column in ("deployment_id", "client_hostname", "round_id", "instance", "started_at"):
+        assert f'"{column}"' in body[start:end], column
+
+
+def test_the_recorded_section_separates_the_two_eras(repo):
+    """The grouping is schedule-qualified too, where the period can be resolved.
+
+    Pooling two eras' reads of one round number averages two schedules. With a
+    re-provision between the two starts the resolver tells them apart; where it
+    cannot, both collapse into one bucket with a `-` boundary, which is the
+    display limitation the reviewer accepted.
+    """
+    from rich.console import Console
+
+    host = "DEV-03-ctl-ant-client-hot-file-read-lon1-1"
+    schedule = {
+        "hostname": host,
+        "extension": "ctl",
+        "client_index": 1,
+        "instances": 1,
+        "download_timeout_secs": 300,
+        "round_parity": "all",
+        "start_stagger_secs": 0,
+    }
+    deploy_args = {
+        "hot_file_readers": [
+            {
+                **schedule,
+                "round_period_secs": 86401,
+                "recorded_at": "2027-01-15T03:00:00Z",
+                "superseded_schedules": [
+                    {
+                        **{k: schedule[k] for k in ("instances", "client_index")},
+                        "round_period_secs": 86400,
+                        "download_timeout_secs": 300,
+                        "round_parity": "all",
+                        "start_stagger_secs": 0,
+                        "recorded_at": "2027-01-01T00:00:00Z",
+                    }
+                ],
+            }
+        ]
+    }
+
+    deployment = _deployment(repo)
+    _record(
+        repo,
+        deployment,
+        [
+            _scheduled_point(86400, "aa", host=host),
+            _scheduled_point(86401, "bb", host=host),
+        ],
+        tiers=[("ctl", {"clients": [_reader_client()]})],
+    )
+    console = Console(record=True, width=240)
+    _print_hot_file_reads_section(
+        repo.list_hot_file_download_records_for_deployment(deployment.id),
+        deployment.name,
+        console,
+        deploy_args,
+    )
+    text = console.export_text()
+    # Two rows for the one round number, one per era. Counted over the table's
+    # own data rows: the summary block above it also names the round id.
+    data_rows = [
+        line
+        for line in text.splitlines()
+        if line.startswith("│") and str(_COLLIDING_ROUND) in line and "ctl" in line
+    ]
+    assert len(data_rows) == 2, text

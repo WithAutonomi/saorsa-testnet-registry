@@ -2187,6 +2187,15 @@ together.
   file ops. Not more rows in `deployment_download_records`: pooling them would
   let any rate or percentile average the two and would push this cohort's
   failures into the native hard floors `deployments compare` gates on.
+  Keyed `(deployment, client_hostname, round_id, instance, started_at)` --
+  **`started_at` is in the key, which is what makes the read identity
+  SCHEDULE-QUALIFIED**: a `round_id` is `floor(epoch / period)`, so a cohort
+  recreated under the same name with 86401 s instead of 86400 s has two real
+  reads of round 20833 (00:00:00 and 05:47:13), and on the four-column key the
+  later silently destroyed the earlier. It is the reader's SCHEDULED start, so
+  it is stable per (reader, round, schedule) and the upsert stays idempotent.
+  The round grouping in both views is qualified the same way, by the resolved
+  boundary.
   `extension` **COALESCEs** on upsert, as the browser table's does — it comes
   from state teardown deletes, and a re-run after `clients down` would otherwise
   merge the branch cohort and the control. The role config behind it is

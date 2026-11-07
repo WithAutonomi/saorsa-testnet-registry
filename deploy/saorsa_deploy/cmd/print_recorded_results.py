@@ -191,6 +191,7 @@ def cmd_print_recorded_results(args) -> None:
             repo.list_hot_file_download_records_for_deployment(deployment.id),
             deployment.name,
             console,
+            deployment.deploy_args,
         )
 
     _emit_recorded_json(args, console, repo, deployment, kind)
@@ -856,7 +857,9 @@ def _fmt_hot_file_ms(value) -> str:
     return f"{value / 1000.0:.1f}s"
 
 
-def _print_hot_file_reads_section(rows: list, name: str, console: Console) -> None:
+def _print_hot_file_reads_section(
+    rows: list, name: str, console: Console, deploy_args: dict | None = None
+) -> None:
     """Per round and extension, the counts and the swarm figures.
 
     Prints NOTHING when the deployment has no hot-file reads, so every existing
@@ -914,11 +917,32 @@ def _print_hot_file_reads_section(rows: list, name: str, console: Console) -> No
     table.add_column("Bytes/peers", justify="right")
     table.add_column("Recs served", justify="right")
 
+    # Split by the round's BOUNDARY as well as by round and extension, which is
+    # what makes the grouping schedule-qualified: a `round_id` is
+    # `floor(epoch / period)`, so a cohort recreated under the same name with a
+    # different period has two real rounds called 20833 and pooling them
+    # averages two eras. The live `--hot-file` view groups the same way. Where
+    # the period cannot be resolved the boundary is None for every row and the
+    # grouping collapses to one bucket per round, as it was.
+    from saorsa_deploy.hot_file_records import period_resolver, recorded_hot_file_config
+
+    period_for = period_resolver(recorded_hot_file_config(deploy_args))
+
+    def _boundary_of(row):
+        started = row.started_at
+        if started is None:
+            return None
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        period = period_for(row.extension, int(started.timestamp()))
+        return row.round_id * period if period else None
+
     grouped: dict[tuple, list] = {}
     for row in rows:
-        grouped.setdefault((row.round_id, row.extension), []).append(row)
-    for round_id, extension in sorted(grouped, key=lambda k: (k[0], k[1] or "")):
-        group = grouped[(round_id, extension)]
+        grouped.setdefault((row.round_id, row.extension, _boundary_of(row)), []).append(row)
+    for key in sorted(grouped, key=lambda k: (k[0], k[1] or "", str(k[2]))):
+        round_id, extension, _ = key
+        group = grouped[key]
         ok = [r for r in group if r.status == OpRecordStatus.SUCCESS]
         fail = [r for r in group if r.status == OpRecordStatus.FAILURE]
         skip = [r for r in group if r.status == OpRecordStatus.SKIPPED]
