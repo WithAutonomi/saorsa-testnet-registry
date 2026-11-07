@@ -35,7 +35,7 @@ control arm's.
 | round | boundary | arm | rows |
 | --: | --- | --- | --- |
 | 2987190 | 09:00Z | swarm | 4 native (all ok), 2 browser (all ok) |
-| 2987191 | 09:10Z | control | 4 native (all ok) — **plus one off-parity swarm row** |
+| 2987191 | 09:10Z | control | 4 native (all ok) — **plus one off-parity swarm BROWSER row** |
 | 2987192 | 09:20Z | swarm | 4 native (3 ok, 1 `timeout`), 2 browser (1 ok, 1 `skipped`) |
 | 2987193 | 09:30Z | control | 4 native (3 ok, 1 `connection`) |
 | 2987194 | 09:40Z | swarm | none — **missing** |
@@ -56,10 +56,19 @@ control round — which is the G3 NOT ASSESSED case.
 Ignored rows: two of extension `other`, one with **no extension at all** (the
 deployment's own tier), and one `other` browser row — **4 ignored**.
 
-The off-parity row is a `swarm` native row on round 2987191, a control round. It
-is **counted** (`off_parity_rows: 1`) and is in **none** of the figures: it is not
-in the swarm arm's summary, because `rows_of_arm` keeps only the even rounds, and
-it is not in the control arm's, because that arm is the `control` extension.
+The off-parity row is a `swarm` **browser** row on round 2987191, a control
+round. It is **counted** (`off_parity_rows: 1`) and is in **none** of the
+figures: not in the swarm arm's summary, because `rows_of_arm` keeps only the
+even rounds, and not in the control arm's, because that arm is the `control`
+extension. Its own trace records are the two `chunk-z` documents described
+below, which the chunk set excludes for the same reason.
+
+**A browser is the only role an off-parity row is legal for.** A native reader on
+the other arm's rounds is refused outright — by `check_parities` on the recorded
+config (`round_parity: all` included) and by `check_native_round_parity` on the
+rows — because a `get_rpc` document names a chunk, a time and a node and never
+the cohort that asked, so such a reader's GETs land inside the other arm's round
+windows where nothing can separate them. A browser emits no `get_rpc` at all.
 
 ## Native rows, round by round
 
@@ -151,7 +160,7 @@ that formed and shared nothing.
 22 documents, each an ES `_source` with the fields nested under `browser_trace`
 and the tags under `tag`, exactly as telegraf writes them.
 
-Round 2987190, both instances, in `seq` order:
+Round 2987190, both instances of the swarm cohort's browser VM, in `seq` order:
 
 | chunk | records |
 | --- | --- |
@@ -161,9 +170,14 @@ Round 2987190, both instances, in `seq` order:
 
 That is 8 records per download, so **16**. Round 2987192's single surviving
 instance reads chunk-a and **chunk-d** (`found` each) — **4** more. Two final
-documents sit on round **2987191**, a CONTROL round, naming `chunk-z`: they prove
-the chunk set is taken from the swarm rounds alone, and that the browsers' own
-GET counts exclude them.
+documents sit on round **2987191**, a CONTROL round, naming `chunk-z`: they are
+the off-parity browser row's own trace, and they prove the chunk set is taken
+from the swarm rounds alone and that the browsers' own GET counts exclude them.
+
+Every document carries the swarm cohort's browser hostname, because the trace
+query names that cohort's VMs as well as its rounds: a second browser extension
+reading in the same rounds would otherwise put its targets into this file's
+record set, and that set is the filter the fleet's GETs are counted through.
 
 * chunk set: **4** records — `chunk-a`, `chunk-b`, `chunk-c`, `chunk-d` — from
   rounds **2987190, 2987192**. `chunk-z` is NOT in it.
@@ -192,6 +206,15 @@ The two missing rounds still have a response — the command queries every round
 the window — and it is **empty**, which is also the point: those rounds are
 excluded from the medians by being MISSING, not by their GET count.
 
+**The medians are over each arm's COMPARABLE rounds**, which here are its present
+ones: every present round has four attempted native rows. A round is comparable
+only if its arm attempted a native read in it and the GETs could be counted,
+because the figure counts what the nodes served to NATIVE readers — so a round
+whose readers all `skipped` is present and not comparable. The tests build that
+case by flipping round 2987193's control rows to `skipped`: the round keeps its
+440 served GETs, leaves the median, and takes the control arm below G3's
+two-round minimum.
+
 * served median, swarm arm: median of `[200, 240]` = **220**
 * served median, control arm: median of `[400, 440]` = **420**
 * **G3 ratio 220 / 420 = 0.524**
@@ -215,3 +238,10 @@ Each one fails against a threshold the fixture's own figures are below — G1 at
 command's default 0.95 (87.5% < 95%), G2 at 0.80 (75% < 80%), G3 at 0.50
 (0.524 > 0.50) — which is also how the tests prove the thresholds are wired
 rather than decorative.
+
+**G1 and G2 are NOT ASSESSED rather than PASS when a required figure is
+absent**, since "three figures, all must pass" is not satisfied by two. The tests
+build those cases by dropping the browser rows (G1's third figure, and G2's
+browser share in each swarm round) or by flipping a swarm round's native rows to
+`skipped`. A real breach still outranks the absence and FAILs, because a FAIL is
+knowledge.

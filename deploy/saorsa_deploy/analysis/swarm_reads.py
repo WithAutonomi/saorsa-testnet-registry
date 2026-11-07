@@ -40,11 +40,12 @@ from datetime import datetime, timezone
 
 from rich.table import Table
 
-from saorsa_deploy.analysis.es import EsRun, quiet_tls
+from saorsa_deploy.analysis.es import EsRun, host_variants, quiet_tls
 from saorsa_deploy.analysis.json_out import add_json_out_arg, console_for, emit_json
 from saorsa_deploy.browser_reads import derive_period_secs, rounds_in_window
 from saorsa_deploy.browser_records import recorded_browser_config
 from saorsa_deploy.browser_traces import OP_RPC, fetch_trace_docs
+from saorsa_deploy.es_log_counts import HOST_FIELD
 from saorsa_deploy.hot_file_records import (
     HOT_FILE_CONFIG_KEY,
     recorded_hot_file_config,
@@ -65,6 +66,7 @@ from saorsa_deploy.swarm_reads import (
     arm_of_round,
     as_epoch_bounds,
     build_report,
+    check_native_round_parity,
     check_parities,
     chunk_set_from_traces,
     render_markdown,
@@ -94,11 +96,29 @@ def _resolve_deployment(repo, args):
     ``--id`` wins when given: staging and dev names are reused every train, so
     an id is the only thing that names one run. Without it the active row for
     the name is used, falling back to the most recent.
+
+    **The two must agree, and a mismatch is refused.** ``--id`` selects the rows
+    and the recorded config, while ``--name`` is what names the Elasticsearch
+    indices and the S3 selection — so an id for one deployment and a name for
+    another would read one run's rows against another run's traces and node
+    GETs. With data in the window on both, every figure would be a composite of
+    two unrelated runs and the verdict would look ordinary. Compared
+    case-insensitively, because the index is lower-cased from the name while the
+    registry holds its canonical case.
     """
     if getattr(args, "id", None) is not None:
         deployment = repo.get(args.id)
         if deployment is None:
             raise SwarmReadsError(f"no deployment with id={args.id} in the registry.")
+        if (deployment.name or "").lower() != (args.name or "").lower():
+            raise SwarmReadsError(
+                f"--id {args.id} is deployment '{deployment.name}' but --name is "
+                f"'{args.name}'. The id selects the rows and the recorded "
+                f"config; the name selects the Elasticsearch indices and the S3 "
+                f"hot-file selection — so the report would read one run's rows "
+                f"against another's traces and node GETs. Pass --name "
+                f"{deployment.name} for this id."
+            )
         return deployment
     deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
     if deployment is None:
@@ -223,16 +243,66 @@ def _resolve_hot_files(deployment, name: str) -> tuple[dict, str]:
     return live, f"s3://{S3_ADDRESSES_BUCKET}/{hot_files_key(name)}"
 
 
-def _load_trace_docs(run, rounds: list[int], console) -> list[dict]:
-    """The swarm rounds' browser trace records, from the run's Elasticsearch.
+def swarm_browser_hosts(browser_config, swarm_browser_rows, swarm_extension: str) -> list[str]:
+    """The swarm cohort's browser VM hostnames, from the config AND the rows.
 
-    Every "cannot read them" condition is a :class:`SwarmReadsError`, so it
-    comes out as exit 2 rather than as a traceback or — worse — as an empty
-    chunk set, which would read as a file with no records.
+    Both, because either alone has a hole: a cohort provisioned without
+    ``DATABASE_URL`` records no config, and a cohort whose VMs are configured but
+    produced no row in the window is in the config only. The union is what the
+    trace query is narrowed to.
     """
+    hosts = {
+        entry.get("hostname")
+        for entry in browser_config or []
+        if entry.get("extension") == swarm_extension and entry.get("hostname")
+    }
+    for row in swarm_browser_rows:
+        hostname = (
+            row.get("client_hostname")
+            if isinstance(row, dict)
+            else getattr(row, "client_hostname", None)
+        )
+        if hostname:
+            hosts.add(hostname)
+    return sorted(hosts)
+
+
+def _load_trace_docs(run, rounds: list[int], hosts: list[str], console) -> list[dict]:
+    """The swarm cohort's browser trace records, from the run's Elasticsearch.
+
+    **Narrowed to the swarm cohort's own browser VMs, not just to its rounds.**
+    The index holds every browser cohort's trace, and a deployment may carry
+    more than one reading in the same rounds — a second `kind: clients`
+    extension added at hour three, say. Its database rows are ignored by
+    extension, but its TRACE would otherwise put its targets into the hot
+    file's chunk set (and so into the filter the fleet's GETs are counted
+    through, which is G3's input) and its downloads into §5. Filtered in the
+    QUERY rather than afterwards, so a large foreign cohort is not transferred
+    to be discarded.
+
+    An empty host set is a refusal rather than an unfiltered query: the chunk
+    set is the swarm cohort's browsers' own reading of the file, and without
+    them there is nothing to take it from.
+
+    Every other "cannot read them" condition is a :class:`SwarmReadsError` too,
+    so it comes out as exit 2 rather than as a traceback or — worse — as an
+    empty chunk set, which would read as a file with no records.
+    """
+    if not hosts:
+        raise SwarmReadsError(
+            "the swarm extension has no browser VM, in its recorded config or "
+            "in its rows. The hot file's chunk set is read from the swarm "
+            "cohort's own browser traces — an `rpc` record's target is the "
+            "chunk hex, and nothing else in the registry says which records a "
+            "file is made of — so without them there is no chunk set, no filter "
+            "for the fleet's GETs and no G3. Another cohort's traces are "
+            "deliberately NOT used in their place."
+        )
     try:
         index = run.client_index()
-        docs, counts = fetch_trace_docs(run, rounds)
+        docs, counts = fetch_trace_docs(
+            run, rounds, extra_filters=[{"terms": {HOST_FIELD: host_variants(hosts)}}]
+        )
     except SwarmReadsError:
         raise
     except Exception as e:  # noqa: BLE001 -- reported as exit 2, never a traceback
@@ -259,9 +329,11 @@ def _load_trace_docs(run, rounds: list[int], console) -> list[dict]:
             f"no `{OP_RPC}` trace documents in index '{index}' for the swarm "
             f"rounds {rounds[0] if rounds else '-'}..{rounds[-1] if rounds else '-'}, "
             f"so the hot file's chunk set cannot be read and the fleet's GETs "
-            f"cannot be filtered to the file. Either the swarm cohort's "
-            f"`forward_logs` was off, its bundle was built without `test-utils` "
-            f"(no trace at all), or the stack has already been destroyed."
+            f"cannot be filtered to the file. The query named this cohort's own "
+            f"browser VM(s) ({', '.join(hosts)}), so either their "
+            f"`forward_logs` was off, their bundle was built without "
+            f"`test-utils` (no trace at all), or the stack has already been "
+            f"destroyed."
         )
     return docs
 
@@ -382,7 +454,10 @@ def _run(args, console) -> int:
     all_browser = repo.list_browser_download_records_for_deployment(deployment.id)
     config = recorded_hot_file_config(deployment.deploy_args)
     browser_config = recorded_browser_config(deployment.deploy_args)
-    check_parities([*config, *browser_config], args.swarm_extension, args.control_extension)
+    for note in check_parities(
+        config, browser_config, args.swarm_extension, args.control_extension
+    ):
+        console.print(f"[yellow]{note}[/yellow]")
 
     period, period_source = _resolve_period(
         config,
@@ -415,6 +490,11 @@ def _run(args, console) -> int:
             f"in {window}. Without the control arm there is nothing for the "
             f"swarm arm's GET count to be compared against."
         )
+    # The row-level parity check, after the window narrowing and before anything
+    # is read from Elasticsearch: a native reader on the other arm's rounds makes
+    # G3's numerator a blend no filter can undo, so there is no report to spend
+    # the queries on.
+    check_native_round_parity(swarm_native, control_native)
 
     hot_files, hot_files_source = _resolve_hot_files(deployment, args.name)
 
@@ -425,7 +505,8 @@ def _run(args, console) -> int:
         for round_id in window_round_ids(period, window_start, window_end)
         if arm_of_round(round_id) == ARM_SWARM
     ]
-    trace_docs = _load_trace_docs(run, swarm_rounds, console)
+    browser_hosts = swarm_browser_hosts(browser_config, swarm_browser, args.swarm_extension)
+    trace_docs = _load_trace_docs(run, swarm_rounds, browser_hosts, console)
     chunk_set = chunk_set_from_traces(trace_docs, swarm_rounds)
     if chunk_set["count"] < MIN_CHUNK_SET:
         raise SwarmReadsError(
@@ -520,7 +601,10 @@ def register(subparsers) -> None:
         help=(
             "Deployment id, which is what names ONE run — staging and dev names "
             "are reused every train. Without it the active row for --name is "
-            "used, falling back to the most recent."
+            "used, falling back to the most recent. It must BE the deployment "
+            "--name names: the id selects the rows, the name selects the "
+            "Elasticsearch indices and the S3 selection, so a mismatch is "
+            "refused rather than read as a composite of two runs."
         ),
     )
     p.add_argument(
@@ -545,7 +629,11 @@ def register(subparsers) -> None:
         help=(
             "The `kind: clients` extension whose rows are the swarm arm: its "
             "native hot-file readers AND its browsers. It runs the EVEN rounds, "
-            "and a recorded `round_parity: odd` on one of its VMs is refused."
+            "and on a NATIVE reader a recorded `round_parity` of `odd` or `all` "
+            "is refused — its GETs would land in the control arm's windows, "
+            "where nothing can separate them. Its browser VMs are also what the "
+            "trace query is narrowed to, so another cohort's reads cannot enter "
+            "the chunk set."
         ),
     )
     p.add_argument(
@@ -554,7 +642,8 @@ def register(subparsers) -> None:
         help=(
             "The extension whose native rows are the control arm — the released "
             "`ant`, with no swarm. It runs the ODD rounds, and a recorded "
-            "`round_parity: even` on one of its VMs is refused."
+            "`round_parity` of `even` or `all` on one of its VMs is refused, "
+            "for the same reason."
         ),
     )
     p.add_argument(
@@ -564,8 +653,9 @@ def register(subparsers) -> None:
         help=(
             "G1: the floor on successes/attempts over the window, for each arm's "
             "native readers and for the swarm arm's browsers (default 0.95). "
-            "All three figures must pass; a cohort that attempted nothing is "
-            "NOT ASSESSED rather than 0%%."
+            "All THREE figures must be there and pass: a cohort that attempted "
+            "nothing is never 0%%, and the gate is NOT ASSESSED rather than "
+            "PASS without its figure. A breach still FAILs."
         ),
     )
     p.add_argument(
@@ -576,7 +666,9 @@ def register(subparsers) -> None:
             "G2: the floor on the share of rows that took at least one record "
             "from a peer, in EVERY swarm round and for natives and browsers "
             "alike (default 0.80). Per round, not over the window: a round "
-            "whose swarm failed to form and recovered has still had an outage."
+            "whose swarm failed to form and recovered has still had an outage. "
+            "A present swarm round missing either share makes the gate NOT "
+            "ASSESSED; a breach anywhere FAILs."
         ),
     )
     p.add_argument(
@@ -586,7 +678,9 @@ def register(subparsers) -> None:
         help=(
             "G3: the ceiling on the median served `get_rpc` for the file over "
             "the swarm rounds divided by the median over the control rounds "
-            "(default 0.80). NOT ASSESSED below two present rounds in either "
+            "(default 0.80). Each arm's rounds are the ones it attempted a "
+            "NATIVE read in — the figure counts what the nodes served to native "
+            "readers — and the gate is NOT ASSESSED below two of them in either "
             "arm, or when the control arm served none."
         ),
     )

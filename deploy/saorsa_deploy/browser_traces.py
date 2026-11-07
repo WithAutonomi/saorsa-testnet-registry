@@ -104,8 +104,18 @@ def trace_query_body(
     *,
     page_size: int = TRACE_PAGE_SIZE,
     search_after: list | None = None,
+    extra_filters: list[dict] | None = None,
 ) -> dict:
     """The search body for one page of a window's ``rpc`` and ``discovery`` records.
+
+    ``extra_filters`` are appended verbatim to the ``bool.filter`` list, for a
+    caller that has to narrow further than a round id. `analysis swarm-reads`
+    does: a deployment can carry two browser cohorts reading in the same rounds,
+    and it must see only the one whose arm it is reporting. Opaque rather than a
+    ``hosts=`` parameter so this module keeps its single dependency on
+    ``es_log_counts`` — the caller already builds host terms with
+    ``analysis.es.host_variants``, which knows that ES upper-cases ``tag.host``.
+    Omitted, every existing caller's query is byte-identical.
 
     **Both operations, not ``rpc`` alone.** ``decided_before_discovery`` asks
     whether the first read that reached a holder was sent before discovery
@@ -129,6 +139,7 @@ def trace_query_body(
                     {"term": {STREAM_FIELD: TRACE_STREAM}},
                     {"terms": {OPERATION_FIELD: [OP_RPC, OP_DISCOVERY]}},
                     {"terms": {f"{TRACE_MEASUREMENT}.round_id": sorted(round_ids)}},
+                    *(extra_filters or []),
                 ]
             }
         },
@@ -175,8 +186,12 @@ def fetch_trace_docs(
     *,
     page_size: int = TRACE_PAGE_SIZE,
     index: str | None = None,
+    extra_filters: list[dict] | None = None,
 ) -> tuple[list[dict], dict]:
     """Every distinct ``rpc``/``discovery`` record for the window, plus counts.
+
+    ``extra_filters`` is passed through to :func:`trace_query_body` for a caller
+    that must narrow further than the round ids; see there.
 
     ``run`` is an :class:`~saorsa_deploy.analysis.es.EsRun`; only ``search`` and
     ``client_index`` are used, so the arithmetic above stays testable with a
@@ -208,7 +223,12 @@ def fetch_trace_docs(
     duplicates = 0
     search_after: list | None = None
     while True:
-        body = trace_query_body(round_ids, page_size=page_size, search_after=search_after)
+        body = trace_query_body(
+            round_ids,
+            page_size=page_size,
+            search_after=search_after,
+            extra_filters=extra_filters,
+        )
         page = run.search(body, target_index)["hits"]["hits"]
         if not page:
             break

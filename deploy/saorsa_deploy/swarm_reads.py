@@ -24,7 +24,7 @@ database, no S3 and no Elasticsearch. The command around it
 (:mod:`saorsa_deploy.analysis.swarm_reads`) does the loading, the rendering and
 the exit code.
 
-Three rules run through all of it:
+Four rules run through all of it:
 
 * **A ``skipped`` row is excluded from every denominator and counted
   separately.** A round that ran before the operator selected a hot file, or one
@@ -35,11 +35,19 @@ Three rules run through all of it:
   the report and excluded from the gates: a round nobody ran is not a round that
   failed, and folding it in as a 0 would drag the arm's medians toward a number
   no reader ever measured.
-* **An off-parity row is counted and excluded, never folded in.** A cohort
-  configured `round_parity: all` runs every round, so its rows land on the other
-  arm's rounds too — and an odd round is the CONTROL's measurement. Including
-  the swarm cohort's reads there would contaminate exactly the baseline the
-  ratio divides by.
+* **The GET medians need more than that: a round only counts when its arm
+  attempted a NATIVE read in it.** The figure is what the nodes served to native
+  readers, and a round whose readers all `skipped` is present — a row per reader
+  — while measuring nothing about it. ``gets_comparable`` is that distinction,
+  and it is what G3's two-round minimum counts, so the gate cannot be assessed
+  on one real round and one empty one.
+* **A NATIVE reader on the other arm's rounds is refused; a BROWSER one is
+  counted and excluded.** An off-parity ROW can be discarded, but an off-parity
+  READ cannot: a ``get_rpc`` document names a chunk, a time and a node and never
+  the cohort that asked, so a native reader running the other arm's rounds puts
+  its GETs inside that arm's window where nothing can separate them, and G3
+  would divide one blend by another. A browser emits no ``get_rpc`` at all, so
+  its off-parity rows are merely reported.
 """
 
 from __future__ import annotations
@@ -61,6 +69,7 @@ from saorsa_deploy.browser_traces import (
     PHASE_FINISH,
 )
 from saorsa_deploy.client_roles import (
+    HOT_FILE_PARITY_ALL,
     HOT_FILE_PARITY_EVEN,
     HOT_FILE_PARITY_ODD,
 )
@@ -171,35 +180,119 @@ def window_round_ids(period_secs: int, window_start: datetime, window_end: datet
     return list(range(first, last))
 
 
-def check_parities(entries, swarm_extension: str, control_extension: str) -> None:
-    """Refuse a cohort whose recorded parity contradicts its arm.
+def _wrong_parity(entry: dict, arm_extension: str, wrong_parity: str) -> str | None:
+    """A refusal line for one entry, or None when its parity is acceptable.
 
-    A swarm host on `odd` or a control host on `even` is not a misconfiguration
-    the report can work around: the arm of a round is its parity, so such a host
-    reads on the rounds the OTHER arm's figures are taken from and every number
-    in the report would describe a blend of the two. Named individually, because
-    a cohort is several VMs and the operator has to know which one to fix.
+    ``all`` is refused on a NATIVE entry alongside the crossed parity, and for a
+    reason the crossed parity only shares: see :func:`check_parities`.
+    """
+    parity = entry.get("round_parity") or HOT_FILE_PARITY_ALL
+    if parity in (wrong_parity, HOT_FILE_PARITY_ALL):
+        return f"{entry.get('hostname')} ({arm_extension}) is round_parity={parity}"
+    return None
 
-    A host on `all` is allowed — it runs both parities, and its off-parity rows
-    are counted and excluded (see the module docstring) rather than silently
-    mixed in.
+
+def check_parities(
+    native_entries, browser_entries, swarm_extension: str, control_extension: str
+) -> list[str]:
+    """Refuse a cohort whose recorded parity contradicts its arm. Returns notes.
+
+    A swarm host on `odd` or a control host on `even` is not a
+    misconfiguration the report can work around: the arm of a round is its
+    parity, so such a host reads on the rounds the OTHER arm's figures are taken
+    from. Named individually, because a cohort is several VMs and the operator
+    has to know which one to fix.
+
+    **`all` is refused too, on a NATIVE reader, and that is not symmetry for its
+    own sake.** An off-parity ROW can be discarded; an off-parity READ cannot.
+    The fleet's `get_rpc` documents carry a chunk address, a time and a host —
+    nothing that says which cohort asked — so a control reader running every
+    round puts its GETs inside the swarm rounds' windows, where they are
+    indistinguishable from the swarm readers' own. G3's numerator would then be
+    the swarm cohort's GETs plus the control cohort's, and the ratio would pass
+    or fail on a blend. The same holds for a swarm reader on the odd rounds.
+    :func:`check_native_round_parity` is the backstop for a deployment whose
+    config was never recorded, since it reads the ROWS rather than the config.
+
+    A BROWSER host on `all` is allowed and noted: a browser emits no `get_rpc`
+    at all (the listener only counts `get_service_count` in its 300 s summary),
+    so its reads cannot reach the GET comparison, and its rows on the other
+    arm's rounds are counted and excluded like any other off-parity row.
     """
     wrong: list[str] = []
-    for entry in entries or []:
+    notes: list[str] = []
+    for entry in native_entries or []:
         extension = entry.get("extension")
-        parity = entry.get("round_parity")
-        if extension == swarm_extension and parity == HOT_FILE_PARITY_ODD:
-            wrong.append(f"{entry.get('hostname')} ({swarm_extension}) is round_parity=odd")
-        elif extension == control_extension and parity == HOT_FILE_PARITY_EVEN:
-            wrong.append(f"{entry.get('hostname')} ({control_extension}) is round_parity=even")
+        if extension == swarm_extension:
+            line = _wrong_parity(entry, swarm_extension, HOT_FILE_PARITY_ODD)
+        elif extension == control_extension:
+            line = _wrong_parity(entry, control_extension, HOT_FILE_PARITY_EVEN)
+        else:
+            continue
+        if line:
+            wrong.append(line)
     if wrong:
         raise SwarmReadsError(
             "the recorded round parities contradict the arms: the swarm arm is "
-            "the EVEN rounds and the control arm the ODD ones, so "
+            "the EVEN rounds and the control arm the ODD ones, and a native "
+            "reader must read ONE arm's rounds only, so "
             + "; ".join(sorted(wrong))
-            + ". The two cohorts' figures would describe a blend of both arms, "
-            "so no report is produced."
+            + ". A `get_rpc` document names a chunk, a time and a node — never "
+            "the cohort that asked — so a reader on the other arm's rounds puts "
+            "its GETs inside that arm's window, where no filter can separate "
+            "them and G3 would divide one blend by another. No report is "
+            "produced."
         )
+    for entry in browser_entries or []:
+        if entry.get("extension") != swarm_extension:
+            continue
+        if (entry.get("round_parity") or HOT_FILE_PARITY_ALL) == HOT_FILE_PARITY_ALL:
+            notes.append(
+                f"{entry.get('hostname')} ({swarm_extension}) is a BROWSER on "
+                f"round_parity=all, so it reads on the control arm's rounds too. "
+                f"Its rows there are counted as off-parity and excluded, and a "
+                f"browser emits no `get_rpc`, so the GET comparison is unaffected."
+            )
+    return notes
+
+
+def check_native_round_parity(swarm_native, control_native) -> None:
+    """Refuse when an arm's NATIVE rows landed on the other arm's rounds.
+
+    The row-level form of the rule :func:`check_parities` enforces on the
+    recorded config, and the one that holds when there is no config to read: a
+    deployment provisioned without ``DATABASE_URL`` records none, and the rows
+    are then the only evidence of what each cohort actually read. The
+    consequence is the same either way — the fleet's GETs for those reads are
+    inside the other arm's round windows and cannot be filtered out — so the
+    report refuses rather than divide a blend by a blend.
+
+    Browser rows are deliberately not checked here: a browser emits no
+    ``get_rpc``, so its off-parity reads are reportable rather than fatal.
+    """
+    offenders: dict[str, set] = {}
+    for rows, arm in ((swarm_native, ARM_SWARM), (control_native, ARM_CONTROL)):
+        for row in rows:
+            round_id = _field(row, "round_id")
+            if round_id is None or arm_of_round(round_id) == arm:
+                continue
+            offenders.setdefault(_field(row, "client_hostname") or "?", set()).add(int(round_id))
+    if not offenders:
+        return
+    named = "; ".join(
+        f"{host} read round(s) {', '.join(str(r) for r in sorted(rounds))}"
+        for host, rounds in sorted(offenders.items())
+    )
+    raise SwarmReadsError(
+        "a native reader read on the other arm's rounds: "
+        + named
+        + ". The fleet's `get_rpc` documents for those reads are inside that "
+        "arm's round windows and name no cohort, so they cannot be separated "
+        "from its own and G3 would compare one blend against another. Give each "
+        "native cohort the parity of its arm (`round_parity: even` for the "
+        "swarm arm, `odd` for the control arm) — never `all`. No report is "
+        "produced."
+    )
 
 
 def _sum(rows, column: str) -> int:
@@ -330,6 +423,16 @@ def summarise_rounds(
     round carries ``missing: True`` and is excluded from the gates. The rows
     belonging to the OTHER arm's cohort are counted in ``off_parity`` and are in
     none of the figures.
+
+    ``gets_comparable`` is the stricter flag the GET medians and G3 use, and it
+    is **not** ``not missing``: the figure it guards is a count of what the NODES
+    served to NATIVE readers, so a round in which this arm attempted no native
+    read measures nothing about it. A control round whose rows are all `skipped`
+    (the hot file was not selected yet) is present and has a row per reader, and
+    its near-zero GET count would otherwise enter the median and count toward
+    G3's two-round minimum — certifying relief from a round where no reader asked
+    the nodes for anything. A swarm round with only browser attempts does the
+    same.
     """
     swarm_native_by_round = _by_round(swarm_native)
     swarm_browser_by_round = _by_round(swarm_browser)
@@ -349,6 +452,7 @@ def summarise_rounds(
                 swarm_browser_by_round.get(round_id, [])
             )
         gets = gets_by_round.get(round_id)
+        native_summary = summarise_cohort(native)
         out.append(
             {
                 "round_id": round_id,
@@ -356,9 +460,10 @@ def summarise_rounds(
                 "arm": arm,
                 "missing": not native and not browser,
                 "hosts": len({_field(r, "client_hostname") for r in (*native, *browser)}),
-                "native": summarise_cohort(native),
+                "native": native_summary,
                 "browser": summarise_cohort(browser, chunk_sources=True),
                 "gets": gets,
+                "gets_comparable": native_summary["attempted"] > 0 and gets is not None,
                 "off_parity_rows": off_parity,
             }
         )
@@ -378,27 +483,44 @@ def summarise_arm(
     rounds of its own parity (the caller does that, so the off-parity rows it
     excluded can be reported rather than quietly dropped).
 
-    The served-GET and duration medians are taken over the arm's PRESENT rounds
-    only, which is the rule the module docstring states: a round nobody ran is
-    not a round that served nothing.
+    **The GET medians are over the arm's COMPARABLE rounds, not its present
+    ones** — the rounds in which it attempted at least one native read and the
+    fleet's GETs could be counted. A round nobody ran is not a round that served
+    nothing, and a round in which nobody read natively is not a round that was
+    relieved of anything: both would drag the median toward a number no reader
+    measured. ``rounds_not_compared`` names the present rounds that are out, so
+    the exclusion is visible rather than an unexplained gap between two counts.
     """
     mine = [r for r in round_summaries if r["arm"] == arm]
     present = [r for r in mine if not r["missing"]]
-    served = [r["gets"]["served"] for r in present if r["gets"] is not None]
-    totals = [r["gets"]["total"] for r in present if r["gets"] is not None]
+    compared = [r for r in mine if r["gets_comparable"]]
+    served = [r["gets"]["served"] for r in compared]
+    totals = [r["gets"]["total"] for r in compared]
     return {
         "arm": arm,
         "parity": ARM_PARITY[arm],
         "rounds": [r["round_id"] for r in mine],
         "rounds_present": [r["round_id"] for r in present],
         "rounds_missing": [r["round_id"] for r in mine if r["missing"]],
+        "rounds_compared": [r["round_id"] for r in compared],
+        "rounds_not_compared": [
+            {
+                "round_id": r["round_id"],
+                "reason": (
+                    "no native read was attempted"
+                    if r["native"]["attempted"] == 0
+                    else "the fleet's GETs could not be counted"
+                ),
+            }
+            for r in present
+            if not r["gets_comparable"]
+        ],
         "native": summarise_cohort(native),
         "browser": summarise_cohort(browser, chunk_sources=True),
         "served_gets_median": percentile([float(v) for v in served], 0.50),
         "total_gets_median": percentile([float(v) for v in totals], 0.50),
         "served_gets_by_round": [
-            {"round_id": r["round_id"], "served": r["gets"]["served"] if r["gets"] else None}
-            for r in present
+            {"round_id": r["round_id"], "served": r["gets"]["served"]} for r in compared
         ],
         # The control arm runs a released binary with no swarm at all, so every
         # swarm counter on its rows is expected to be 0 with `swarm_present`
@@ -522,87 +644,138 @@ def _gate(name: str, status: str, figure: str, threshold: str, detail: str) -> d
 
 
 def _g1(arms: dict, min_completion: float) -> dict:
-    """G1 — completion, three figures, all of which must pass.
+    """G1 — completion: THREE figures, every one of which must be there and pass.
 
     The two arms' native readers and the swarm arm's browsers. A figure over a
-    cohort that attempted nothing is NOT ASSESSED rather than 0%: a deployment
-    with no browser tier has no browser completion, and failing it would be the
-    report inventing a cohort.
+    cohort that attempted nothing is never 0% — that would be the report
+    inventing a cohort's failure — but neither is the gate PASS without it:
+    "three figures, all must pass" is not satisfied by two. A missing figure
+    makes the whole gate **NOT ASSESSED**, naming which cohort never read, so a
+    run with no browser tier reads as a gate nobody could apply rather than as
+    one the run cleared. A real breach still outranks the absence: a FAIL is
+    knowledge, and reporting it as NOT ASSESSED would hide it.
     """
     figures = [
         (f"{ARM_SWARM} native", arms[ARM_SWARM]["native"]["completion"]),
         (f"{ARM_CONTROL} native", arms[ARM_CONTROL]["native"]["completion"]),
         (f"{ARM_SWARM} browser", arms[ARM_SWARM]["browser"]["completion"]),
     ]
-    assessed = [(label, value) for label, value in figures if value is not None]
-    failing = [(label, value) for label, value in assessed if value < min_completion]
+    missing = [label for label, value in figures if value is None]
+    failing = [
+        (label, value) for label, value in figures if value is not None and value < min_completion
+    ]
     rendered = ", ".join(
         f"{label} {'n/a' if value is None else f'{value:.2%}'}" for label, value in figures
     )
-    if not assessed:
+    threshold = f">= {min_completion:.2%} in each of 3"
+    if failing:
+        return _gate(
+            "G1 completion",
+            GATE_FAIL,
+            rendered,
+            threshold,
+            "below the floor: " + ", ".join(f"{label} {value:.2%}" for label, value in failing),
+        )
+    if missing:
         return _gate(
             "G1 completion",
             GATE_NOT_ASSESSED,
             rendered,
-            f">= {min_completion:.2%} in each",
-            "no cohort attempted a read in the window",
+            threshold,
+            f"{len(missing)} of 3 figure(s) could not be assessed — "
+            + ", ".join(missing)
+            + " attempted no read in the window — so the gate the issue defines "
+            "over all three cannot be applied",
         )
     return _gate(
         "G1 completion",
-        GATE_FAIL if failing else GATE_PASS,
+        GATE_PASS,
         rendered,
-        f">= {min_completion:.2%} in each",
-        (
-            "below the floor: " + ", ".join(f"{label} {value:.2%}" for label, value in failing)
-            if failing
-            else f"{len(assessed)} of 3 figure(s) assessed, all at or above the floor"
-        ),
+        threshold,
+        "all 3 figures assessed, all at or above the floor",
     )
 
 
 def _g2(round_summaries: list[dict], min_peer_share: float) -> dict:
-    """G2 — a swarm formed in EVERY swarm round, for natives and for browsers.
+    """G2 — a swarm formed in EVERY swarm round, for natives AND for browsers.
 
     Per round, not over the window: a cohort whose swarm failed to form for one
     round and recovered has still had an outage, and a window-wide share hides
-    it. A round of the swarm parity that is missing, or whose cohort attempted
-    nothing, has no share and is not assessed.
+    it.
+
+    **Both shares are required in every present swarm round.** A round whose
+    native rows are all `skipped`, or which has no browser row at all, yields no
+    share for that cohort — and skipping it would let the gate PASS on the
+    natives alone, which is not the gate the issue defines. Such a round makes
+    the gate **NOT ASSESSED**, naming what was absent. A breach anywhere still
+    outranks the absence and FAILs.
+
+    A MISSING swarm round is excluded rather than counted absent: a round nobody
+    ran is excluded from every gate, which is the rule the whole report applies.
     """
     breaches: list[str] = []
+    absent: list[str] = []
     assessed = 0
+    missing_rounds = 0
     worst: tuple[float, str] | None = None
     for entry in round_summaries:
-        if entry["arm"] != ARM_SWARM or entry["missing"]:
+        if entry["arm"] != ARM_SWARM:
+            continue
+        if entry["missing"]:
+            missing_rounds += 1
             continue
         for kind in ("native", "browser"):
             share = entry[kind]["peer_share"]
+            label = f"round {entry['round_id']} {kind}"
             if share is None:
+                absent.append(label)
                 continue
             assessed += 1
-            label = f"round {entry['round_id']} {kind}"
             if worst is None or share < worst[0]:
                 worst = (share, label)
             if share < min_peer_share:
                 breaches.append(f"{label} {share:.1%}")
-    if not assessed:
+    threshold = f">= {min_peer_share:.1%} of rows with a peer record, every swarm round"
+    missing_note = (
+        f"; {missing_rounds} missing swarm round(s) excluded, as they are from every gate"
+        if missing_rounds
+        else ""
+    )
+    if breaches:
+        return _gate(
+            "G2 swarms form",
+            GATE_FAIL,
+            f"worst {worst[1]} at {worst[0]:.1%}",
+            threshold,
+            f"{assessed} figure(s) assessed; {len(breaches)} below the floor: "
+            + ", ".join(breaches)
+            + missing_note,
+        )
+    if absent or not assessed:
         return _gate(
             "G2 swarms form",
             GATE_NOT_ASSESSED,
-            "no swarm round had an attempted read",
-            f">= {min_peer_share:.1%} of rows with a peer record, every swarm round",
-            "the swarm arm produced no assessable round in the window",
+            (
+                f"worst {worst[1]} at {worst[0]:.1%}"
+                if worst is not None
+                else "no swarm round had an attempted read"
+            ),
+            threshold,
+            (
+                f"{len(absent)} required figure(s) absent — "
+                + ", ".join(absent)
+                + " attempted nothing — so the gate cannot be applied to every "
+                "swarm round" + missing_note
+                if absent
+                else "the swarm arm produced no assessable round in the window" + missing_note
+            ),
         )
     return _gate(
         "G2 swarms form",
-        GATE_FAIL if breaches else GATE_PASS,
+        GATE_PASS,
         f"worst {worst[1]} at {worst[0]:.1%}",
-        f">= {min_peer_share:.1%} of rows with a peer record, every swarm round",
-        (
-            f"{assessed} figure(s) assessed; {len(breaches)} below the floor: "
-            + ", ".join(breaches)
-            if breaches
-            else f"{assessed} figure(s) assessed, all at or above the floor"
-        ),
+        threshold,
+        f"{assessed} figure(s) assessed, all at or above the floor" + missing_note,
     )
 
 
@@ -610,23 +783,37 @@ def _g3(arms: dict, max_get_ratio: float) -> dict:
     """G3 — the nodes are relieved: swarm served GETs ÷ control served GETs.
 
     The whole point of ADR-0026 on the node side, and the one gate that needs
-    both arms. NOT ASSESSED below :data:`MIN_ROUNDS_FOR_RATIO` present rounds on
-    either side, and NOT ASSESSED when the control arm served none: a ratio over
-    a zero denominator is not 0, it is a measurement that did not happen, and
-    reporting it as a pass would be the report certifying relief it never saw.
+    both arms. NOT ASSESSED below :data:`MIN_ROUNDS_FOR_RATIO` **comparable**
+    rounds on either side, and NOT ASSESSED when the control arm served none: a
+    ratio over a zero denominator is not 0, it is a measurement that did not
+    happen, and reporting it as a pass would be the report certifying relief it
+    never saw.
+
+    **Comparable, not present.** A round counts only if this arm attempted a
+    native read in it and the fleet's GETs could be counted — see
+    :func:`summarise_rounds`. A control round whose readers all `skipped`
+    satisfies "present" with a row per reader while measuring nothing about what
+    the nodes served, and counting it toward the minimum would let the gate be
+    assessed on one real round and one empty one.
     """
     swarm, control = arms[ARM_SWARM], arms[ARM_CONTROL]
-    swarm_rounds = len(swarm["rounds_present"])
-    control_rounds = len(control["rounds_present"])
+    swarm_rounds = len(swarm["rounds_compared"])
+    control_rounds = len(control["rounds_compared"])
     threshold = f"<= {max_get_ratio:.2f} x the control arm"
     if swarm_rounds < MIN_ROUNDS_FOR_RATIO or control_rounds < MIN_ROUNDS_FOR_RATIO:
+        excluded = [
+            f"{arm} round {entry['round_id']} ({entry['reason']})"
+            for arm in (ARM_SWARM, ARM_CONTROL)
+            for entry in arms[arm]["rounds_not_compared"]
+        ]
         return _gate(
             "G3 nodes relieved",
             GATE_NOT_ASSESSED,
             f"{swarm_rounds} swarm round(s), {control_rounds} control round(s)",
             threshold,
-            f"needs at least {MIN_ROUNDS_FOR_RATIO} present round(s) in each arm; "
-            "a median of one round is that round",
+            f"needs at least {MIN_ROUNDS_FOR_RATIO} round(s) in each arm in "
+            f"which it attempted a native read; a median of one round is that "
+            f"round" + (("; excluded: " + ", ".join(excluded)) if excluded else ""),
         )
     swarm_median = swarm["served_gets_median"]
     control_median = control["served_gets_median"]
@@ -656,7 +843,8 @@ def _g3(arms: dict, max_get_ratio: float) -> dict:
         f"{ratio:.3f} (swarm {swarm_median:,.1f} / control {control_median:,.1f})",
         threshold,
         f"median served `get_rpc` for the file over {swarm_rounds} swarm and "
-        f"{control_rounds} control round(s)",
+        f"{control_rounds} control round(s), each one a round in which its arm "
+        f"attempted a native read",
     )
 
 
@@ -1044,20 +1232,38 @@ def _render_hot_file_section(report: dict, lines: list[str]) -> None:
             )
     totals = report["totals"]
     lines.append("")
-    lines.append("| arm | rounds | present | missing |")
-    lines.append("| --- | --: | --- | --- |")
+    lines.append("| arm | rounds | present | missing | in the GET comparison |")
+    lines.append("| --- | --: | --- | --- | --- |")
     for arm in (ARM_SWARM, ARM_CONTROL):
         summary = report["arms"][arm]
         lines.append(
             f"| {arm} | {len(summary['rounds'])} | "
-            f"{_ids(summary['rounds_present'])} | {_ids(summary['rounds_missing'])} |"
+            f"{_ids(summary['rounds_present'])} | {_ids(summary['rounds_missing'])} | "
+            f"{_ids(summary['rounds_compared'])} |"
+        )
+    excluded = [
+        f"{arm} round {entry['round_id']} ({entry['reason']})"
+        for arm in (ARM_SWARM, ARM_CONTROL)
+        for entry in report["arms"][arm]["rounds_not_compared"]
+    ]
+    if excluded:
+        lines.append("")
+        lines.append(
+            "A **present** round is one its arm produced a row in; one in the "
+            "**GET comparison** also attempted a native read there and had its "
+            "fleet GETs counted. Only the latter are in the served-GET medians "
+            "and G3, because that figure counts what the nodes served to NATIVE "
+            "readers. Excluded: " + ", ".join(excluded) + "."
         )
     lines.append("")
     lines.append(
         f"{totals['ignored_rows']:,} row(s) ignored (another extension, or no "
         f"extension at all); {totals['off_parity_rows']:,} off-parity row(s) "
-        f"excluded — a cohort configured `round_parity: all` reads on the other "
-        f"arm's rounds too, and those reads are in none of the figures below."
+        f"excluded — a BROWSER cohort on `round_parity: all` reads on the other "
+        f"arm's rounds too, and those reads are in none of the figures below. "
+        f"(A NATIVE reader on the other arm's rounds is refused outright: its "
+        f"`get_rpc` documents land in that arm's window and no filter can "
+        f"separate them.)"
     )
 
 
@@ -1120,7 +1326,9 @@ def _render_arms_section(report: dict, lines: list[str]) -> None:
             )
         lines.append(
             f"* served `get_rpc` median {_num(summary['served_gets_median'])} "
-            f"per round (total {_num(summary['total_gets_median'])})"
+            f"per round (total {_num(summary['total_gets_median'])}), over "
+            f"{len(summary['rounds_compared'])} round(s) in which this arm "
+            f"attempted a native read"
         )
         if not summary["swarm_expected"]:
             lines.append(

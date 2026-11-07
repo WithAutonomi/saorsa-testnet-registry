@@ -55,6 +55,7 @@ from saorsa_deploy.swarm_reads import (
     arm_of_round,
     as_epoch_bounds,
     build_report,
+    check_native_round_parity,
     check_parities,
     chunk_set_from_traces,
     evaluate_gates,
@@ -105,9 +106,26 @@ def _gets() -> dict[int, dict]:
     }
 
 
-def _report(*, window_end: datetime = WINDOW_END, **thresholds) -> dict:
-    native = rounds_in_window(_rows("native-rows.json"), PERIOD, WINDOW_START, window_end)
-    browser = rounds_in_window(_rows("browser-rows.json"), PERIOD, WINDOW_START, window_end)
+def _report_from(
+    *,
+    native=None,
+    browser=None,
+    window_end: datetime = WINDOW_END,
+    **thresholds,
+) -> dict:
+    """The report over the fixture rows, with either list overridden.
+
+    The overrides are how the cases a passing fixture cannot reach are built —
+    a cohort whose rows are all `skipped`, a round with no native row — stated
+    as the one edit each makes to the fixture rather than as a second fixture
+    whose every other figure would then also have to be worked out.
+    """
+    native = rounds_in_window(
+        _rows("native-rows.json") if native is None else native, PERIOD, WINDOW_START, window_end
+    )
+    browser = rounds_in_window(
+        _rows("browser-rows.json") if browser is None else browser, PERIOD, WINDOW_START, window_end
+    )
     swarm_native = [r for r in native if r["extension"] == "swarm"]
     swarm_browser = [r for r in browser if r["extension"] == "swarm"]
     control_native = [r for r in native if r["extension"] == "control"]
@@ -138,6 +156,10 @@ def _report(*, window_end: datetime = WINDOW_END, **thresholds) -> dict:
         window_end=window_end,
         **{**PASS_THRESHOLDS, **thresholds},
     )
+
+
+def _report(**kwargs) -> dict:
+    return _report_from(**kwargs)
 
 
 @pytest.fixture
@@ -191,9 +213,9 @@ def test_totals_count_what_was_read_and_what_was_ignored(report):
     assert report["totals"] == {
         "rounds": 6,
         "rounds_missing": 2,
-        # 8 in-arm rows plus the one off-parity row.
-        "swarm_native_rows": 9,
-        "swarm_browser_rows": 4,
+        "swarm_native_rows": 8,
+        # 4 in-arm rows plus the one off-parity BROWSER row.
+        "swarm_browser_rows": 5,
         "control_native_rows": 8,
         # Two `other` native rows, one with no extension, one `other` browser.
         "ignored_rows": 4,
@@ -229,19 +251,23 @@ def test_the_missing_rounds_zero_gets_are_out_of_the_medians(report):
     assert report["arms"][ARM_CONTROL]["total_gets_median"] == 525.0
 
 
-def test_an_off_parity_row_is_counted_and_excluded(report):
-    """A `round_parity: all` cohort reads on the other arm's rounds too.
+def test_an_off_parity_browser_row_is_counted_and_excluded(report):
+    """A BROWSER cohort on `round_parity: all` reads the other arm's rounds too.
 
     Those reads are the other arm's measurement, so they are in neither arm's
     figures — but a reader has to know they happened, or the control arm's
-    numbers read as a cohort that was alone when it was not.
+    numbers read as a cohort that was alone when it was not. A browser is the
+    only role for which this is legal at all: it emits no `get_rpc`, so its
+    off-parity read cannot reach the GET comparison — see the native refusals
+    below.
     """
     assert _round(report, R0 + 1)["off_parity_rows"] == 1
     assert sum(r["off_parity_rows"] for r in report["rounds"]) == 1
     # The control round's own figures are the control cohort's four readers.
     assert _round(report, R0 + 1)["native"]["attempted"] == 4
     assert _round(report, R0 + 1)["native"]["rows_with_peers"] == 0
-    # And the swarm arm's summary is its 8 even-round rows, not 9.
+    # And the swarm arm's browser summary is its 4 even-round rows, not 5.
+    assert report["arms"][ARM_SWARM]["browser"]["rows"] == 4
     assert report["arms"][ARM_SWARM]["native"]["attempted"] == 8
 
 
@@ -675,6 +701,62 @@ def test_g3_is_not_assessed_with_one_control_round():
     assert report["verdict"] == GATE_PASS
 
 
+def test_a_round_with_no_attempted_native_read_is_out_of_the_get_comparison():
+    """`present` is not enough for the GET medians: the figure is a NATIVE one.
+
+    The control readers all record `skipped` in round R0+3 — the hot file was
+    not selected for them yet — so the round has a row per reader and measures
+    nothing about what the nodes served. Its 440 served GETs are background, and
+    counting them would put a round nobody read in natively into the median AND
+    toward G3's two-round minimum.
+    """
+    native = _rows("native-rows.json")
+    for row in native:
+        if row["extension"] == "control" and row["round_id"] == R0 + 3:
+            row["status"] = "skipped"
+            row["error_kind"] = "no_hot_files"
+            row["total_ms"] = None
+    report = _report_from(native=native)
+    entry = _round(report, R0 + 3)
+    # Present — the rows are there — but not comparable.
+    assert entry["missing"] is False
+    assert entry["gets_comparable"] is False
+    assert entry["gets"]["served"] == 440
+    arm = report["arms"][ARM_CONTROL]
+    assert arm["rounds_present"] == [R0 + 1, R0 + 3]
+    assert arm["rounds_compared"] == [R0 + 1]
+    assert arm["rounds_not_compared"] == [
+        {"round_id": R0 + 3, "reason": "no native read was attempted"}
+    ]
+    # One comparable round, so the ratio is not a comparison at all.
+    assert arm["served_gets_median"] == 400.0
+    gate = _gate(report, "G3")
+    assert gate["status"] == GATE_NOT_ASSESSED
+    assert gate["figure"] == "2 swarm round(s), 1 control round(s)"
+    assert f"control round {R0 + 3} (no native read was attempted)" in gate["detail"]
+    assert "A **present** round is one its arm produced a row in" in render_markdown(report)
+
+
+def test_a_swarm_round_with_only_browser_attempts_is_out_of_the_comparison():
+    """The same rule from the other side: browsers emit no `get_rpc`.
+
+    A swarm round in which only the browsers read is present and has a GET count
+    that belongs to whatever else the fleet was doing, so it cannot stand in for
+    a round the swarm's native readers took part in.
+    """
+    native = [
+        row
+        for row in _rows("native-rows.json")
+        if not (row["extension"] == "swarm" and row["round_id"] == R0 + 2)
+    ]
+    report = _report_from(native=native)
+    entry = _round(report, R0 + 2)
+    assert entry["missing"] is False  # the browser row is still there
+    assert entry["gets_comparable"] is False
+    assert report["arms"][ARM_SWARM]["rounds_compared"] == [R0]
+    assert _gate(report, "G3")["status"] == GATE_NOT_ASSESSED
+
+
 def test_g3_is_not_assessed_when_the_control_arm_served_nothing():
     """A ratio over a zero denominator is a measurement that did not happen.
 
@@ -722,23 +804,113 @@ def test_g1_and_g2_are_not_assessed_when_nothing_was_attempted():
     assert verdict_of(gates) == GATE_PASS
 
 
+def test_g1_is_not_assessed_rather_than_passed_with_no_browser_cohort():
+    """ "Three figures, all must pass" is not satisfied by two.
+
+    With successful native rows in both arms and no browser row at all, dropping
+    the browser figure and reporting PASS would certify a gate the run never
+    supplied the third of. NOT ASSESSED says so, and still does not fail the
+    command.
+    """
+    report = _report_from(browser=[])
+    assert report["arms"][ARM_SWARM]["browser"]["completion"] is None
+    gate = _gate(report, "G1")
+    assert gate["status"] == GATE_NOT_ASSESSED
+    assert gate["figure"] == ("swarm native 87.50%, control native 87.50%, swarm browser n/a")
+    assert "1 of 3 figure(s) could not be assessed — swarm browser" in gate["detail"]
+    assert report["verdict"] == GATE_PASS
+
+
+def test_g1_fails_rather_than_not_assessed_when_a_present_figure_breaches():
+    """A FAIL is knowledge; reporting it as NOT ASSESSED would hide it."""
+    report = _report_from(browser=[], min_completion=0.95)
+    gate = _gate(report, "G1")
+    assert gate["status"] == GATE_FAIL
+    assert report["verdict"] == GATE_FAIL
+
+
+def test_g2_is_not_assessed_when_a_swarm_round_has_no_browser_share():
+    """Both shares are required in every present swarm round.
+
+    Round R0+2's single browser row is dropped here, so that round yields a
+    native share and no browser one — and passing on the natives alone is not
+    the gate the issue defines.
+    """
+    browser = [
+        row
+        for row in _rows("browser-rows.json")
+        if not (row["extension"] == "swarm" and row["round_id"] == R0 + 2)
+    ]
+    report = _report_from(browser=browser)
+    gate = _gate(report, "G2")
+    assert gate["status"] == GATE_NOT_ASSESSED
+    assert f"round {R0 + 2} browser" in gate["detail"]
+    assert "attempted nothing" in gate["detail"]
+    assert report["verdict"] == GATE_PASS
+
+
+def test_g2_is_not_assessed_when_a_swarm_rounds_natives_all_skipped():
+    """The same from the native side: a `skipped` row yields no share."""
+    native = _rows("native-rows.json")
+    for row in native:
+        if row["extension"] == "swarm" and row["round_id"] == R0:
+            row["status"] = "skipped"
+            row["error_kind"] = "no_hot_files"
+    report = _report_from(native=native)
+    gate = _gate(report, "G2")
+    assert gate["status"] == GATE_NOT_ASSESSED
+    assert f"round {R0} native" in gate["detail"]
+
+
+def test_g2_fails_rather_than_not_assessed_when_a_present_share_breaches():
+    """A breach anywhere outranks an absent figure elsewhere."""
+    browser = [
+        row
+        for row in _rows("browser-rows.json")
+        if not (row["extension"] == "swarm" and row["round_id"] == R0 + 2)
+    ]
+    report = _report_from(browser=browser, min_peer_share=0.80)
+    gate = _gate(report, "G2")
+    assert gate["status"] == GATE_FAIL
+    assert f"round {R0 + 2} native 75.0%" in gate["detail"]
+    assert report["verdict"] == GATE_FAIL
+
+
+def test_a_missing_swarm_round_does_not_make_g2_not_assessed(report):
+    """A round nobody ran is excluded from every gate, as everywhere else.
+
+    The fixture's R0+4 is such a round; it is reported in the detail so the
+    exclusion is visible, but it does not stand in for a missing figure.
+    """
+    gate = _gate(report, "G2")
+    assert gate["status"] == GATE_PASS
+    assert "1 missing swarm round(s) excluded" in gate["detail"]
+
+
 def _thresholds():
     return {"min_completion": 0.95, "min_peer_share": 0.80, "max_get_ratio": 0.80}
 
 
-def _arm(*, served, rounds, p50):
-    """An arm summary with only the fields the gates read."""
+def _arm(*, served, rounds, p50, completion=None):
+    """An arm summary with only the fields the gates read.
+
+    ``rounds`` is the COMPARABLE rounds — the ones in which the arm attempted a
+    native read and its GETs could be counted — because that is the list G3
+    counts, not the present ones.
+    """
     cohort = {
-        "completion": None if p50 is None else 1.0,
+        "completion": completion if completion is not None else (None if p50 is None else 1.0),
         "p50_ms": p50,
         "peer_share": None,
         "rows": 0,
     }
     return {
         "rounds_present": rounds,
+        "rounds_compared": rounds,
+        "rounds_not_compared": [],
         "served_gets_median": served,
         "native": cohort,
-        "browser": dict(cohort, completion=None),
+        "browser": dict(cohort),
     }
 
 
@@ -747,21 +919,31 @@ def _arm(*, served, rounds, p50):
 # ---------------------------------------------------------------------------
 
 
-def test_a_swarm_host_on_odd_parity_is_refused_by_name():
+def _native_config(**parities):
+    """The recorded native config with the named hosts' parities overridden."""
+    entries = _json("hot-file-config.json")
+    for entry in entries:
+        for fragment, parity in parities.items():
+            if fragment in entry["hostname"]:
+                entry["round_parity"] = parity
+    return entries
+
+
+def test_a_swarm_native_host_on_odd_parity_is_refused_by_name():
     entries = _json("hot-file-config.json")
     entries[1]["round_parity"] = "odd"
     with pytest.raises(SwarmReadsError) as e:
-        check_parities(entries, "swarm", "control")
+        check_parities(entries, [], "swarm", "control")
     assert "DEV-03-swarm-ant-client-hot-file-read-nyc3-1 (swarm) is round_parity=odd" in str(
         e.value
     )
 
 
-def test_a_control_host_on_even_parity_is_refused_by_name():
+def test_a_control_native_host_on_even_parity_is_refused_by_name():
     entries = _json("hot-file-config.json")
     entries[2]["round_parity"] = "even"
     with pytest.raises(SwarmReadsError) as e:
-        check_parities(entries, "swarm", "control")
+        check_parities(entries, [], "swarm", "control")
     assert "DEV-03-control-ant-client-hot-file-read-lon1-1 (control) is round_parity=even" in str(
         e.value
     )
@@ -772,16 +954,81 @@ def test_every_wrong_parity_is_named_in_one_refusal():
     entries[0]["round_parity"] = "odd"
     entries[3]["round_parity"] = "even"
     with pytest.raises(SwarmReadsError) as e:
-        check_parities(entries, "swarm", "control")
+        check_parities(entries, [], "swarm", "control")
     assert str(e.value).count("round_parity=") == 2
 
 
-def test_parity_all_is_allowed_because_its_rows_are_excluded():
-    entries = _json("hot-file-config.json")
-    for entry in entries:
-        entry["round_parity"] = "all"
-    check_parities(entries, "swarm", "control")
-    check_parities(_json("hot-file-config.json"), "swarm", "control")
+def test_a_native_reader_on_parity_all_is_refused():
+    """`all` is refused on a native reader, and for a reason `odd`/`even` share.
+
+    An off-parity ROW can be discarded; an off-parity READ cannot. A `get_rpc`
+    document names a chunk, a time and a node — never the cohort that asked — so
+    a control reader running every round puts its GETs inside the swarm rounds'
+    windows, where nothing separates them from the swarm readers' own and G3
+    divides one blend by another.
+    """
+    for fragment, arm in (("swarm-ant-client", "swarm"), ("control-ant-client", "control")):
+        with pytest.raises(SwarmReadsError) as e:
+            check_parities(_native_config(**{fragment: "all"}), [], "swarm", "control")
+        assert f"({arm}) is round_parity=all" in str(e.value)
+        assert "never the cohort that asked" in str(e.value)
+
+
+def test_a_browser_on_parity_all_is_allowed_and_noted():
+    """A browser emits no `get_rpc`, so its off-parity read reaches no gate."""
+    browser_config = _json("browser-config.json")
+    browser_config[0]["round_parity"] = "all"
+    notes = check_parities(_json("hot-file-config.json"), browser_config, "swarm", "control")
+    assert len(notes) == 1
+    assert "is a BROWSER on round_parity=all" in notes[0]
+    assert "the GET comparison is unaffected" in notes[0]
+
+
+def test_the_fixtures_own_parities_are_accepted_with_no_note():
+    assert (
+        check_parities(
+            _json("hot-file-config.json"), _json("browser-config.json"), "swarm", "control"
+        )
+        == []
+    )
+
+
+def test_a_native_row_on_the_other_arms_round_is_refused_naming_it():
+    """The row-level backstop, for a deployment whose config was never recorded.
+
+    The rows are then the only evidence of what each cohort actually read, and
+    the consequence is identical: the fleet's GETs for those reads sit inside the
+    other arm's round windows.
+    """
+    swarm_native = [
+        {"round_id": R0, "client_hostname": "sw-1"},
+        {"round_id": R0 + 1, "client_hostname": "sw-1"},
+        {"round_id": R0 + 3, "client_hostname": "sw-2"},
+    ]
+    control = [{"round_id": R0 + 1, "client_hostname": "ct-1"}]
+    with pytest.raises(SwarmReadsError) as e:
+        check_native_round_parity(swarm_native, control)
+    message = str(e.value)
+    assert f"sw-1 read round(s) {R0 + 1}" in message
+    assert f"sw-2 read round(s) {R0 + 3}" in message
+    assert "never `all`" in message
+
+
+def test_a_control_native_row_on_a_swarm_round_is_refused_too():
+    with pytest.raises(SwarmReadsError) as e:
+        check_native_round_parity(
+            [{"round_id": R0, "client_hostname": "sw-1"}],
+            [{"round_id": R0 + 2, "client_hostname": "ct-1"}],
+        )
+    assert f"ct-1 read round(s) {R0 + 2}" in str(e.value)
+
+
+def test_the_fixtures_own_native_rows_are_all_on_their_arms_rounds():
+    native = rounds_in_window(_rows("native-rows.json"), PERIOD, WINDOW_START, WINDOW_END)
+    check_native_round_parity(
+        [r for r in native if r["extension"] == "swarm"],
+        [r for r in native if r["extension"] == "control"],
+    )
 
 
 def test_the_reported_counters_are_real_columns_on_both_records():
@@ -909,6 +1156,7 @@ class _FakeEs:
         self.error = error
         self.get_error = get_error
         self.get_queries = []
+        self.trace_host_terms = []
 
     def client_index(self):
         return "telegraf-ant-clients-dev-03*"
@@ -944,10 +1192,17 @@ class _FakeEs:
         }
         wanted_rounds = set(terms["browser_trace.round_id"])
         wanted_ops = set(terms["tag.operation.keyword"])
+        # The host filter is honoured rather than ignored: it is what keeps
+        # another browser cohort's targets out of the chunk set, so a fake that
+        # served every document would pass whether or not the query carried it.
+        wanted_hosts = terms.get("tag.host.keyword")
+        self.trace_host_terms.append(wanted_hosts)
         hits = []
         for doc in self.docs:
             trace, tags = doc["browser_trace"], doc["tag"]
             if trace["round_id"] not in wanted_rounds or tags["operation"] not in wanted_ops:
+                continue
+            if wanted_hosts is not None and tags["host"] not in wanted_hosts:
                 continue
             hits.append(
                 {
@@ -1039,6 +1294,96 @@ def test_the_command_exits_two_on_a_parity_that_contradicts_its_arm():
     deploy_args["hot_file_readers"][0]["round_parity"] = "odd"
     code, _ = _run(_args(), repo=_Repo(deploy_args=deploy_args))
     assert code == EXIT_ERROR
+
+
+def test_the_command_exits_two_on_a_native_reader_configured_parity_all():
+    deploy_args = _deploy_args()
+    deploy_args["hot_file_readers"][2]["round_parity"] = "all"
+    code, _ = _run(_args(), repo=_Repo(deploy_args=deploy_args))
+    assert code == EXIT_ERROR
+
+
+def test_the_command_exits_two_on_a_native_row_in_the_other_arms_round():
+    """The backstop, exercised through the command with no config to read.
+
+    `deploy_args` carries no role config here, so the parity check has nothing
+    to look at — and the rows are then the evidence. One control row moved onto
+    a swarm round is enough.
+    """
+    deploy_args = _deploy_args()
+    deploy_args["hot_file_readers"] = []
+    deploy_args["browser_downloaders"] = []
+    native = _rows("native-rows.json")
+    for row in native:
+        if row["extension"] == "control" and row["round_id"] == R0 + 1 and row["instance"] == 1:
+            row["round_id"] = R0
+            break
+    code, _ = _run(_args(), repo=_Repo(native=native, deploy_args=deploy_args))
+    assert code == EXIT_ERROR
+
+
+def test_the_command_tolerates_a_browser_cohort_on_parity_all():
+    """It is noted, not refused: a browser emits no `get_rpc`."""
+    deploy_args = _deploy_args()
+    deploy_args["browser_downloaders"][0]["round_parity"] = "all"
+    code, _ = _run(_args(), repo=_Repo(deploy_args=deploy_args))
+    assert code == 0
+
+
+def test_the_trace_query_names_the_swarm_cohorts_own_browser_vms(tmp_path):
+    """Another browser cohort in the same rounds must not reach the chunk set.
+
+    Its rows are ignored by extension, but its TRACE would otherwise put its
+    targets into the hot file's record set — and that set is the filter the
+    fleet's GETs are counted through, which is G3's input.
+    """
+    docs = _json("trace-docs.json")
+    foreign = json.loads(json.dumps(docs[0]))
+    foreign["tag"]["host"] = "DEV-03-OTHER-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1"
+    foreign["browser_trace"]["target"] = "chunk-foreign"
+    foreign["browser_trace"]["seq"] = 99
+    payload = tmp_path / "report.json"
+    code, fake = _run(_args(json_out=str(payload)), docs=[*docs, foreign])
+    assert code == 0
+    assert fake.trace_host_terms[0] == [
+        "DEV-03-swarm-ant-client-browser-download-lon1-1",
+        "DEV-03-SWARM-ANT-CLIENT-BROWSER-DOWNLOAD-LON1-1",
+        "dev-03-swarm-ant-client-browser-download-lon1-1",
+    ]
+    document = json.loads(payload.read_text())
+    assert "chunk-foreign" not in document["chunk_set"]["chunks"]
+    assert document["chunk_set"]["count"] == 4
+
+
+def test_the_command_exits_two_when_the_swarm_cohort_has_no_browser_vm():
+    """The chunk set is the swarm cohort's browsers' own reading of the file.
+
+    Without them there is nothing to take it from, and another cohort's traces
+    are deliberately not used in their place — so there is no report rather than
+    one whose GET filter came from somewhere else.
+    """
+    deploy_args = _deploy_args()
+    deploy_args["browser_downloaders"] = []
+    code, _ = _run(_args(), repo=_Repo(browser=[], deploy_args=deploy_args))
+    assert code == EXIT_ERROR
+
+
+def test_the_command_exits_two_when_id_and_name_disagree():
+    """The id selects the rows; the name selects Elasticsearch and S3.
+
+    With an id for one deployment and a name for another, the report would read
+    one run's rows against another's traces and node GETs — and with data in the
+    window on both, every figure would be a composite and the verdict would look
+    ordinary.
+    """
+    code, _ = _run(_args(name="DEV-09"))
+    assert code == EXIT_ERROR
+
+
+def test_a_name_differing_only_in_case_is_accepted():
+    """The index is lower-cased from the name; the registry holds its own case."""
+    code, _ = _run(_args(name="dev-03"))
+    assert code == 0
 
 
 def test_the_command_exits_two_when_the_cohorts_recorded_different_periods():
