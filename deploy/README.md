@@ -1515,7 +1515,16 @@ have to be configurable in one vocabulary.
   4 instances with a 2 s stagger starts one instance every two seconds for thirty
   seconds. An extension's `client_index` values CONTINUE from whatever the
   deployment already uses, so a second cohort of four VMs is indexes 5..8 and its
-  last instance starts far later than a first cohort's would.
+  last instance starts far later than a first cohort's would — **which is why an
+  offset at or past `download_timeout_secs` is refused before the sleep**, as it
+  is on the native reader. Such a start can never run, and sleeping to it anyway
+  launches Chromium inside the NEXT round, which on a parity-split deployment is
+  the other cohort's: the contamination would land in the measurement rather
+  than in the wasted instance's own point. That instance records a `failure` /
+  `timeout` naming the offset and the deadline, and the others are untouched.
+  The budget is re-checked against the clock after the sleep for the same
+  reason, since a legal offset can still land past the deadline when the harness
+  was started late or a previous round overran.
 - **`seed_until_secs`** keeps a page that SUCCEEDED open, its client connected,
   so it goes on serving the instances that started later in the stagger. Without
   it the page closes the moment its own download ends and a staggered cohort
@@ -1527,6 +1536,18 @@ have to be configurable in one vocabulary.
   instance needs. Both are checked in the manifest schema, in the spec parser and
   again in the harness's own config, because only the last of those sees what
   actually reached the VM.
+
+**The download deadline is an absolute instant and the seed window does not
+extend it.** The page is given `boundary + download_timeout_secs` as a
+wall-clock instant and enforces it across the module import, `connect()` AND the
+transfer; only the post-success seed wait is allowed past it, and the harness's
+outer backstop moves out to the seed deadline so a seeding page is not abandoned.
+As a DURATION — which is what it was — the page started counting at the download
+race, so every second spent importing the bundle or connecting was a second the
+download got for free: with a 300 s budget, a 100 s connect let a 250 s download
+report success at 350 s. A connect that never resolves therefore fails on the
+download budget rather than consuming the seed window, and `total_ms` spans the
+same stretch the deadline does.
 
 `started_late_ms` is measured from the instance's **scheduled** start, not from
 the boundary: a staggered instance is not late for starting when it was told to.
@@ -1820,6 +1841,16 @@ flag on a round whose instances started more than 10 s apart), **3 per region**,
 **4 per chunk**, **5 stalls**, **6 refusals**, **7 bootstrap load** and **8
 gates**. `skipped` rows are excluded from every denominator and listed
 separately.
+
+**§2's expectation is per round, from each VM's recorded `round_parity`.** A
+round of a parity-split deployment is run by one of its cohorts, so the
+cohort-wide instance count is not what any single round should have produced:
+summing a 4-instance `even` cohort and a 4-instance `odd` one applied 8 to every
+round and reported 4 missing points for each complete one. A config entry with
+no recorded parity owns every round — which is both the pre-1.17.0 behaviour and
+the truth about it — so a report over an older deployment's rows computes exactly
+what it did before. The document's top-level `instances_expected` remains the
+cohort-wide total, because eight instances ARE configured.
 
 **§4 is the verdict on the hot-read spreading change, and it counts the holder
 that SERVED each read.** Two definitions carry the whole section:

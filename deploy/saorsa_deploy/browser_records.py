@@ -36,6 +36,8 @@ from saorsa_deploy.client_roles import (
     BROWSER_DEFAULT_START_STAGGER_SECS,
     ROLE_BROWSER_DOWNLOAD,
     ROUND_PARITY_ALL,
+    ROUND_PARITY_EVEN,
+    ROUND_PARITY_ODD,
     is_browser,
 )
 
@@ -334,12 +336,21 @@ def round_period_from_config(entries: list[dict]) -> int | None:
 
 
 def expected_instances(entries: list[dict]) -> int | None:
-    """How many points one round should produce, or None when unknown.
+    """How many instances the COHORT runs, or None when unknown.
 
     The sum of each VM's `instances`, which is what the harness launches per
-    round. None when no config was recorded, and the report then compares
-    nothing rather than comparing against a zero.
+    round of its own parity. None when no config was recorded, and the report
+    then compares nothing rather than comparing against a zero.
+
+    **Not the per-round expectation on a parity-split deployment** — see
+    :func:`expected_instances_for_round`, which is what the report's per-round
+    comparison uses. This remains the cohort-wide figure the document's
+    top-level `instances_expected` reports.
     """
+    return _sum_instances(entries)
+
+
+def _sum_instances(entries: list[dict]) -> int | None:
     if not entries:
         return None
     total = 0
@@ -349,3 +360,42 @@ def expected_instances(entries: list[dict]) -> int | None:
         except (TypeError, ValueError):
             continue
     return total or None
+
+
+def entry_owns_round(entry: dict, round_id: int) -> bool:
+    """Whether the VM this entry describes runs the given round.
+
+    An entry with **no recorded parity owns every round**, which is both the
+    pre-INFRA-532 behaviour and the truth about it: every browser VM before the
+    key existed ran every round. So a report over an older deployment's rows
+    computes exactly what it did before.
+    """
+    parity = entry.get("round_parity") or ROUND_PARITY_ALL
+    if parity == ROUND_PARITY_EVEN:
+        return round_id % 2 == 0
+    if parity == ROUND_PARITY_ODD:
+        return abs(round_id % 2) == 1
+    return True
+
+
+def expected_instances_for_round(entries: list[dict], round_id: int) -> int | None:
+    """How many points THIS round should produce, or None when unknown.
+
+    The sum over the VMs whose recorded parity owns the round, because a round
+    is only ever run by one of a parity-split deployment's cohorts. Summing both
+    made every healthy round of a 4-instance `even` cohort beside a 4-instance
+    `odd` one report four instances against an expectation of eight — the report
+    inventing four missing points for a schedule the tool supports and the
+    operator asked for.
+
+    Returns None when no config was recorded (as :func:`expected_instances`
+    does) **and 0 is returned as 0**, not as None: a round owned by no
+    configured VM is a round that should have produced nothing, which is a
+    different statement from "nobody knows what it should have produced".
+    """
+    if not entries:
+        return None
+    owning = [e for e in entries if entry_owns_round(e, round_id)]
+    if not owning:
+        return 0
+    return _sum_instances(owning)

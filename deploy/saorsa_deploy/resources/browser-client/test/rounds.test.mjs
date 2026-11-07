@@ -16,6 +16,7 @@ import {
   isOurRound,
   nextBoundaryAfter,
   roundIdAt,
+  startOffsetExhausted,
 } from "../lib/rounds.mjs";
 
 test("the round id is the epoch divided by the period, floored", () => {
@@ -108,4 +109,44 @@ test("the offset formula is the native reader's", () => {
   assert.equal(instanceOffsetSecs(2, 3, 4, 2), 12);
   assert.equal(instanceOffsetSecs(3, 2, 4, 5), 45);
   assert.equal(instanceOffsetSecs(0, 0, 4, 5), 0);
+});
+
+test("a start at or past the round deadline is refused, not slept to", () => {
+  // The reviewer's case (INFRA-532 review round 1): client_index 8, 4 instances,
+  // a 30 s stagger and a 300 s deadline put the four offsets at 840, 870, 900
+  // and 930 s. Sleeping to those launches Chromium inside the NEXT round, which
+  // on a parity-split deployment is the other cohort's — so the contamination
+  // lands in the measurement rather than in this instance's own point.
+  for (const instance of [1, 2, 3, 4]) {
+    const offset = instanceOffsetSecs(8, instance, 4, 30);
+    assert.ok(offset >= 840);
+    assert.equal(startOffsetExhausted(offset, 300), true);
+  }
+});
+
+test("a start inside the deadline is reachable", () => {
+  assert.equal(startOffsetExhausted(0, 300), false);
+  assert.equal(startOffsetExhausted(299, 300), false);
+  // AT the deadline is already too late: the deadline is an absolute offset
+  // from the boundary, not a duration each instance gets.
+  assert.equal(startOffsetExhausted(300, 300), true);
+  assert.equal(startOffsetExhausted(301, 300), true);
+});
+
+test("the predicate is the native reader's rule", () => {
+  // `offset >= download_timeout_secs` in `resources/scripts/hot_file_reader.py`,
+  // and the Python suite pins the two together.
+  assert.equal(startOffsetExhausted(instanceOffsetSecs(1, 1, 4, 2), 300), false);
+  // 150 s, which is inside a 300 s deadline and past a 120 s one.
+  assert.equal(startOffsetExhausted(instanceOffsetSecs(4, 4, 4, 10), 300), false);
+  assert.equal(startOffsetExhausted(instanceOffsetSecs(4, 4, 4, 10), 120), true);
+  assert.equal(startOffsetExhausted(instanceOffsetSecs(8, 4, 4, 10), 300), true);
+});
+
+test("no deadline at all is not an exhausted start", () => {
+  // Unreachable through the config (a non-positive deadline is refused), but
+  // the predicate must not read 0 as "everything is too late" and silence the
+  // whole cohort.
+  assert.equal(startOffsetExhausted(10, 0), false);
+  assert.equal(startOffsetExhausted(10, undefined), false);
 });

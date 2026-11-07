@@ -82,9 +82,11 @@ def _report(
     min_completion: float = 0.99,
     max_holder_share: float = 0.25,
     max_refused: int = 0,
+    expected_for_round=None,
 ) -> dict:
     rows = rounds_in_window(_rows(name), PERIOD, WINDOW_START, window_end)
     return build_report(
+        expected_for_round=expected_for_round,
         deployment="DEV-03",
         deployment_id=701,
         rows=rows,
@@ -1084,3 +1086,71 @@ def test_a_document_missing_its_place_in_the_download_is_counted_not_guessed():
         "peer": "",
         "detail": "",
     }
+
+
+# ---------------------------------------------------------------------------
+# review round 1: the per-round expectation respects the recorded parity
+# ---------------------------------------------------------------------------
+
+
+def test_a_parity_split_cohort_is_not_expected_in_every_round():
+    """Two four-instance cohorts, one `even` and one `odd`: each healthy round
+    emits exactly four points on purpose. Summing both configurations and
+    applying eight to every round made the report invent four missing points for
+    a schedule the tool supports and the operator asked for."""
+    from saorsa_deploy.browser_records import (
+        expected_instances,
+        expected_instances_for_round,
+    )
+
+    config = [
+        {"hostname": "h1", "instances": 4, "round_parity": "even", "round_period_secs": PERIOD},
+        {"hostname": "h2", "instances": 4, "round_parity": "odd", "round_period_secs": PERIOD},
+    ]
+    # The cohort-wide total is unchanged and is still the document's top-level
+    # figure: eight instances ARE configured.
+    assert expected_instances(config) == 8
+    report = _report(
+        "spread-rows.json",
+        traces="spread-trace-docs.json",
+        expected_instances=expected_instances(config),
+        expected_for_round=lambda r: expected_instances_for_round(config, r),
+    )
+    assert report["instances_expected"] == 8
+    for entry in report["rounds"]:
+        assert entry["instances_expected"] == 4, entry["round_id"]
+    # The fixture's rounds carry eight reporting instances each (both cohorts in
+    # one fixture), so this is the arithmetic rather than the fixture agreeing
+    # by accident: four expected against eight reporting is -4 missing, where
+    # the defect reported +4 for a complete round.
+    assert {e["instances_missing"] for e in report["rounds"]} == {-4}
+
+
+def test_a_round_owned_by_no_configured_vm_expects_nothing():
+    """0, not None: a round no cohort owns should have produced nothing, which
+    is a different statement from "nobody knows what it should have produced"."""
+    from saorsa_deploy.browser_records import expected_instances_for_round
+
+    config = [{"hostname": "h1", "instances": 4, "round_parity": "even"}]
+    assert expected_instances_for_round(config, 10) == 4
+    assert expected_instances_for_round(config, 11) == 0
+    # None stays reserved for "no config was recorded at all".
+    assert expected_instances_for_round([], 10) is None
+
+
+def test_a_config_with_no_recorded_parity_expects_the_cohort_in_every_round():
+    """Every browser VM before INFRA-532 ran every round, and its recorded
+    config says nothing about parity — so the report over an older deployment's
+    rows computes exactly what it did before."""
+    from saorsa_deploy.browser_records import expected_instances_for_round
+
+    config = [{"hostname": "h1", "instances": 4}, {"hostname": "h2", "instances": 4}]
+    assert expected_instances_for_round(config, 10) == 8
+    assert expected_instances_for_round(config, 11) == 8
+
+
+def test_the_per_round_expectation_is_the_cohort_total_without_a_resolver(spread):
+    """Omitting the resolver keeps the pre-INFRA-532 behaviour, which is what
+    every caller that does not know about parity gets."""
+    for entry in spread["rounds"]:
+        assert entry["instances_expected"] == 8

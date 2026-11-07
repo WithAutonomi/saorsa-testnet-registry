@@ -28,7 +28,14 @@ export const PAGE_HTML =
  *   network.
  * * The deadline is enforced in the page with `Promise.race`, so a client that
  *   hangs inside WASM still yields a result (and its trace so far) instead of
- *   the harness having to kill the browser and lose both.
+ *   the harness having to kill the browser and lose both. **It is an absolute
+ *   instant (`deadlineAtMs`), and it covers the module import, `connect()` and
+ *   the download alike.** As a duration it was counted from the moment the
+ *   download race began, so every second spent importing or connecting was a
+ *   second the download got for free: with a 300 s budget, a 100 s connect let a
+ *   250 s download report success at 350 s. `total_ms` therefore spans the same
+ *   stretch the deadline does — page script to download complete — which is
+ *   also the closest thing here to what a browser user waits.
  * * The byte length is compared against what the manifest declared. A short
  *   read that resolved successfully is a correctness finding, not a slow
  *   download, and nothing else would notice it.
@@ -64,7 +71,7 @@ export async function downloadInPage({
   address,
   expectedBytes,
   seeds,
-  timeoutMs,
+  deadlineAtMs,
   seedUntilMs,
 }) {
   // Declared inside, not imported: Playwright serialises this function's own
@@ -101,16 +108,20 @@ export async function downloadInPage({
     }
   };
 
-  const mod = await import(`${bundleUrl}/pkg/ant_core.js`);
-  await mod.default();
+  // The round's download budget as a wall-clock INSTANT, and it covers
+  // everything up to the download resolving: the module import, `connect()` and
+  // the transfer. It used to be a duration whose timer the page started only
+  // once the download race began, so every second spent importing the bundle or
+  // connecting was a second the download got for free — a 100 s connect inside
+  // a 300 s budget bought a 350 s download a `success`. Armed afresh at each
+  // stage, so the total is bounded by this instant however the time is spent.
+  const deadlineAt = deadlineAtMs;
+  const untilDeadline = () =>
+    new Promise((_resolve, reject) => {
+      setTimeout(() => reject(new Error("harness deadline")), Math.max(deadlineAt - Date.now(), 0));
+    });
 
   let traceHook = true;
-  if (typeof mod.setBrowserTrace === "function") {
-    mod.setBrowserTrace(push);
-  } else {
-    traceHook = false;
-  }
-
   const startedAt = Date.now();
   let client;
   let connectMs = 0;
@@ -156,20 +167,39 @@ export async function downloadInPage({
     seededMs,
   });
   try {
+    // The import is INSIDE the try and inside the deadline, so a bundle that
+    // will not load reports a `failure` with its message rather than throwing
+    // out of `page.evaluate` and losing the trace, and a module fetch that hangs
+    // spends the round's budget rather than the whole backstop.
+    const mod = await Promise.race([
+      (async () => {
+        const loaded = await import(`${bundleUrl}/pkg/ant_core.js`);
+        await loaded.default();
+        return loaded;
+      })(),
+      untilDeadline(),
+    ]);
+    // Installed BEFORE the client is constructed, so the bootstrap dials — the
+    // ones the stall and refusal counts are read off — are in the trace.
+    if (typeof mod.setBrowserTrace === "function") {
+      mod.setBrowserTrace(push);
+    } else {
+      traceHook = false;
+    }
+
     const connectStart = performance.now();
     client = new mod.BrowserNetworkClient(seeds);
-    await client.connect();
+    // Raced too: a connect that never resolves must spend the DOWNLOAD budget
+    // and fail, not sit there consuming the seed window the backstop now allows.
+    await Promise.race([client.connect(), untilDeadline()]);
     connectMs = performance.now() - connectStart;
 
-    const deadline = new Promise((_resolve, reject) => {
-      setTimeout(() => reject(new Error("harness deadline")), timeoutMs);
-    });
     // `undefined` for the second argument (concurrency), so the client's own
     // default governs it, exactly as INFRA-493 left the Node WASM CLI; the
     // third is the progress callback this role exists to read.
     const result = await Promise.race([
       client.downloadPublicFile(address, undefined, onProgress),
-      deadline,
+      untilDeadline(),
     ]);
     // Taken HERE, not at the return: a seeding page returns minutes after its
     // download finished, and a `totalMs` that included the wait would put the

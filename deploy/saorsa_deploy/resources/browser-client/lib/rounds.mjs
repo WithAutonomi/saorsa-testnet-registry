@@ -93,3 +93,24 @@ export function instanceOffsetSecs(clientIndex, instance, instances, stagger) {
   if (!stagger || stagger <= 0) return 0;
   return ((Math.max(clientIndex, 1) - 1) * instances + (Math.max(instance, 1) - 1)) * stagger;
 }
+
+/**
+ * Whether this instance's start is at or past its own round deadline.
+ *
+ * The deadline is an absolute offset from the BOUNDARY, so a stagger long
+ * enough to push an instance's start to or beyond it is a start that can never
+ * run — and the harness must refuse it BEFORE sleeping to it. Sleeping anyway
+ * does not merely waste the instance: it launches Chromium inside the next
+ * round, which on a parity-split deployment is the other cohort's, so the
+ * contamination lands in the measurement. `runRound` awaits every instance, so
+ * the main loop also stops observing boundaries for as long as the longest
+ * sleep.
+ *
+ * The same rule `hot_file_reader.py` applies to a native reader (`offset >=
+ * download_timeout_secs`), and it is a pure predicate here so `node --test` can
+ * exercise it without a browser.
+ */
+export function startOffsetExhausted(offsetSecs, downloadTimeoutSecs) {
+  if (!downloadTimeoutSecs || downloadTimeoutSecs <= 0) return false;
+  return (offsetSecs || 0) >= downloadTimeoutSecs;
+}

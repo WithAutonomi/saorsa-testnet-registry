@@ -1277,3 +1277,150 @@ class TestRecordedRoleConfig:
         # Deliberately absent: this document outlives the VM, and an address
         # that has been reassigned is worse than none.
         assert "ip" not in entry
+
+
+# --------------------------------------------------------------------------- #
+# review round 1: resuming a deployment recorded before the schedule existed
+# --------------------------------------------------------------------------- #
+class TestLegacyStateStillMatches:
+    """A browser VM recorded by 1.16.0 carries no `round_parity`,
+    `start_stagger_secs` or `seed_until_secs`. Parsing the identical default
+    spec under this release produces `all` / 0 / 0, so the two sides of
+    `_client_specs_match` have to be normalised the same way — otherwise
+    `clients infra` tells the operator to destroy clients whose layout and
+    schedule have not changed at all, which is the resume path of every existing
+    browser deployment.
+    """
+
+    def _legacy(self):
+        """A recorded spec as 1.16.0 wrote it: the schedule keys absent."""
+        spec = dict(parse_browser_downloader_spec("digital_ocean:lon1"))
+        for key in ("round_parity", "start_stagger_secs", "seed_until_secs"):
+            spec.pop(key)
+        return spec
+
+    def test_legacy_browser_state_matches_a_default_request(self):
+        from saorsa_deploy.cmd.infra_clients import _client_specs_match
+
+        requested = parse_browser_downloader_spec("digital_ocean:lon1")
+        assert _client_specs_match([self._legacy()], [requested])
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "digital_ocean:lon1:round_parity=even",
+            "digital_ocean:lon1:start_stagger_secs=2",
+            "digital_ocean:lon1:download_timeout_secs=420:seed_until_secs=480",
+        ],
+    )
+    def test_a_real_schedule_change_still_mismatches(self, spec):
+        # Normalising absence must not normalise away a CHANGE: that is what the
+        # fields are in the signature for.
+        from saorsa_deploy.cmd.infra_clients import _client_specs_match
+
+        assert not _client_specs_match([self._legacy()], [parse_browser_downloader_spec(spec)])
+
+    def test_an_absent_parity_and_an_explicit_all_sign_the_same(self):
+        from saorsa_deploy.cmd.infra_clients import _spec_signature
+
+        assert _spec_signature(self._legacy()) == _spec_signature(
+            parse_browser_downloader_spec("digital_ocean:lon1:round_parity=all")
+        )
+
+
+# --------------------------------------------------------------------------- #
+# review round 1: an instance whose start is past its own round deadline
+# --------------------------------------------------------------------------- #
+class TestExhaustedStartOffsets:
+    """A stagger long enough to push an instance's start to or past the round's
+    deadline is a start that can never run, and sleeping to it anyway launches
+    Chromium inside the NEXT round — the other cohort's, on a parity-split
+    deployment. The native reader refuses it before the sleep
+    (`hot_file_reader.py`); the harness now does the same.
+
+    The predicate is pinned here against the native reader's, and the ORDER is
+    pinned in the harness source: `node --test` cannot import `harness.mjs`
+    (it imports Playwright, which is not installed in CI), and the guard being
+    after the sleep is exactly the defect.
+    """
+
+    def test_the_reviewer_s_offsets_are_all_past_the_deadline(self):
+        # client_index 8, 4 instances, 30s stagger, 300s deadline -> 840, 870,
+        # 900, 930.
+        from saorsa_deploy.orchestrator.clients import reader_offset_secs
+
+        offsets = [reader_offset_secs(8, i, 4, 30) for i in (1, 2, 3, 4)]
+        assert offsets == [840, 870, 900, 930]
+        assert all(o >= 300 for o in offsets)
+
+    def test_the_harness_refuses_an_exhausted_offset_before_sleeping(self):
+        harness = (HARNESS_DIR / "harness.mjs").read_text()
+        guard = harness.index("startOffsetExhausted(offsetSecs")
+        sleep = harness.index("const waitMs =")
+        launch = harness.index("chromium.launch")
+        assert guard < sleep < launch, "the guard must precede both the sleep and the launch"
+
+    def test_the_harness_rechecks_the_budget_after_the_sleep(self):
+        # A legal offset can still land past the deadline when the harness was
+        # started late, a previous round overran or the VM was paused, and
+        # launching Chromium then spends ~10s of the next round for a download
+        # that cannot be recorded against this one.
+        harness = (HARNESS_DIR / "harness.mjs").read_text()
+        recheck = harness.index("Date.now() >= deadlineAt")
+        launch = harness.index("chromium.launch")
+        assert harness.index("const waitMs =") < recheck < launch
+
+    def test_the_predicate_is_the_native_reader_s_rule(self):
+        # One rule, two implementations that cannot be shared (the reader is
+        # copied verbatim onto a VM and the harness runs under Node), so the
+        # values are pinned together.
+        import re
+
+        rounds = (HARNESS_DIR / "lib" / "rounds.mjs").read_text()
+        assert "export function startOffsetExhausted" in rounds
+        reader = (
+            Path(__file__).resolve().parents[1]
+            / "saorsa_deploy"
+            / "resources"
+            / "scripts"
+            / "hot_file_reader.py"
+        ).read_text()
+        assert re.search(r"if offset >= cfg\.download_timeout_secs:", reader)
+
+
+# --------------------------------------------------------------------------- #
+# review round 1: the download deadline is an absolute instant
+# --------------------------------------------------------------------------- #
+class TestAbsoluteDownloadDeadline:
+    """`timeoutMs` was a DURATION the page started counting at the download
+    race, so the module import and `connect()` were free: with a 300s budget, a
+    100s connect let a 250s download report success at 350s. The outer backstop
+    had been failing those by accident, and moving it out to the seed deadline
+    (so a seeding page is not abandoned) removed the accident.
+
+    The behaviour itself is exercised against the real page function in
+    `test/page-deadline.test.mjs`, which `test_browser_client_source.py` runs.
+    """
+
+    def test_the_page_takes_an_absolute_deadline(self):
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        assert "deadlineAtMs" in page
+        assert "timeoutMs" not in page, "a duration would reintroduce the drift"
+
+    def test_the_harness_passes_the_boundary_based_instant(self):
+        harness = (HARNESS_DIR / "harness.mjs").read_text()
+        assert "deadlineAtMs: deadlineAt" in harness
+        assert "round.boundary * 1000 + config.downloadTimeoutSecs * 1000" in harness
+
+    def test_the_import_and_the_connect_are_both_raced(self):
+        # A connect that never resolves must spend the DOWNLOAD budget and fail,
+        # not sit there consuming the seed window the backstop now allows.
+        page = (HARNESS_DIR / "lib" / "page.mjs").read_text()
+        assert page.count("untilDeadline()") >= 3
+        assert "client.connect(), untilDeadline()" in page
+
+    def test_only_the_seed_wait_may_outlive_the_deadline(self):
+        harness = (HARNESS_DIR / "harness.mjs").read_text()
+        # The backstop covers the later of the two instants, so a seeding page
+        # is not abandoned; the page's own deadline is what bounds the download.
+        assert "Math.max(deadlineAt, seedUntilMs)" in harness

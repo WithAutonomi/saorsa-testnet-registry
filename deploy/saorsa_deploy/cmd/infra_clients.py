@@ -824,14 +824,21 @@ def _spec_signature(spec: dict) -> tuple:
         # Round-schedule knobs, shared by the hot-file reader and the browser
         # downloader and in the signature for the same reason: changing the
         # parity or the stagger must be a spec MISMATCH, not a silent reuse of
-        # VMs still running the old schedule. `None` on every other role.
-        spec.get("round_parity"),
-        spec.get("start_stagger_secs"),
-        # `or 0` for this one, as `transfer_interval_secs` above: 0 IS the
-        # default and "the key is absent" means exactly the same thing (no
-        # seeding), so without it a browser VM recorded before INFRA-532 would
-        # MISMATCH a request taking the default and a resumed run would refuse
-        # to reuse VMs running precisely what was asked for.
+        # VMs still running the old schedule.
+        #
+        # **All three are NORMALISED to their defaults, not read raw**, and that
+        # is what keeps an unchanged deployment resumable across the release
+        # that added them. A browser VM recorded by 1.16.0 carries none of the
+        # three; parsing the identical default spec under 1.17.0 produces
+        # `("all", 0, 0)`. Read raw, the recorded side signs `(None, None, 0)`,
+        # `_client_specs_match` is False and `clients infra` tells the operator
+        # to destroy clients whose layout and schedule have not changed at all.
+        # A real change still mismatches, because "even" is not "all" and 2 is
+        # not 0 — which is the whole point of the fields being here. (A role
+        # that has no schedule signs the defaults on both sides, so its
+        # signature is as stable as it was.)
+        spec.get("round_parity") or ROUND_PARITY_ALL,
+        spec.get("start_stagger_secs") or 0,
         spec.get("seed_until_secs") or 0,
     )
 

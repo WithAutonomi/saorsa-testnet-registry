@@ -1924,7 +1924,14 @@ clients` extension too, which is the normal way to use it.
   in time, which is what makes a swarm form at all; the offset is
   `((client_index − 1) × instances + (instance − 1)) × stagger`, so the cohort
   spaces itself out with no coordinator, and an extension's indexes CONTINUE
-  from the deployment's. `seed_until_secs` (default 0) holds a page whose
+  from the deployment's — which is why an offset at or past
+  `download_timeout_secs` is **refused before the sleep**, as on the native
+  reader: such a start can never run, and sleeping to it anyway launches
+  Chromium inside the NEXT round, which on a parity-split deployment is the
+  OTHER cohort's, so the contamination lands in the measurement rather than in
+  the wasted instance's own point (`runRound` awaits every instance, so the main
+  loop also stops seeing boundaries for the length of the longest sleep). The
+  budget is re-checked against the clock after the sleep too. `seed_until_secs` (default 0) holds a page whose
   download **SUCCEEDED** open, client connected, until `boundary +
   seed_until_secs`, so it goes on serving the instances that started later; a
   failure or a short read closes at once. Bounded `download_timeout_secs ≤
@@ -1932,6 +1939,31 @@ clients` extension too, which is the normal way to use it.
   `lib/config.mjs` — the last being the only one that sees what reached the VM:
   below the deadline a page is shut while still downloading, above the gap it
   holds a WebRTC session the next round's instance needs.
+- **The download deadline is an absolute INSTANT, and the seed window does not
+  extend it.** The page is given `boundary + download_timeout_secs` and enforces
+  it across the module import, `connect()` and the transfer alike; only the
+  post-success seed wait is allowed past it, which is what makes it safe for the
+  harness's outer backstop to move out to the seed deadline (and a seeding page
+  therefore not to be abandoned). As a DURATION the page started counting at the
+  download race, so the import and the connect were free: with a 300 s budget a
+  100 s connect let a 250 s download report **success at 350 s**, and the only
+  thing failing those was the outer backstop, by accident. A connect that never
+  resolves now fails on the download budget instead of consuming the seed
+  window, and `total_ms` spans the same stretch the deadline does.
+- **The report's per-round expectation comes from each VM's recorded parity**, not
+  from the cohort-wide instance sum: a parity-split round is run by ONE cohort,
+  so summing a 4-instance `even` cohort and a 4-instance `odd` one applied 8 to
+  every round and invented 4 missing points for each complete one. An entry with
+  no recorded parity owns every round, so an older deployment's report is
+  unchanged. The document's top-level `instances_expected` stays the cohort
+  total.
+- **The three schedule fields are NORMALISED in `_spec_signature`, not read
+  raw.** A browser VM recorded before 1.17.0 carries none of them while a
+  default request now parses to `("all", 0, 0)`, so reading them raw made
+  `_client_specs_match` false and `clients infra` told the operator to destroy
+  clients whose layout and schedule had not changed — the resume path of every
+  existing browser deployment. A real change still mismatches, which is what the
+  fields are in the signature for.
 - **`start_ns` is the instance's SCHEDULED start, so the boundary is
   `start_ns − start_offset_ms`.** `started_late_ms` is measured from that
   scheduled start — a staggered instance is not late for starting when it was

@@ -505,6 +505,7 @@ def build_report(
     min_completion: float,
     max_holder_share: float,
     max_refused: int,
+    expected_for_round=None,
 ) -> dict:
     """The whole report as one JSON-ready document.
 
@@ -513,14 +514,34 @@ def build_report(
     ``trace_docs``, which are the normalised Elasticsearch trace records for
     those rounds (see :mod:`saorsa_deploy.browser_traces`) and are the sole
     input to the per-chunk section and G3.
+
+    ``expected_instances`` is the COHORT's configured instance count and stays
+    the document's top-level figure. ``expected_for_round`` is an optional
+    ``round_id -> int | None`` resolver for the PER-ROUND expectation, which on
+    a parity-split deployment is not the same number
+    (:func:`browser_records.expected_instances_for_round` is what the command
+    passes). Omitting it keeps the cohort total on every round, which is what
+    this did before INFRA-532 and what a deployment with no recorded parity
+    still gets.
     """
     round_summaries = summarise_rounds(rows, period_secs)
     for entry in round_summaries:
-        entry["instances_expected"] = expected_instances
+        # Per round, through the caller's resolver when it supplied one: on a
+        # parity-split deployment a round is run by ONE of the cohorts, so the
+        # cohort-wide total is not what the round should have produced. Summing
+        # both made every healthy round of a 4-instance `even` cohort beside a
+        # 4-instance `odd` one report 4 against an expectation of 8, which is
+        # the report inventing four missing points for a supported schedule.
+        #
+        # Without a resolver (and for every VM whose config records no parity,
+        # which is every one before INFRA-532) this is the cohort total, exactly
+        # as it was.
+        per_round = (
+            expected_for_round(entry["round_id"]) if expected_for_round else expected_instances
+        )
+        entry["instances_expected"] = per_round
         entry["instances_missing"] = (
-            expected_instances - entry["instances_reporting"]
-            if expected_instances is not None
-            else None
+            per_round - entry["instances_reporting"] if per_round is not None else None
         )
     chunk_report = summarise_chunks(trace_docs, rows, min_first_reads=MIN_FIRST_READS_FOR_GATE)
     chunk_summaries = chunk_report["chunks"]

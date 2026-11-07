@@ -37,6 +37,7 @@ import {
   isOurRound,
   nextBoundaryAfter,
   roundIdAt,
+  startOffsetExhausted,
 } from "./lib/rounds.mjs";
 import { startBundleServer } from "./lib/server.mjs";
 import { swarmFields } from "./lib/swarm.mjs";
@@ -101,6 +102,34 @@ function baseResult(round, instance) {
 /** One instance's download for one round. Always emits exactly one point. */
 async function runInstance(round, instance, bundleUrl) {
   const offsetSecs = offsetSecsFor(instance);
+  const deadlineAt = round.boundary * 1000 + config.downloadTimeoutSecs * 1000;
+
+  // An IMPOSSIBLE start is refused BEFORE the sleep, not after it — the rule
+  // `hot_file_reader.py` applies, and for the same two reasons. A stagger long
+  // enough to put an instance's start at or past its own round deadline is a
+  // start that can never run; and sleeping to it anyway does not merely waste
+  // the instance, it launches Chromium inside the NEXT round — which on a
+  // parity-split deployment is the OTHER cohort's, so the contamination lands
+  // in the measurement rather than in this instance's own point. `runRound`
+  // awaits `Promise.all`, so the main loop stops observing boundaries for as
+  // long as the longest sleep, too.
+  //
+  // A long stagger is deliberately allowed (nothing refuses it at
+  // configuration time), so the answer is to record THIS instance's timeout and
+  // leave the others alone. The arithmetic is deterministic, so it fires on the
+  // first round and costs no clock read.
+  if (startOffsetExhausted(offsetSecs, config.downloadTimeoutSecs)) {
+    await emit({
+      ...baseResult(round, instance),
+      status: "failure",
+      errorKind: "timeout",
+      errorText:
+        `start offset ${offsetSecs}s is at or past the ` +
+        `${config.downloadTimeoutSecs}s deadline`,
+    });
+    return;
+  }
+
   // Slept BEFORE the browser is launched, so a staggered instance costs nothing
   // until its turn. The `running` guard is already held by the caller, which is
   // what keeps a long stagger from overlapping the next round for this instance.
@@ -108,6 +137,24 @@ async function runInstance(round, instance, bundleUrl) {
   if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
 
   const result = baseResult(round, instance);
+
+  // The budget checked AGAIN after the sleep, against the clock rather than
+  // against the arithmetic: the offset may be legal and the round still be over
+  // because the harness was started late, a previous round overran, or the VM
+  // was paused. Launching Chromium then spends ~10 s of the next round for a
+  // download that cannot be recorded against this one.
+  if (Date.now() >= deadlineAt) {
+    await emit({
+      ...result,
+      status: "failure",
+      errorKind: "timeout",
+      errorText:
+        `the ${config.downloadTimeoutSecs}s round budget was already spent ` +
+        `${Math.round((Date.now() - deadlineAt) / 1000)}s ago when this ` +
+        "instance's turn came; no browser was launched",
+    });
+    return;
+  }
 
   if (!round.file) {
     // No selection yet. Recorded rather than failed, and no browser launched:
@@ -128,15 +175,18 @@ async function runInstance(round, instance, bundleUrl) {
     page.on("console", (msg) => log.log(`page[${instance}]: ${msg.text()}`));
     await page.goto(bundleUrl, { waitUntil: "load" });
 
-    // The deadline is measured from the round BOUNDARY, not from now: it is a
-    // round's budget, and an instance that started late has already spent part
-    // of it. A round whose budget is gone before the browser is up still emits
-    // its point, which is what makes a missing point a real finding.
-    const deadlineAt = round.boundary * 1000 + config.downloadTimeoutSecs * 1000;
-    const timeoutMs = Math.max(deadlineAt - Date.now(), 1000);
-    // Absolute, because the page has to hold itself open to a wall-clock
-    // instant the whole cohort agrees on rather than for a duration of its own.
-    // 0 is "do not seed", which is what the page tests.
+    // Absolute, both of them, because the page has to answer to wall-clock
+    // instants the whole cohort agrees on rather than to durations of its own.
+    //
+    // **`deadlineAtMs` is the download budget and it is not negotiable.** It
+    // was a DURATION computed here, which the page then started counting from
+    // the moment its race began — after the module import and after
+    // `connect()`. So a 100 s connect inside a 300 s budget bought the download
+    // 300 s more, and the only thing that had been failing those late downloads
+    // was the outer backstop; moving that out to the seed deadline let a 350 s
+    // download report success against a 300 s deadline. The page now enforces
+    // the instant across the import, the connect AND the download, and the seed
+    // wait is the one thing allowed past it.
     const seedUntilMs =
       config.seedUntilSecs > 0 ? round.boundary * 1000 + config.seedUntilSecs * 1000 : 0;
     // Two deadlines, and the inner one is meant to win. The in-page race (see
@@ -152,12 +202,16 @@ async function runInstance(round, instance, bundleUrl) {
     // With seeding on, the backstop moves out to the seed deadline: the page is
     // MEANT to sit there after its download, and a backstop still measured from
     // the download deadline would abandon every seeding page — losing its trace,
-    // its swarm counters and the whole point of holding it open.
-    // Never below the in-page deadline plus the grace, which is what it was
-    // before seeding existed and what a round whose budget is already gone gets.
+    // its swarm counters and the whole point of holding it open. That extension
+    // is safe only because the page's own deadline is now absolute: it buys the
+    // SEED wait more time, never the download.
+    //
+    // Never below the grace period itself, so a round whose budget is already
+    // spent still gets the page a moment to answer rather than being abandoned
+    // before it starts.
     const backstopMs = Math.max(
       Math.max(deadlineAt, seedUntilMs) - Date.now() + PAGE_GRACE_MS,
-      timeoutMs + PAGE_GRACE_MS,
+      PAGE_GRACE_MS,
     );
     const outcome = await Promise.race([
       page.evaluate(downloadInPage, {
@@ -165,7 +219,7 @@ async function runInstance(round, instance, bundleUrl) {
         address: round.file.address,
         expectedBytes: round.file.bytes || 0,
         seeds: config.seeds,
-        timeoutMs,
+        deadlineAtMs: deadlineAt,
         seedUntilMs,
       }),
       new Promise((resolve) =>
