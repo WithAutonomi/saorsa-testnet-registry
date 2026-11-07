@@ -227,7 +227,9 @@ def recorded_hot_files(deploy_args: dict | None) -> dict | None:
     return document
 
 
-def snapshot_hot_files(deployment: str, console=None) -> dict | None:
+def snapshot_hot_files(
+    deployment: str, deploy_args: dict | None = None, console=None
+) -> dict | None:
     """Copy the hot-file selection from S3 into ``deploy_args``.
 
     **The selection does not survive the deployment.** It lives at
@@ -237,12 +239,25 @@ def snapshot_hot_files(deployment: str, console=None) -> dict | None:
     which file each round read. So it is snapshotted beside the role config, in
     the same pass that records the rows it describes.
 
-    Best-effort, and deliberately only ever ADDITIVE: a selection that has
-    already gone (or an S3 error) leaves whatever was recorded earlier in place,
-    because a snapshot taken while the cohort was running is the answer and
-    there is no later chance to take one.
+    **It MERGES rather than replaces** (`hot_files.merge_hot_file_selection`),
+    which is what preserves the entries a `clients select-hot-files --replace`
+    superseded. This writer used to replace the key outright, and
+    `record-results` runs it before the hot-file reader pass -- so on a
+    deployment running both cohorts the native pass read only the replacement
+    and had nothing left to carry forward, and every earlier row's selection
+    metadata was lost at teardown. ``deploy_args`` is what it merges against;
+    without it the behaviour is the old replace, which is why the caller passes
+    the deployment's own.
+
+    Best-effort: a selection that has already gone (or an S3 error) leaves
+    whatever was recorded earlier in place, because a snapshot taken while the
+    cohort was running is the answer and there is no later chance to take one.
     """
-    from saorsa_deploy.hot_files import load_hot_files
+    from saorsa_deploy.hot_files import (
+        SUPERSEDED_FILES_KEY,
+        load_hot_files,
+        merge_hot_file_selection,
+    )
     from saorsa_deploy.registry import record_deploy_args_update
 
     try:
@@ -257,14 +272,21 @@ def snapshot_hot_files(deployment: str, console=None) -> dict | None:
         return None
     if not document or not isinstance(document.get("files"), list):
         return None
-    record_deploy_args_update(deployment, {BROWSER_HOT_FILES_KEY: document})
+    recorded = recorded_hot_files(deploy_args)
+    merged = merge_hot_file_selection(recorded, document)
+    if merged == recorded:
+        return recorded
+    record_deploy_args_update(deployment, {BROWSER_HOT_FILES_KEY: merged})
     if console is not None:
+        superseded = len(merged.get(SUPERSEDED_FILES_KEY) or [])
+        carried = f", carrying {superseded} superseded file(s)" if superseded else ""
+        verb = "Updated" if recorded is not None else "Snapshotted"
         console.print(
-            f"  Snapshotted the hot-file selection "
-            f"({len(document['files'])} file(s)) into "
+            f"  {verb} the hot-file selection "
+            f"({len(merged['files'])} file(s){carried}) into "
             f"deploy_args.{BROWSER_HOT_FILES_KEY}"
         )
-    return document
+    return merged
 
 
 def round_period_from_config(entries: list[dict]) -> int | None:

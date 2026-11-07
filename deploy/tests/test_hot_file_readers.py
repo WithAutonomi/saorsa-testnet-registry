@@ -2071,7 +2071,7 @@ class TestHotFileRoundSummary:
 
         # round 10 x a 600 s period.
         (row,) = summarise_hot_file_rounds(
-            [_summary_point(start_ns=6_000_000_000_000)], {None: 600}
+            [_summary_point(start_ns=6_000_000_000_000)], lambda extension, secs: 600
         )
         assert row["boundary"] == datetime.fromtimestamp(6000, tz=timezone.utc)
 
@@ -2097,7 +2097,10 @@ class TestHotFileRoundSummary:
             )
 
         expected = datetime.fromtimestamp(boundary, tz=timezone.utc)
-        periods = {"control": period}
+
+        def periods(extension, start_secs):
+            return period if extension == "control" else None
+
         # Indexes from 5, four instances, 2 s stagger: offsets 32, 34, 36, 38.
         (row,) = summarise_hot_file_rounds(
             [_reader(32, 1), _reader(34, 2), _reader(36, 3), _reader(38, 4)], periods
@@ -2134,7 +2137,7 @@ class TestHotFileRoundSummary:
 
         # client_index 2, four instances, stagger 7200 -> offsets 28800, 36000.
         (row,) = summarise_hot_file_rounds(
-            [_reader(28800, 1), _reader(36000, 2)], {"control": period}
+            [_reader(28800, 1), _reader(36000, 2)], lambda extension, secs: period
         )
         assert row["boundary"] == datetime.fromtimestamp(boundary, tz=timezone.utc)
 
@@ -2145,7 +2148,8 @@ class TestHotFileRoundSummary:
 
         (row,) = summarise_hot_file_rounds([_summary_point()])
         assert row["boundary"] is None
-        (row,) = summarise_hot_file_rounds([_summary_point()], {"other": 600})
+        # A resolver that cannot settle this cohort's period says so.
+        (row,) = summarise_hot_file_rounds([_summary_point()], lambda extension, secs: None)
         assert row["boundary"] is None
 
     def test_the_period_is_resolved_per_cohort_and_disagreement_is_unknown(self):
@@ -2186,6 +2190,7 @@ class TestHotFileRoundSummary:
                 "success": ok,
                 "failure": fail,
                 "skipped": 0,
+                "attempted": ok + fail,
                 "readers": ok + fail,
                 "readers_with_peer_records": peer_fed,
                 "records_from_peers": peer_fed * 10,
@@ -2214,6 +2219,7 @@ class TestHotFileRoundSummary:
                     "success": 1,
                     "failure": 0,
                     "skipped": 0,
+                    "attempted": 1,
                     "readers": 1,
                     "readers_with_peer_records": 1,
                     "records_from_peers": 1,
@@ -2236,6 +2242,7 @@ class TestHotFileRoundSummary:
                 "success": ok,
                 "failure": fail,
                 "skipped": 0,
+                "attempted": ok + fail,
                 "readers": ok + fail,
                 "readers_with_peer_records": peer_fed,
                 "records_from_peers": peer_fed * 10,
@@ -2405,6 +2412,65 @@ class TestHotFileRoundSummary:
         assert "not split by cohort" in text
         assert "hot-file reader rounds" in text
 
+    def test_skips_are_out_of_the_peer_fed_denominator(self):
+        """`readers` counted skips, so the rate described reads nobody made.
+
+        Nine `no_hot_files` skips followed by one peer-fed success reported
+        "1/10 = 10.0%" when the only read ATTEMPTED was peer-fed. Skips are
+        excluded from every denominator here, as they are from the completion
+        rate.
+        """
+        from saorsa_deploy.cmd.print_file_ops import summarise_hot_file_rounds
+
+        rows = [
+            _summary_point(instance=i, status="skipped", error_kind="no_hot_files", total_ms=None)
+            for i in range(1, 10)
+        ]
+        rows.append(_summary_point(instance=10, records_from_peers=7, bytes_from_peers=70))
+        (row,) = summarise_hot_file_rounds(rows)
+        assert row["readers"] == 10
+        assert row["skipped"] == 9
+        assert row["attempted"] == 1
+        assert row["readers_with_peer_records"] == 1
+
+    def test_the_rendered_peer_fed_rate_excludes_skips(self):
+        from rich.console import Console
+
+        from saorsa_deploy.cmd.print_file_ops import (
+            _print_hot_file_summary,
+            summarise_hot_file_rounds,
+        )
+
+        rows = [
+            _summary_point(instance=i, status="skipped", error_kind="no_hot_files", total_ms=None)
+            for i in range(1, 10)
+        ]
+        rows.append(_summary_point(instance=10, records_from_peers=7, bytes_from_peers=70))
+        console = Console(record=True, width=220)
+        _print_hot_file_summary(summarise_hot_file_rounds(rows), "DEV-03", console)
+        text = console.export_text()
+        assert "1/1 = 100.0%" in text
+        assert "1/10" not in text
+
+    def test_a_round_with_nothing_attempted_has_no_peer_fed_rate(self):
+        # Undefined rather than 0%: a cohort that only skipped has no rate.
+        from rich.console import Console
+
+        from saorsa_deploy.cmd.print_file_ops import (
+            _print_hot_file_summary,
+            summarise_hot_file_rounds,
+        )
+
+        rows = [
+            _summary_point(instance=i, status="skipped", error_kind="no_hot_files", total_ms=None)
+            for i in range(1, 5)
+        ]
+        rounds = summarise_hot_file_rounds(rows)
+        assert rounds[0]["attempted"] == 0
+        console = Console(record=True, width=220)
+        _print_hot_file_summary(rounds, "DEV-03", console)
+        assert "n/a" in console.export_text()
+
     def test_browser_and_hot_file_together_are_refused(self):
         from types import SimpleNamespace
 
@@ -2503,17 +2569,39 @@ class TestPublishingIsOffTheSchedule:
         assert len(posted) == 8
 
     def test_a_backlog_drops_rather_than_blocks(self, hfr):
+        """The publisher is BLOCKED with a releasable event, never a sleep.
+
+        A `sleep(60)` left a daemon publisher holding a full queue after the
+        mock came off, so the leaked worker reached real HTTP and the next
+        test's `_post` mock: `test_the_publisher_survives_a_failing_post` saw
+        350 calls instead of 2. The blocker is released and the queue drained
+        INSIDE the patch, in a `finally` so an assertion failure cleans up too.
+        """
+        import threading as _threading
         import time as _time
 
         sink = hfr.InfluxSink("http://influx", "token", "ant", "b")
-        with patch.object(hfr.InfluxSink, "_post", side_effect=lambda line: _time.sleep(60)):
-            started = _time.time()
-            for _ in range(hfr.INFLUX_QUEUE_SIZE + 50):
-                sink.write("x")
-            # A reader that cannot publish drops the point rather than waiting:
-            # a missing point is a smaller lie than a round that never ran.
-            assert _time.time() - started < 5
-            assert sink._dropped >= 40
+        release = _threading.Event()
+
+        def _blocked(line):
+            # Bounded, so a wedged test cannot hang the suite either.
+            release.wait(timeout=30)
+
+        with patch.object(hfr.InfluxSink, "_post", side_effect=_blocked):
+            try:
+                started = _time.time()
+                for _ in range(hfr.INFLUX_QUEUE_SIZE + 50):
+                    sink.write("x")
+                # A reader that cannot publish drops the point rather than
+                # waiting: a missing point is a smaller lie than a round that
+                # never ran.
+                assert _time.time() - started < 5
+                assert sink._dropped >= 40
+            finally:
+                release.set()
+                # Drained while `_post` is still this test's own, so not one
+                # queued line can reach the real endpoint or another test.
+                assert sink.drain(timeout=30)
 
     def test_a_disabled_sink_starts_no_thread(self, hfr):
         sink = hfr.InfluxSink("", "", "ant", "b")

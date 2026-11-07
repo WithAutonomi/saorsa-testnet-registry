@@ -408,7 +408,7 @@ def test_a_replaced_selection_is_captured(repo):
 
 
 def test_a_third_selection_carries_both_of_its_predecessors(repo):
-    from saorsa_deploy.hot_file_records import merge_hot_file_selection
+    from saorsa_deploy.hot_files import merge_hot_file_selection
 
     def _doc(address, digest):
         return {
@@ -426,7 +426,7 @@ def test_a_third_selection_carries_both_of_its_predecessors(repo):
 def test_an_unchanged_selection_is_byte_identical_to_the_live_document(repo):
     # So the common case writes what it always did, with no `superseded_files`
     # key appearing on a run that never replaced anything.
-    from saorsa_deploy.hot_file_records import merge_hot_file_selection
+    from saorsa_deploy.hot_files import merge_hot_file_selection
 
     assert merge_hot_file_selection(_HOT_FILES, _HOT_FILES) == _HOT_FILES
     assert "superseded_files" not in merge_hot_file_selection(None, _HOT_FILES)
@@ -788,3 +788,230 @@ def test_the_merge_is_sorted_so_repeated_provisions_write_identical_bytes():
     once = merge_hot_file_config(recorded, live)
     assert once == merge_hot_file_config(once, live)
     assert [e["extension"] for e in once] == ["a", "m", "z"]
+
+
+# ---------------------------------------------------------------------------
+# the browser pass must not destroy the selection history (round-5 finding 1)
+# ---------------------------------------------------------------------------
+
+
+def test_the_browser_pass_preserves_the_history_the_native_pass_needs(repo):
+    """`record-results` runs the browser snapshot FIRST.
+
+    It replaced `browser_hot_files` outright, and its upsert expires the
+    deployment — so the native pass that followed read only the replacement and
+    had nothing left to carry forward. On a deployment running both cohorts the
+    earlier rows' selection metadata was lost at teardown whichever pass ran
+    first. Both writers go through the same merge now.
+    """
+    from saorsa_deploy.browser_records import snapshot_hot_files as browser_snapshot
+    from saorsa_deploy.hot_file_records import snapshot_hot_files as native_snapshot
+
+    deployment = _deployment(repo)
+    first = {
+        "deployment": "DEV-03",
+        "selected_at": "t1",
+        "size_bytes": 1,
+        "files": [
+            {
+                "index": 0,
+                "address": "aa",
+                "bytes": 1,
+                "sha256": "11",
+                "source_key": "upload-lon1-1.txt",
+                "line": 1,
+            }
+        ],
+    }
+    second = {
+        "deployment": "DEV-03",
+        "selected_at": "t2",
+        "size_bytes": 1,
+        "files": [
+            {
+                "index": 0,
+                "address": "bb",
+                "bytes": 2,
+                "sha256": "22",
+                "source_key": "upload-fra1-2.txt",
+                "line": 9,
+            }
+        ],
+    }
+
+    with patch("saorsa_deploy.registry.get_repository", return_value=repo):
+        for document in (first, second):
+            with patch("saorsa_deploy.hot_files.load_hot_files", return_value=document):
+                # The order `record-results` uses: browser, then hot-file.
+                browser_snapshot("DEV-03", repo.get_by_name("DEV-03").deploy_args)
+                native_snapshot("DEV-03", repo.get_by_name("DEV-03").deploy_args)
+
+    deploy_args = repo.get_by_name(deployment.name).deploy_args
+    # One copy, under the key the browser pass opened.
+    assert "hot_file_readers_hot_files" not in deploy_args
+    document = deploy_args["browser_hot_files"]
+    assert [f["address"] for f in document["files"]] == ["bb"]
+    superseded = document["superseded_files"]
+    assert [(f["address"], f["sha256"], f["source_key"]) for f in superseded] == [
+        ("aa", "11", "upload-lon1-1.txt")
+    ]
+
+
+def test_the_browser_writer_with_no_deploy_args_still_records(repo):
+    # The parameter defaults to None (no history to merge against), which is
+    # what the old behaviour was — so an unrelated caller is unaffected.
+    from saorsa_deploy.browser_records import snapshot_hot_files as browser_snapshot
+
+    deployment = _deployment(repo)
+    with (
+        patch("saorsa_deploy.registry.get_repository", return_value=repo),
+        patch("saorsa_deploy.hot_files.load_hot_files", return_value=_HOT_FILES),
+    ):
+        browser_snapshot("DEV-03")
+    assert repo.get_by_name(deployment.name).deploy_args["browser_hot_files"] == _HOT_FILES
+
+
+# ---------------------------------------------------------------------------
+# the schedule a historical round ran on (round-5 finding 3)
+# ---------------------------------------------------------------------------
+
+_HOST = "DEV-03-ctl-ant-client-hot-file-read-lon1-1"
+_SCHEDULE = {
+    "hostname": _HOST,
+    "extension": "ctl",
+    "client_index": 1,
+    "instances": 4,
+    "download_timeout_secs": 300,
+    "round_parity": "all",
+    "start_stagger_secs": 0,
+}
+
+
+def test_a_re_provision_keeps_the_schedule_it_replaced():
+    """Recreating an extension under the same name with a different period.
+
+    Overwriting the saved schedule applied the new period to every earlier
+    round: one anchored to 2027-01-15 08:00:00 rendered as 2055-07-24. Both
+    periods are valid, so the schedule is time-versioned instead.
+    """
+    from saorsa_deploy.hot_file_records import (
+        SUPERSEDED_SCHEDULES_KEY,
+        merge_hot_file_config,
+    )
+
+    old = [{**_SCHEDULE, "round_period_secs": 600, "recorded_at": "2027-01-01T00:00:00Z"}]
+    new = [{**_SCHEDULE, "round_period_secs": 900, "recorded_at": "2027-02-01T00:00:00Z"}]
+    (merged,) = merge_hot_file_config(old, new)
+    assert merged["round_period_secs"] == 900
+    assert [
+        (s["recorded_at"], s["round_period_secs"]) for s in merged[SUPERSEDED_SCHEDULES_KEY]
+    ] == [("2027-01-01T00:00:00Z", 600)]
+
+
+def test_an_unchanged_schedule_does_not_accumulate_history():
+    # Re-provisioning the same cohort must not grow the config on every pass,
+    # and must keep the ORIGINAL `recorded_at` so old rounds stay anchored.
+    from saorsa_deploy.hot_file_records import (
+        SUPERSEDED_SCHEDULES_KEY,
+        merge_hot_file_config,
+    )
+
+    old = [{**_SCHEDULE, "round_period_secs": 600, "recorded_at": "2027-01-01T00:00:00Z"}]
+    again = [{**_SCHEDULE, "round_period_secs": 600, "recorded_at": "2027-02-01T00:00:00Z"}]
+    (merged,) = merge_hot_file_config(old, again)
+    assert SUPERSEDED_SCHEDULES_KEY not in merged
+    assert merged["recorded_at"] == "2027-01-01T00:00:00Z"
+
+
+def test_each_round_resolves_the_period_it_actually_ran_on():
+    from datetime import datetime as _datetime
+
+    from saorsa_deploy.cmd.print_file_ops import summarise_hot_file_rounds
+    from saorsa_deploy.hot_file_records import merge_hot_file_config, period_resolver
+
+    old = [{**_SCHEDULE, "round_period_secs": 600, "recorded_at": "2027-01-01T00:00:00Z"}]
+    new = [{**_SCHEDULE, "round_period_secs": 900, "recorded_at": "2027-02-01T00:00:00Z"}]
+    resolve = period_resolver(merge_hot_file_config(old, new))
+
+    def _boundary(round_id, period):
+        anchored = round_id * period
+        (row,) = summarise_hot_file_rounds(
+            [
+                {
+                    "round_id": round_id,
+                    "host": _HOST,
+                    "instance": 1,
+                    "status": "success",
+                    "total_ms": 1,
+                    "start_ns": anchored * 1_000_000_000,
+                    "extension": "ctl",
+                    "records_from_peers": 0,
+                    "bytes_from_peers": 0,
+                    "records_served": 0,
+                }
+            ],
+            resolve,
+        )
+        return _datetime.fromtimestamp(anchored, tz=timezone.utc), row["boundary"]
+
+    # Before the re-provision: the 600 s period it ran on.
+    expected, shown = _boundary(3000000, 600)
+    assert shown == expected == _datetime(2027, 1, 15, 8, 0, tzinfo=timezone.utc)
+    # After it: the new 900 s one.
+    after = int(_datetime(2027, 3, 1, tzinfo=timezone.utc).timestamp()) // 900
+    expected, shown = _boundary(after, 900)
+    assert shown == expected
+
+
+def test_hosts_of_one_cohort_disagreeing_on_the_period_yield_none():
+    # The period is a property of the cohort, so two live answers mean this is
+    # not one cohort and no boundary is better than a wrong one.
+    from saorsa_deploy.hot_file_records import period_for_round
+
+    split = [
+        {**_SCHEDULE, "hostname": "a", "round_period_secs": 600},
+        {**_SCHEDULE, "hostname": "b", "round_period_secs": 900},
+    ]
+    assert period_for_round(split, "ctl", 1_800_000_000) is None
+
+
+def test_a_point_older_than_every_schedule_takes_the_oldest():
+    from saorsa_deploy.hot_file_records import merge_hot_file_config, period_for_round
+
+    old = [{**_SCHEDULE, "round_period_secs": 600, "recorded_at": "2027-01-01T00:00:00Z"}]
+    new = [{**_SCHEDULE, "round_period_secs": 900, "recorded_at": "2027-02-01T00:00:00Z"}]
+    merged = merge_hot_file_config(old, new)
+    # A round from before anything was recorded: the closest thing to the
+    # schedule it ran on is the oldest one known.
+    assert period_for_round(merged, "ctl", 1) == 600
+
+
+def test_a_config_with_no_recorded_at_still_resolves():
+    # Written before the field existed; it describes whatever ran before
+    # anything was dated, so it is the oldest schedule.
+    from saorsa_deploy.hot_file_records import period_for_round
+
+    assert period_for_round([{**_SCHEDULE, "round_period_secs": 600}], "ctl", 1) == 600
+
+
+def test_the_recorded_section_s_peer_fed_rate_excludes_skips(repo):
+    # The live view's twin: `len(group)` counted skips, so a round of nine
+    # `no_hot_files` skips and one peer-fed success read "1/10".
+    from rich.console import Console
+
+    deployment = _deployment(repo)
+    points = [
+        _point(instance=i, status="skipped", error_kind="no_hot_files", total_ms=None)
+        for i in range(1, 10)
+    ]
+    points.append(_point(instance=10, **{**SWARM_VALUES, "records_from_peers": 7}))
+    _record(repo, deployment, points)
+    console = Console(record=True, width=240)
+    _print_hot_file_reads_section(
+        repo.list_hot_file_download_records_for_deployment(deployment.id),
+        deployment.name,
+        console,
+    )
+    text = console.export_text()
+    assert "1/1" in text
+    assert "1/10" not in text

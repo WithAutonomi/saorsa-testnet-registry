@@ -25,6 +25,8 @@ is idempotent and converges whichever tier was provisioned last.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from saorsa_deploy.browser_records import (
     BROWSER_HOT_FILES_KEY,
     client_tiers_with_extensions,
@@ -89,10 +91,16 @@ def hot_file_config_entry(deployment: str, extension: str | None, client: dict) 
     address at all. ``client_index`` IS here, and is load-bearing -- it is what
     each reader's start offset is derived from, so without it the schedule a
     round actually ran on cannot be reconstructed after teardown.
+
+    ``recorded_at`` is what makes the schedule TIME-VERSIONED: an extension
+    recreated under the same name with a different period would otherwise have
+    its new period applied to every earlier round, and a round anchored to
+    2027-01-15 came out as 2055-07-24. See :func:`period_for_round`.
     """
     return {
         "hostname": client_hostname(deployment, extension, client),
         "extension": extension,
+        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "region": client.get("region"),
         "client_index": client.get("client_index"),
         "instances": _value(client, "instances", HOT_FILE_DEFAULT_INSTANCES),
@@ -134,6 +142,129 @@ def collect_hot_file_config(deployment: str, tiers: list[tuple[str | None, dict]
     return entries
 
 
+#: Key on a recorded entry holding the schedules this host ran on BEFORE the
+#: current one, newest last, each with its own ``recorded_at``. The rounds
+#: already recorded ran on them, so the period that renders their boundary has
+#: to be the one in force at the time rather than whatever the host runs now.
+SUPERSEDED_SCHEDULES_KEY = "superseded_schedules"
+
+#: The fields that make up a schedule. A live entry differing from the recorded
+#: one on any of them is a re-provision whose predecessor must be kept.
+SCHEDULE_FIELDS = (
+    "instances",
+    "round_period_secs",
+    "download_timeout_secs",
+    "round_parity",
+    "start_stagger_secs",
+    "client_index",
+)
+
+
+def _schedule_of(entry: dict) -> dict:
+    """One entry's schedule, with the instant it was recorded."""
+    out = {field: entry.get(field) for field in SCHEDULE_FIELDS}
+    out["recorded_at"] = entry.get("recorded_at")
+    return out
+
+
+def _carry_schedule(previous: dict | None, live: dict) -> dict:
+    """``live``, carrying ``previous``'s schedule when the two differ."""
+    if previous is None:
+        return live
+    if _schedule_of(previous) == _schedule_of(live) or all(
+        previous.get(field) == live.get(field) for field in SCHEDULE_FIELDS
+    ):
+        # The same schedule re-recorded: keep whatever history it already had
+        # and the ORIGINAL `recorded_at`, so an unchanged cohort's config does
+        # not churn on every provision.
+        merged = dict(live)
+        # Set only when there is one to set, so a merge over entries that carry
+        # no `recorded_at` at all stays idempotent rather than growing a
+        # `recorded_at: None` key on every pass.
+        earliest = previous.get("recorded_at") or live.get("recorded_at")
+        if earliest is not None:
+            merged["recorded_at"] = earliest
+        history = previous.get(SUPERSEDED_SCHEDULES_KEY)
+        if history:
+            merged[SUPERSEDED_SCHEDULES_KEY] = history
+        return merged
+    merged = dict(live)
+    history = list(previous.get(SUPERSEDED_SCHEDULES_KEY) or [])
+    history.append(_schedule_of(previous))
+    merged[SUPERSEDED_SCHEDULES_KEY] = history
+    return merged
+
+
+def _recorded_at_secs(value) -> int | None:
+    """An entry's ``recorded_at`` as epoch seconds, or None."""
+    if not value:
+        return None
+    try:
+        return int(
+            datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ")
+            .replace(tzinfo=timezone.utc)
+            .timestamp()
+        )
+    except ValueError:
+        return None
+
+
+def period_for_round(entries: list[dict], extension, start_secs: int | None) -> int | None:
+    """The round period in force for ``extension`` at ``start_secs``.
+
+    Time-versioned, because an extension may legitimately be recreated under the
+    same name with a different period and the schema accepts both. Applying the
+    LATEST period to every round rewrote history: a round anchored to
+    2027-01-15 08:00:00 rendered as 2055-07-24 once the cohort came back at
+    900 s instead of 600 s.
+
+    Two rules, in order:
+
+    * **The period is a property of the COHORT**, so hosts of one extension that
+      disagree on their current period are not one cohort and yield None --
+      :func:`round_periods_by_extension` is that rule, and this defers to it
+      rather than keeping a second copy.
+    * Otherwise the newest schedule whose ``recorded_at`` is at or before the
+      point's own start wins. A point older than every dated schedule takes the
+      OLDEST, which is the closest thing to the one it actually ran on, and an
+      undated schedule (a config written before `recorded_at` existed) sorts
+      oldest for the same reason.
+    """
+    current = round_periods_by_extension([e for e in entries if e.get("extension") == extension])
+    if extension not in current:
+        return None
+
+    timeline: list[tuple[int | None, int]] = []
+    for entry in entries:
+        if entry.get("extension") != extension:
+            continue
+        for schedule in [*(entry.get(SUPERSEDED_SCHEDULES_KEY) or []), _schedule_of(entry)]:
+            period = schedule.get("round_period_secs")
+            if period:
+                timeline.append((_recorded_at_secs(schedule.get("recorded_at")), int(period)))
+    if not timeline:
+        return current[extension]
+    # Undated first, then by recorded time.
+    timeline.sort(key=lambda item: (item[0] is not None, item[0] or 0))
+    if start_secs is None:
+        return timeline[-1][1]
+    applicable = [p for at, p in timeline if at is None or at <= start_secs]
+    return applicable[-1] if applicable else timeline[0][1]
+
+
+def period_resolver(entries: list[dict]):
+    """A ``(extension, start_secs) -> period | None`` callable over ``entries``.
+
+    What `print-downloads --hot-file` hands the summariser, so the boundary of
+    each round is rendered with the period that round actually ran on.
+    """
+
+    def _resolve(extension, start_secs):
+        return period_for_round(entries, extension, start_secs)
+
+    return _resolve
+
+
 def merge_hot_file_config(recorded: list[dict], live: list[dict]) -> list[dict]:
     """Historical entries plus the live scan, keyed by hostname, live winning.
 
@@ -148,9 +279,14 @@ def merge_hot_file_config(recorded: list[dict], live: list[dict]) -> list[dict]:
     already HAS one, not the first write of a row that never did.
 
     Live wins on a hostname that appears in both, because a re-provision is how
-    a VM's own schedule changes. Sorted on the same key
-    :func:`collect_hot_file_config` sorts on, so repeated provisions of an
-    unchanged cohort write identical bytes.
+    a VM's own schedule changes -- but **the schedule it replaces is kept**,
+    under :data:`SUPERSEDED_SCHEDULES_KEY`, because the rounds already recorded
+    ran on it. Overwriting it outright applied the new period to every earlier
+    round: recreating an extension under the same name with period 900 instead
+    of 600 moved a round anchored to 2027-01-15 to 2055-07-24.
+
+    Sorted on the same key :func:`collect_hot_file_config` sorts on, so
+    repeated provisions of an unchanged cohort write identical bytes.
     """
     by_hostname: dict[str, dict] = {}
     for entry in recorded:
@@ -159,8 +295,10 @@ def merge_hot_file_config(recorded: list[dict], live: list[dict]) -> list[dict]:
             by_hostname[hostname] = entry
     for entry in live:
         hostname = entry.get("hostname")
-        if hostname:
-            by_hostname[hostname] = entry
+        if not hostname:
+            continue
+        previous = by_hostname.get(hostname)
+        by_hostname[hostname] = _carry_schedule(previous, entry)
     merged = list(by_hostname.values())
     merged.sort(key=lambda e: (e.get("extension") or "", e.get("hostname") or ""))
     return merged
@@ -265,61 +403,6 @@ def resolve_extension_by_host(
     return out
 
 
-#: Key inside a snapshot holding entries from EARLIER selections whose address
-#: the current one no longer carries. A row records the `address` it fetched, so
-#: a `--replace` that changed the selection must not take the previous files'
-#: bytes / sha256 / source with it.
-SUPERSEDED_FILES_KEY = "superseded_files"
-
-
-def _files_by_address(document: dict | None) -> dict:
-    """Every file a snapshot knows about -- current and superseded -- by address."""
-    out: dict = {}
-    if not isinstance(document, dict):
-        return out
-    for key in ("files", SUPERSEDED_FILES_KEY):
-        for entry in document.get(key) or []:
-            if isinstance(entry, dict) and entry.get("address"):
-                out[str(entry["address"])] = entry
-    return out
-
-
-def merge_hot_file_selection(recorded: dict | None, live: dict) -> dict:
-    """The live selection, carrying forward the files it replaced.
-
-    `clients select-hot-files --replace` changes the object every reader fetches
-    mid-run, so the snapshot has to track the CURRENT selection -- rows written
-    after a replacement record the new address, and without it their bytes,
-    sha256 and source are unresolvable after teardown. But the rows written
-    BEFORE it record the old address, so the replaced entries cannot simply be
-    dropped either.
-
-    So: ``files`` is always the live selection (what the readers are reading
-    now) and :data:`SUPERSEDED_FILES_KEY` accumulates every entry an earlier
-    snapshot knew that the live one does not, keyed by ADDRESS rather than by
-    index -- a replacement reuses index 0 for a different file, so an index is
-    not an identity. The key is omitted entirely when nothing has been
-    superseded, so an unchanged selection's snapshot is byte-identical to the
-    live document and the common case writes the same thing it always did.
-    """
-    merged = dict(live)
-    live_addresses = {
-        str(e["address"])
-        for e in live.get("files") or []
-        if isinstance(e, dict) and e.get("address")
-    }
-    carried = [
-        entry
-        for address, entry in sorted(_files_by_address(recorded).items())
-        if address not in live_addresses
-    ]
-    if carried:
-        merged[SUPERSEDED_FILES_KEY] = carried
-    else:
-        merged.pop(SUPERSEDED_FILES_KEY, None)
-    return merged
-
-
 def snapshot_hot_files(deployment: str, deploy_args: dict | None, console=None) -> dict | None:
     """Copy the hot-file selection into ``deploy_args``, keeping what it replaces.
 
@@ -343,7 +426,11 @@ def snapshot_hot_files(deployment: str, deploy_args: dict | None, console=None) 
     recorded in place: a snapshot taken while the cohort was running is the
     answer, and there is no later chance to take one.
     """
-    from saorsa_deploy.hot_files import load_hot_files
+    from saorsa_deploy.hot_files import (
+        SUPERSEDED_FILES_KEY,
+        load_hot_files,
+        merge_hot_file_selection,
+    )
     from saorsa_deploy.registry import record_deploy_args_update
 
     # Whichever key holds it -- see :func:`recorded_hot_files`. A deployment

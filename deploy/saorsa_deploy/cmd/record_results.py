@@ -641,8 +641,11 @@ def _record_browser_downloads(
     extension_for_host = resolve_extension_by_host(
         deployment.deploy_args, _client_tiers(args.name), args.name
     )
-    # Additive: a selection already gone leaves an earlier snapshot in place.
-    snapshot_hot_files(args.name, console)
+    # Merged, not replaced: `record-results` runs this pass BEFORE the hot-file
+    # reader one, so replacing the key outright left that pass reading only the
+    # replacement with nothing to carry forward. `deploy_args` is what the merge
+    # preserves history against.
+    snapshot_hot_files(args.name, deployment.deploy_args, console)
 
     recorded = 0
     unusable = 0

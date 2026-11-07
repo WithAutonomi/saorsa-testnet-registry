@@ -2280,7 +2280,10 @@ snapshotted into the registry beside the rows they describe:
   than by index — a replacement reuses index 0 for a different file. The key is
   absent when nothing has been superseded, and a merge that changes nothing
   writes nothing. A selection that has already gone, or an S3 failure, leaves
-  what was recorded in place.
+  what was recorded in place. **Both snapshot writers go through the merge** —
+  the browser role's and this one — because `record-results` runs the browser
+  pass first, and while it replaced its key outright the pass that followed read
+  only the replacement and had nothing left to preserve.
 
 #### Reading the results
 
@@ -2300,7 +2303,12 @@ counts, p50 and p95 `total_ms` of the successes, the readers with
 the browser view's: the whole point of the role is two cohorts on one
 deployment, and a row pooling them would average the two arms of the comparison.
 "Peer-fed" counts READERS, not records — one reader served by a peer a thousand
-times is not a thousand readers the swarm reached.
+times is not a thousand readers the swarm reached — and its denominator is the
+**ATTEMPTED** reads, skips excluded, exactly as the completion rate's is.
+Counting skips gave `1/10 = 10.0%` for a round of nine `no_hot_files` skips and
+one peer-fed success, where the only read attempted *was* peer-fed; a round that
+only skipped has no rate (`n/a`) rather than 0%. `print-recorded-results` uses
+the same denominator.
 
 **`--summary` is one row per cohort, never pooled.** A branch cohort at 100%
 with every read peer-fed and a released control at 0% with none average to "50%
@@ -2313,8 +2321,8 @@ client tiers, exactly as `record-results` does, before it emits the JSON and
 before it summarises. A registry or S3 failure is a warning saying the rounds
 are not split by cohort, not a refusal: this is a read-only diagnostic.
 
-**The `Boundary (UTC)` column is `round_id × period`, from the RESOLVED
-period.** `start_ns` is a reader's own scheduled start, offset included, so the
+**The `Boundary (UTC)` column is `round_id × period`, from the period that round
+ACTUALLY RAN ON.** `start_ns` is a reader's own scheduled start, offset included, so the
 minimum over a round is the boundary only when an unstaggered reader happens to
 be in it — a cohort whose indexes begin at 5 with a 2 s stagger starts at +32 s,
 and a missing early reader does the same thing. Nor is the period inferred from
@@ -2322,8 +2330,16 @@ the round id: `floor(start_secs / round_id)` is the period only while every
 offset is below the round id, which nothing guarantees — a daily round
 (`round_period_secs: 86400`) has round ids in the twenty thousands, so a 7,200 s
 stagger puts offsets far above one. It comes from the recorded role config
-instead, per cohort, and a period the config cannot settle (two values inside
-one extension) prints `-` rather than a wrong time.
+instead, and a period the config cannot settle (two hosts of one extension
+disagreeing) prints `-` rather than a wrong time.
+
+**The recorded schedule is time-versioned**, because an extension may
+legitimately be recreated under the same name with a different period and the
+schema accepts both. The schedule a re-provision replaces is kept under
+`superseded_schedules` with its own `recorded_at`, and each round is rendered
+with the newest schedule recorded at or before its own start; overwriting it
+outright applied the new period to every earlier round, moving one anchored to
+2027-01-15 08:00:00 to 2055-07-24.
 
 `print-recorded-results` gains a "Hot-file reads" section with the same
 per-round table out of Postgres, plus "reads reporting a swarm", which is the

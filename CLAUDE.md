@@ -2162,8 +2162,14 @@ together.
   period, never the earliest `start_ns` (a reader's staggered start) and never
   `floor(start_secs / round_id)` — that is the period only while every offset is
   below the round id, and a daily round with a 7,200 s stagger is not. An
-  unresolvable period prints `-`. `--summary` is one row per COHORT: a branch
-  cohort at 100% and a control at 0% pooled read "50%" with neither named.
+  unresolvable period prints `-`. The recorded schedule is **time-versioned**
+  (`superseded_schedules` + `recorded_at`), because an extension recreated under
+  the same name may legitimately change period and overwriting it moved a round
+  anchored to 2027-01-15 to 2055-07-24.
+- `--summary` is one row per COHORT: a branch cohort at 100% and a control at 0%
+  pooled read "50%" with neither named. Every rate's denominator is the
+  **ATTEMPTED** reads — skips are out of all of them, as they are out of the
+  completion rate, and a round that only skipped has no rate rather than 0%.
 - **`clock_skew` and `network` are refused by name**; `rust_log` is accepted,
   unlike on the browser role, because the transfers run in a Rust process whose
   tracing subscriber there is something to configure — which is also why `ant` is
@@ -2194,7 +2200,10 @@ together.
   the live object**, because `select-hot-files --replace` changes it mid-run and
   rows written afterwards record the new address; the entries it replaced are
   carried under `superseded_files`, keyed by ADDRESS rather than index, because
-  the earlier rows still need their bytes and sha256.
+  the earlier rows still need their bytes and sha256. **Both writers merge** —
+  the browser role's too (`hot_files.merge_hot_file_selection` is the one copy),
+  since `record-results` runs that pass first and its replacing the key outright
+  left this one with no history to preserve.
 - `deployments print-downloads --hot-file` is the live Influx view (one row per
   round AND extension, unlike the browser view's — pooling two cohorts would
   average the two arms), mutually exclusive with `--browser`. **The extension is

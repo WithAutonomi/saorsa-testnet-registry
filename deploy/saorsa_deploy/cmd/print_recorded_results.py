@@ -835,6 +835,15 @@ def _print_browser_downloads_section(rows: list, name: str, console: Console) ->
 # ---------------------------------------------------------------------------
 
 
+def _fmt_peer_fed(peer_fed: int, attempted: int) -> str:
+    """``N/M`` over ATTEMPTED reads, or ``n/a`` when none was attempted.
+
+    The live view's `print_file_ops._fmt_peer_fed` twin. Skips are out of the
+    denominator, so a round that only skipped has no rate rather than 0%.
+    """
+    return f"{peer_fed}/{attempted}" if attempted else "n/a"
+
+
 def _fmt_hot_file_ms(value) -> str:
     """A millisecond figure as seconds, or ``-`` when there is none.
 
@@ -914,7 +923,12 @@ def _print_hot_file_reads_section(rows: list, name: str, console: Console) -> No
         fail = [r for r in group if r.status == OpRecordStatus.FAILURE]
         skip = [r for r in group if r.status == OpRecordStatus.SKIPPED]
         durations = [float(r.total_ms) for r in ok if r.total_ms is not None]
-        peer_fed = sum(1 for r in group if (r.records_from_peers or 0) >= 1)
+        # ATTEMPTED reads, not every row: skips are excluded from this
+        # denominator as they are from the completion rate. Counting them gave
+        # "1/10" for a round of nine `no_hot_files` skips and one peer-fed
+        # success, where the only read attempted WAS peer-fed.
+        attempted = ok + fail
+        peer_fed = sum(1 for r in attempted if (r.records_from_peers or 0) >= 1)
         line = [str(round_id)]
         if show_extension:
             line.append(extension or "-")
@@ -925,7 +939,7 @@ def _print_hot_file_reads_section(rows: list, name: str, console: Console) -> No
             str(len(skip)),
             _fmt_hot_file_ms(percentile(durations, 0.50)),
             _fmt_hot_file_ms(percentile(durations, 0.95)),
-            f"{peer_fed}/{len(group)}",
+            _fmt_peer_fed(peer_fed, len(attempted)),
             f"{sum(r.records_from_peers or 0 for r in group):,}",
             f"{sum(r.bytes_from_peers or 0 for r in group):,}",
             f"{sum(r.records_served or 0 for r in group):,}",

@@ -205,6 +205,69 @@ def build_document(
     }
 
 
+#: Key inside a SNAPSHOT of a selection (never in the S3 object itself) holding
+#: entries from earlier selections whose address the current one no longer
+#: carries. A recorded row names the `address` it fetched, so a `--replace` that
+#: changed the selection must not take the previous files' bytes, sha256 and
+#: source with it.
+SUPERSEDED_FILES_KEY = "superseded_files"
+
+
+def files_by_address(document: dict | None) -> dict:
+    """Every file a snapshot knows about -- current and superseded -- by address."""
+    out: dict = {}
+    if not isinstance(document, dict):
+        return out
+    for key in ("files", SUPERSEDED_FILES_KEY):
+        for entry in document.get(key) or []:
+            if isinstance(entry, dict) and entry.get("address"):
+                out[str(entry["address"])] = entry
+    return out
+
+
+def merge_hot_file_selection(recorded: dict | None, live: dict) -> dict:
+    """The live selection, carrying forward the files it replaced.
+
+    `clients select-hot-files --replace` changes the object every reader fetches
+    mid-run, so a snapshot has to track the CURRENT selection -- rows written
+    after a replacement record the new address, and without it their bytes,
+    sha256 and source are unresolvable after teardown. But the rows written
+    BEFORE it record the old address, so the replaced entries cannot simply be
+    dropped either.
+
+    So: ``files`` is always the live selection (what the readers are reading
+    now) and :data:`SUPERSEDED_FILES_KEY` accumulates every entry an earlier
+    snapshot knew that the live one does not, keyed by ADDRESS rather than by
+    index -- a replacement reuses index 0 for a different file, so an index is
+    not an identity. The key is omitted entirely when nothing has been
+    superseded, so an unchanged selection's snapshot is byte-identical to the
+    live document.
+
+    **Both snapshot writers go through this**, the browser role's and the
+    hot-file readers'. `record-results` runs the browser pass first, and while
+    it replaced ``browser_hot_files`` outright the native pass that followed
+    read only the replacement and had nothing left to preserve -- so a
+    deployment running both cohorts lost its history to whichever pass ran
+    first.
+    """
+    merged = dict(live)
+    live_addresses = {
+        str(e["address"])
+        for e in live.get("files") or []
+        if isinstance(e, dict) and e.get("address")
+    }
+    carried = [
+        entry
+        for address, entry in sorted(files_by_address(recorded).items())
+        if address not in live_addresses
+    ]
+    if carried:
+        merged[SUPERSEDED_FILES_KEY] = carried
+    else:
+        merged.pop(SUPERSEDED_FILES_KEY, None)
+    return merged
+
+
 def load_hot_files(deployment: str, *, s3=None) -> dict | None:
     """The deployment's hot-file manifest, or None when it has not been written."""
     client = s3 or _s3()
