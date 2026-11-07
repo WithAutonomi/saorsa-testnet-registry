@@ -2375,6 +2375,16 @@ browsers' own GETs from the run's Elasticsearch **client** index, and the fleet'
   `storage_outcome = success` with that bucket's own p50/p95, since a `not_found`
   is answered from the index alone. A clock-skewed node stamps its documents
   outside their true round and is lost to the count — constant on both arms.
+- **Both arms must have read the SAME file, or the window is REFUSED.** A round
+  reads `files[round_id mod len]`, so at **two** selected files every even round
+  takes file 0 and every odd one file 1 — the swarm arm reads one file and the
+  control arm the other, by arithmetic, always. The chunk set comes from the
+  swarm rounds and filters the GETs on both arms, so the control count would be
+  of a file its readers never fetched. Checked on the ROWS' addresses rather
+  than the file count: at three files a window can legitimately hold a swarm and
+  a control round that both landed on file 0, and a `--replace`d selection
+  leaves one arm reading two files with the snapshot showing one. One hot file
+  per swarm run.
 - **The chunk set is the FILE's, from the SWARM COHORT's own browser traces.** An
   `rpc` record's `target` is the chunk hex, and the control arm is native-only
   and emits no trace, so the distinct targets over the swarm rounds are the

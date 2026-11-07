@@ -57,6 +57,7 @@ from saorsa_deploy.swarm_reads import (
     as_epoch_bounds,
     build_report,
     check_native_round_parity,
+    check_one_hot_file,
     check_parities,
     chunk_set_from_traces,
     evaluate_gates,
@@ -1219,6 +1220,73 @@ def test_a_control_native_row_on_a_swarm_round_is_refused_too():
     assert f"ct-1 read round(s) {R0 + 2}" in str(e.value)
 
 
+def test_two_selected_files_make_the_arms_read_different_files_and_are_refused():
+    """The parity split and an even file count are incompatible by arithmetic.
+
+    A round reads `files[round_id mod len]`, so at `len == 2` every even round
+    takes file 0 and every odd round file 1 — the swarm arm reads one file and
+    the control arm the other, always. The chunk set comes from the SWARM
+    rounds' traces and filters the fleet's GETs on both arms, so the control
+    arm's count would be of a file its readers never fetched.
+    """
+    with pytest.raises(SwarmReadsError) as e:
+        check_one_hot_file(
+            [{"address": "aaaa", "round_id": R0}],
+            [{"address": "bbbb", "round_id": R0 + 1}],
+            {"files": [{"index": 0, "address": "aaaa"}, {"index": 1, "address": "bbbb"}]},
+        )
+    message = str(e.value)
+    assert "the swarm arm read aaaa and the control arm read bbbb" in message
+    assert "files[round_id mod 2]" in message
+    assert "--count 1" in message
+
+
+def test_one_arm_spanning_a_replaced_selection_is_refused_too():
+    """A selection `--replace`d mid-window leaves one arm reading two files.
+
+    The current snapshot's file count cannot show that at all, which is why the
+    check is on the rows: two addresses in the window is two files' GET counts
+    pooled into one median, whichever arm they are in.
+    """
+    with pytest.raises(SwarmReadsError) as e:
+        check_one_hot_file(
+            [{"address": "aaaa"}, {"address": "cccc"}],
+            [{"address": "aaaa"}],
+            {"files": [{"index": 0, "address": "cccc"}]},
+        )
+    assert "Narrow the window" in str(e.value)
+
+
+def test_three_files_are_accepted_when_the_window_landed_on_one():
+    """The condition is "the arms read one file", not "one file was selected".
+
+    At `len == 3` round 6 reads file 0 and round 9 reads file 0 too, so a window
+    holding those two has a sound comparison — and refusing on the file count
+    would throw it away.
+    """
+    check_one_hot_file(
+        [{"address": "aaaa", "round_id": R0}],
+        [{"address": "aaaa", "round_id": R0 + 3}],
+        {"files": [{"address": "aaaa"}, {"address": "bbbb"}, {"address": "cccc"}]},
+    )
+
+
+def test_rows_that_read_nothing_do_not_trigger_the_one_file_check():
+    """A `skipped` row chose no file, so it is evidence of nothing."""
+    check_one_hot_file([{"address": None}], [{"address": None}], {"files": []})
+    check_one_hot_file([], [], None)
+
+
+def test_the_fixtures_own_rows_all_read_the_one_selected_file():
+    native = rounds_in_window(_rows("native-rows.json"), PERIOD, WINDOW_START, WINDOW_END)
+    browser = rounds_in_window(_rows("browser-rows.json"), PERIOD, WINDOW_START, WINDOW_END)
+    check_one_hot_file(
+        [r for r in (*native, *browser) if r["extension"] == "swarm"],
+        [r for r in native if r["extension"] == "control"],
+        _json("hot-files.json"),
+    )
+
+
 def test_the_fixtures_own_native_rows_are_all_on_their_arms_rounds():
     native = rounds_in_window(_rows("native-rows.json"), PERIOD, WINDOW_START, WINDOW_END)
     check_native_round_parity(
@@ -1557,6 +1625,41 @@ def test_the_trace_query_names_the_swarm_cohorts_own_browser_vms(tmp_path):
     document = json.loads(payload.read_text())
     assert "chunk-foreign" not in document["chunk_set"]["chunks"]
     assert document["chunk_set"]["count"] == 4
+
+
+def test_the_command_exits_two_when_the_arms_read_different_files():
+    """The whole case, through the command: two files and a parity split.
+
+    Driven as the real deployment would be — a two-file selection, with each
+    arm's rows carrying the address its parity implies — and refused BEFORE any
+    Elasticsearch query, since there is no comparison for them to serve.
+    """
+    other = "b1" * 32
+    native = _rows("native-rows.json")
+    for row in native:
+        if row["extension"] == "control" and row["address"]:
+            row["address"] = other
+            row["hot_file_index"] = 1
+    deploy_args = _deploy_args()
+    deploy_args["browser_hot_files"]["files"].append(
+        {"index": 1, "address": other, "bytes": 314572800, "sha256": None}
+    )
+    fake = _FakeEs(_json("trace-docs.json"), _json("get-rpc-responses.json"))
+    code, _ = _run(_args(), repo=_Repo(native=native, deploy_args=deploy_args), es=fake)
+    assert code == EXIT_ERROR
+    # Refused before the queries: neither index was touched.
+    assert fake.get_queries == []
+    assert fake.trace_host_terms == []
+
+
+def test_a_multi_file_selection_whose_window_read_one_file_is_only_noted():
+    """The file count alone is not the fault; what the rounds read is."""
+    deploy_args = _deploy_args()
+    deploy_args["browser_hot_files"]["files"].append(
+        {"index": 1, "address": "b1" * 32, "bytes": 314572800, "sha256": None}
+    )
+    code, _ = _run(_args(), repo=_Repo(deploy_args=deploy_args))
+    assert code == 0
 
 
 def test_the_command_exits_two_when_the_swarm_cohort_has_no_browser_vm():

@@ -2611,6 +2611,21 @@ GETs** and **6 gates**. `--json-out` carries the same figures with `verdict`,
 `gates`, `rounds`, `arms` and `chunk_set`; `--json-out -` makes the JSON the
 whole of stdout.
 
+**Both arms must have read the SAME file, and a window in which they did not is
+refused.** A round reads `files[round_id mod len]`, so with **two** selected
+files every even round takes file 0 and every odd round file 1 — the swarm arm
+reads one file and the control arm the other, always and by arithmetic. The
+chunk set is built from the swarm rounds' traces and filters the fleet's GETs on
+**both** arms, so the control arm's count would be of a file its readers never
+fetched: G3 would read NOT ASSESSED, or divide one file's load by another's.
+Checked on the **rows**, not on the file count, because the condition they must
+satisfy is both narrower and wider than "one file was selected" — at three files
+a window can legitimately hold a swarm and a control round that both landed on
+file 0 (rounds 6 and 9), and a selection `--replace`d mid-window leaves one arm's
+rounds reading two files, which the current snapshot's count cannot show at all.
+Select **one** hot file for a swarm run (`clients select-hot-files --count 1`);
+with more than one the report says which window made the comparison possible.
+
 **The chunk set comes from the browser traces, and it is the file's, not an
 arm's.** An `rpc` record's `target` is the chunk hex, so the distinct targets
 over the swarm rounds are the file's records (its root DataMap chunk included) —
@@ -2737,9 +2752,9 @@ an extension, no trace documents, too small a chunk set, an unreachable
 Elasticsearch, a **partial** Elasticsearch answer (a 200 carrying
 `timed_out: true` or failed shards, on either search — a short count moves a
 ratio, and a short trace page would silently end the paging loop and truncate
-the chunk set), two periods, a native parity that contradicts its arm, a swarm
-cohort with no browser VM, or a `--name` that is not the deployment `--id`
-resolved to. The last distinction is for the unattended runner: "the swarm made
+the chunk set), two periods, a native parity that contradicts its arm, **two
+arms that read different files**, a swarm cohort with no browser VM, or a
+`--name` that is not the deployment `--id` resolved to. The last distinction is for the unattended runner: "the swarm made
 the read path worse" and "I measured nothing" are different answers.
 
 Two of those are worth stating on their own:

@@ -50,6 +50,14 @@ So four rounds carry rows and two are missing, one in each arm. Narrowing the
 window to `09:30Z` leaves R0..R0+2 — two present swarm rounds and **one** present
 control round — which is the G3 NOT ASSESSED case.
 
+**`hot-files.json` carries ONE file, and that is load-bearing.** A round reads
+`files[round_id mod len]`, so a two-file selection would put every even (swarm)
+round on file 0 and every odd (control) round on file 1 — the arms reading
+different files, which the report refuses, because the chunk set is built from
+the swarm rounds and filters BOTH arms' GETs to the swarm arm's file. The tests
+build that case from literal rows rather than from a second fixture, since no
+figure in this one would survive it.
+
 ## The cohorts
 
 * **swarm** (extension `swarm`, `round_parity: even`) — two native reader VMs,

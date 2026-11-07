@@ -67,6 +67,7 @@ from saorsa_deploy.swarm_reads import (
     as_epoch_bounds,
     build_report,
     check_native_round_parity,
+    check_one_hot_file,
     check_parities,
     chunk_set_from_traces,
     foreign_cohort_notes,
@@ -514,6 +515,10 @@ def _run(args, console) -> int:
         console.print(f"[yellow]{note}[/yellow]")
 
     hot_files, hot_files_source = _resolve_hot_files(deployment, args.name)
+    # Before any Elasticsearch query: the chunk set that filters the fleet's
+    # GETs is the swarm arm's file's, so a window in which the control arm read a
+    # different one has no comparison to make and no queries worth spending.
+    check_one_hot_file([*swarm_native, *swarm_browser], control_native, hot_files)
 
     quiet_tls()
     run = EsRun(args.name)
@@ -534,11 +539,16 @@ def _run(args, console) -> int:
             f"another, so no report is produced. The floor is {MIN_CHUNK_SET}."
         )
     if len(hot_files.get("files") or []) > 1:
+        # The arms DID read one file here -- `check_one_hot_file` has already
+        # refused the window otherwise -- but the chunk set still spans whatever
+        # the swarm rounds read, so a reader should know the window is what made
+        # this comparison possible.
         console.print(
             f"[yellow]The selection carries "
-            f"{len(hot_files['files'])} hot files, so the chunk set spans every "
-            f"file the swarm rounds read and the GET counts are for all of "
-            f"them together.[/yellow]"
+            f"{len(hot_files['files'])} hot files and a round reads "
+            f"files[round_id mod {len(hot_files['files'])}]; this window's "
+            f"rounds all read the same one, which is what makes the GET counts "
+            f"comparable. A wider window would not.[/yellow]"
         )
 
     gets_by_round = _load_round_gets(

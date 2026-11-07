@@ -322,6 +322,68 @@ def check_native_round_parity(swarm_native, control_native) -> None:
     )
 
 
+def _addresses_read(rows) -> list[str]:
+    """The distinct hot-file addresses a set of rows actually fetched.
+
+    A `skipped` row carries none — it chose no file — so it contributes nothing
+    rather than a None that would have to be filtered downstream.
+    """
+    return sorted({_field(row, "address") for row in rows if _field(row, "address")})
+
+
+def check_one_hot_file(swarm_rows, control_rows, hot_files: dict | None) -> None:
+    """Refuse a window in which the two arms did not read the SAME file.
+
+    **The parity split and a multi-file selection are incompatible, and the
+    arithmetic says so exactly.** A round reads ``files[round_id mod len]``, so
+    with TWO selected files every even round takes file 0 and every odd round
+    file 1 — the swarm arm reads one file and the control arm the other, always
+    and by construction. The chunk set is built from the swarm rounds' traces,
+    so the fleet's GETs are filtered to the swarm arm's file on BOTH arms: the
+    control rounds' count then comes back as zero, or as whatever unrelated
+    background traffic touched those chunks, and G3 either reads NOT ASSESSED or
+    divides one file's load by another file's. Neither is a measurement of node
+    relief.
+
+    Checked on the ROWS and not on the file count, because the rows are what
+    actually happened and the condition they have to satisfy is narrower than
+    "one file was selected": with three files a window can legitimately contain
+    swarm and control rounds that both landed on file 0 (rounds 6 and 9 at
+    ``len == 3``), and that comparison is sound. It is also wider — a selection
+    `--replace`d mid-window leaves one arm's rounds reading two files, which the
+    file count of the current snapshot cannot show at all.
+
+    The selection's file count goes in the MESSAGE rather than the test, since it
+    is almost always the cause and `clients select-hot-files --count 1` is the
+    fix.
+    """
+    swarm = _addresses_read(swarm_rows)
+    control = _addresses_read(control_rows)
+    if len(set(swarm) | set(control)) <= 1:
+        return
+    files = len((hot_files or {}).get("files") or [])
+    count_note = (
+        f" The selection carries {files} files, and a round reads "
+        f"`files[round_id mod {files}]` — so with an even count the two arms "
+        f"never read the same one. Select ONE hot file for a swarm run "
+        f"(`clients select-hot-files --count 1`)."
+        if files > 1
+        else " Narrow the window to rounds that read one file: a selection "
+        "replaced mid-run leaves its rounds reading two."
+    )
+    raise SwarmReadsError(
+        "the two arms did not read the same file in this window — the swarm arm "
+        "read "
+        + (", ".join(swarm) or "nothing")
+        + " and the control arm read "
+        + (", ".join(control) or "nothing")
+        + ". The chunk set comes from the SWARM rounds' traces and filters the "
+        "fleet's GETs on both arms, so the control arm's count would be of a "
+        "file its readers never fetched and G3 would divide one file's load by "
+        "another's." + count_note + " No report is produced."
+    )
+
+
 def _sum(rows, column: str) -> int:
     return sum(int(_field(r, column) or 0) for r in rows)
 
