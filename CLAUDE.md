@@ -2393,12 +2393,24 @@ browsers' own GETs from the run's Elasticsearch **client** index, and the fleet'
   medians by being missing, not by its count. A round nobody ran is not a round
   that served nothing.
 - **The GET medians need more: a round counts only when its arm attempted a
-  NATIVE read in it** (`gets_comparable`, and §1's fourth column). The figure
-  counts what the nodes served to native readers, so a control round whose
-  readers all `skipped` is PRESENT — a row per reader — while measuring nothing
-  about it, and its background count would otherwise enter the median and count
-  toward G3's two-round minimum. A swarm round in which only the browsers read
-  does the same.
+  NATIVE read in it AND no other native cohort read in it** (`gets_comparable`,
+  and §1's fourth column). The figure counts what the nodes served to native
+  readers, so a control round whose readers all `skipped` is PRESENT — a row per
+  reader — while measuring nothing about it, and its background count would
+  otherwise enter the median and count toward G3's two-round minimum; a swarm
+  round in which only the browsers read does the same.
+- **A THIRD native hot-file cohort contaminates the rounds it reads in, and
+  those rounds leave the GET comparison.** Its rows are ignored by extension;
+  its reads are not ignorable, because the GET query filters by chunk and window
+  and **nothing else** and every hot-file cohort of a deployment reads
+  `files[round_id mod len]` — the same file. Extra GETs in the numerator turn a
+  pass into a failure, extra in the denominator manufacture a pass. Excluded
+  rather than refused (every other figure is still that arm's own), counted and
+  named in §1. **Attempted** rows only, and **native** only — a browser emits no
+  `get_rpc`. The deployment's own tier (a NULL extension) counts as one of these
+  and is named as such. A cohort the recorded config names with no attempted row
+  is WARNED about: the config keeps a torn-down cohort and cannot say when one
+  ran, while the rows can.
 - **A NATIVE reader on the other arm's rounds is REFUSED; a BROWSER one is
   counted and excluded.** An off-parity ROW can be discarded, an off-parity READ
   cannot: a `get_rpc` document names a chunk, a time and a node and never the
@@ -2439,6 +2451,13 @@ browsers' own GETs from the run's Elasticsearch **client** index, and the fleet'
   selects the Elasticsearch indices and the S3 selection — so a mismatch reads
   one run's rows against another's traces and node GETs, and with both carrying
   data in the window every figure is a composite whose verdict looks ordinary.
+- **A PARTIAL Elasticsearch answer is refused, on both searches.** A timed-out
+  or partly-failed search answers **200** with the shards that did reply, so
+  `raise_for_status` sees nothing — and a short GET count moves a ratio while a
+  short trace page silently ENDS `fetch_trace_docs`' paging loop (`len(page) <
+  page_size`) and truncates the chunk set. One check,
+  `es_log_counts.check_search_complete`, used by both; both keys absent is
+  complete, so a stub is not a failure.
 - **Exit 0 / 1 / 2**, and 2 ("I measured nothing") is deliberately not 1 ("the
   swarm made the read path worse").
 

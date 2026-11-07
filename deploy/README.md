@@ -2593,7 +2593,9 @@ Elasticsearch **client** index, and the fleet's `get_rpc` documents from its
 
 A round is in the window when its boundary (`round_id × period`) lies in
 `[start, end)`; half-open, so two adjacent windows partition a run's rounds
-exactly once between them. The period comes from `deploy_args.hot_file_readers`
+exactly once between them, and exact to the **microsecond** — the round
+enumeration and the row selection are two answers to the same question, so a
+fractional bound must not make them disagree. The period comes from `deploy_args.hot_file_readers`
 (and `deploy_args.browser_downloaders`), falling back to the recorded
 boundaries. **Two cohorts recording different periods is a refusal, not an
 average**: a round id is `floor(epoch / period)`, so they do not share round
@@ -2639,7 +2641,7 @@ flatter the served figure. Node documents are stamped by each node's own clock,
 and the staging profile skews one node VM's — whose documents fall outside their
 true round and are lost to the count, a known and constant error on both arms.
 
-Four rules decide what is in a figure and what is not:
+Five rules decide what is in a figure and what is not:
 
 - **A `skipped` row is excluded from every denominator and counted separately.**
   A round that ran before a hot file was selected, or one a reader was still busy
@@ -2662,6 +2664,22 @@ Four rules decide what is in a figure and what is not:
   real round and one empty one; a swarm round in which only the browsers read
   does the same. §1's rounds table therefore has a fourth column, **in the GET
   comparison**, and names every present round left out of it with the reason.
+- **A round ANOTHER native hot-file cohort read in is out of the GET comparison
+  too.** A third `kind: clients` extension — or the deployment's own hot-file
+  tier — has its rows ignored by extension, but not its reads: the fleet's GETs
+  are filtered by chunk address and by the round's window and by **nothing
+  else**, so a `get_rpc` document names no reader. Every hot-file cohort of a
+  deployment reads `files[round_id mod len]`, i.e. the same file in a given
+  round, so the contamination is unconditional rather than a possibility — and
+  it moves G3 either way: extra GETs in the numerator turn a passing ratio into
+  a failure, extra GETs in the denominator manufacture a pass. Those rounds are
+  excluded (not refused: every other figure is still that arm's own) and named,
+  with a count and the cohorts' names in §1. Only **attempted** foreign rows
+  count — a `skipped` one asked the nodes for nothing — and only **native**
+  ones, since a browser emits no `get_rpc`. A native cohort the recorded config
+  names with no attempted row in the window is **warned** about rather than
+  acted on, because the config deliberately keeps a cohort that has been torn
+  down and so cannot say when one was running, while the rows can.
 - **A NATIVE reader on the other arm's rounds is REFUSED; a BROWSER one is
   counted and excluded.** An off-parity *row* can be discarded, but an
   off-parity *read* cannot: a `get_rpc` document names a chunk, a time and a
@@ -2716,7 +2734,10 @@ is not what the run gates on.
 
 **Exit 0 on PASS, 1 on FAIL, 2 when the report cannot be produced** — no rows for
 an extension, no trace documents, too small a chunk set, an unreachable
-Elasticsearch, two periods, a native parity that contradicts its arm, a swarm
+Elasticsearch, a **partial** Elasticsearch answer (a 200 carrying
+`timed_out: true` or failed shards, on either search — a short count moves a
+ratio, and a short trace page would silently end the paging loop and truncate
+the chunk set), two periods, a native parity that contradicts its arm, a swarm
 cohort with no browser VM, or a `--name` that is not the deployment `--id`
 resolved to. The last distinction is for the unattended runner: "the swarm made
 the read path worse" and "I measured nothing" are different answers.

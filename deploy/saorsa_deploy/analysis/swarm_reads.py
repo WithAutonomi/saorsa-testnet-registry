@@ -69,6 +69,7 @@ from saorsa_deploy.swarm_reads import (
     check_native_round_parity,
     check_parities,
     chunk_set_from_traces,
+    foreign_cohort_notes,
     render_markdown,
     window_round_ids,
 )
@@ -472,6 +473,18 @@ def _run(args, console) -> int:
     swarm_native = _by_extension(native, args.swarm_extension)
     swarm_browser = _by_extension(browser, args.swarm_extension)
     control_native = _by_extension(native, args.control_extension)
+    # The NATIVE rows that are neither arm's: a third `kind: clients` extension,
+    # or the deployment's own hot-file tier (a NULL extension). Their rows are
+    # ignored like any other extension's, but their READS are not ignorable —
+    # the fleet's GETs for them are in the round's window and name no reader —
+    # so they are carried to `build_report`, which drops the rounds they touched
+    # from the GET comparison. Browser rows of a third extension are NOT here: a
+    # browser emits no `get_rpc`.
+    other_native = [
+        row
+        for row in native
+        if _extension_of(row) not in (args.swarm_extension, args.control_extension)
+    ]
     kept = len(swarm_native) + len(swarm_browser) + len(control_native)
     ignored = len(native) + len(browser) - kept
 
@@ -495,6 +508,10 @@ def _run(args, console) -> int:
     # G3's numerator a blend no filter can undo, so there is no report to spend
     # the queries on.
     check_native_round_parity(swarm_native, control_native)
+    for note in foreign_cohort_notes(
+        config, other_native, args.swarm_extension, args.control_extension
+    ):
+        console.print(f"[yellow]{note}[/yellow]")
 
     hot_files, hot_files_source = _resolve_hot_files(deployment, args.name)
 
@@ -539,6 +556,7 @@ def _run(args, console) -> int:
         swarm_native=swarm_native,
         swarm_browser=swarm_browser,
         control_native=control_native,
+        other_native=other_native,
         ignored_rows=ignored,
         config_entries=config,
         browser_config_entries=browser_config,

@@ -33,6 +33,7 @@ from saorsa_db.models.hot_file_download_record import (
 from saorsa_deploy.analysis.swarm_reads import EXIT_ERROR, EXIT_GATE_FAIL, cmd_swarm_reads
 from saorsa_deploy.browser_reads import rounds_in_window
 from saorsa_deploy.browser_traces import normalise_trace_doc
+from saorsa_deploy.es_log_counts import IncompleteSearch, check_search_complete
 from saorsa_deploy.node_gets import (
     CHUNK_ADDRESS_FIELD,
     GET_RPC_EVENT,
@@ -59,6 +60,7 @@ from saorsa_deploy.swarm_reads import (
     check_parities,
     chunk_set_from_traces,
     evaluate_gates,
+    foreign_cohort_notes,
     render_markdown,
     rows_of_arm,
     summarise_browser_gets,
@@ -129,6 +131,9 @@ def _report_from(
     swarm_native = [r for r in native if r["extension"] == "swarm"]
     swarm_browser = [r for r in browser if r["extension"] == "swarm"]
     control_native = [r for r in native if r["extension"] == "control"]
+    # The NATIVE rows of neither arm, as the command resolves them: their reads
+    # are what the GET comparison has to exclude rounds on.
+    other_native = [r for r in native if r["extension"] not in ("swarm", "control")]
     kept = len(swarm_native) + len(swarm_browser) + len(control_native)
     docs = _trace_docs()
     round_ids = window_round_ids(PERIOD, WINDOW_START, window_end)
@@ -142,6 +147,7 @@ def _report_from(
         swarm_native=swarm_native,
         swarm_browser=swarm_browser,
         control_native=control_native,
+        other_native=other_native,
         ignored_rows=len(native) + len(browser) - kept,
         config_entries=_json("hot-file-config.json"),
         browser_config_entries=_json("browser-config.json"),
@@ -187,6 +193,34 @@ def test_window_round_ids_is_half_open():
     assert sorted(first + second) == list(range(R0, R0 + 6))
 
 
+def test_a_fractional_bound_selects_the_same_rounds_as_the_rows_do():
+    """The enumeration and `rounds_in_window` must agree to the microsecond.
+
+    They are two answers to one question — which rounds are in the window — and
+    `rounds_in_window` compares whole datetimes, so it is exact. Truncating the
+    bounds to whole seconds here made them disagree on any fractional bound: at
+    600 s a start of `09:00:00.5` enumerated the `09:00:00` round whose rows were
+    excluded (a round reported as one nobody ran), and an END of `09:30:00.5`
+    left out the `09:30:00` round whose rows were in (rows counted in the arm
+    summaries with no row in the per-round table).
+    """
+    rows = [{"round_id": r, "started_at": None} for r in range(R0, R0 + 6)]
+
+    def selected(start, end):
+        return [r["round_id"] for r in rounds_in_window(rows, PERIOD, start, end)]
+
+    half_past = datetime(2026, 10, 18, 9, 0, 0, 500_000, tzinfo=timezone.utc)
+    assert window_round_ids(PERIOD, half_past, NARROW_END) == [R0 + 1, R0 + 2]
+    assert selected(half_past, NARROW_END) == [R0 + 1, R0 + 2]
+
+    late_end = datetime(2026, 10, 18, 9, 30, 0, 500_000, tzinfo=timezone.utc)
+    assert window_round_ids(PERIOD, WINDOW_START, late_end) == [R0, R0 + 1, R0 + 2, R0 + 3]
+    assert selected(WINDOW_START, late_end) == [R0, R0 + 1, R0 + 2, R0 + 3]
+
+    # And the exact-boundary case is unchanged by the fix.
+    assert window_round_ids(PERIOD, WINDOW_START, NARROW_END) == selected(WINDOW_START, NARROW_END)
+
+
 def test_a_window_starting_mid_round_takes_the_next_boundary():
     """A round whose boundary precedes the window is not in it.
 
@@ -220,6 +254,10 @@ def test_totals_count_what_was_read_and_what_was_ignored(report):
         # Two `other` native rows, one with no extension, one `other` browser.
         "ignored_rows": 4,
         "off_parity_rows": 1,
+        # The three foreign NATIVE rows are all `skipped`, so none of them read
+        # and no round is out of the GET comparison on their account.
+        "rounds_with_foreign_native_readers": 0,
+        "foreign_native_extensions": [],
         "trace_records": 22,
     }
 
@@ -623,6 +661,36 @@ def test_parse_get_rpc_fills_the_request_kinds_and_keeps_a_null_latency():
     assert parsed["by_host"] == {}
 
 
+def test_a_timed_out_get_search_is_refused_rather_than_counted():
+    """Elasticsearch answers a timed-out search with 200 and a short count.
+
+    This count is G3's numerator and denominator, so a short one does not look
+    wrong — it moves a ratio, and the gate's verdict with it.
+    """
+    with pytest.raises(IncompleteSearch) as e:
+        parse_get_rpc_response({"timed_out": True, "hits": {"total": {"value": 3}}})
+    assert "timed out" in str(e.value)
+
+
+def test_a_get_search_with_failed_shards_is_refused():
+    with pytest.raises(IncompleteSearch) as e:
+        parse_get_rpc_response(
+            {
+                "_shards": {"total": 5, "successful": 3, "failed": 2},
+                "hits": {"total": {"value": 3}},
+            }
+        )
+    assert "2 of 5 shard(s) failed" in str(e.value)
+
+
+def test_a_complete_response_is_accepted_however_it_reports_completeness():
+    """Both keys absent is complete, which is what every stub here is."""
+    check_search_complete({"hits": {"total": {"value": 1}}}, "x")
+    check_search_complete(
+        {"timed_out": False, "_shards": {"total": 5, "successful": 5, "failed": 0}}, "x"
+    )
+
+
 def test_top_hosts_sums_across_rounds_and_takes_the_busiest():
     rounds = [
         {"by_host": {"A": 5, "B": 1}},
@@ -735,6 +803,134 @@ def test_a_round_with_no_attempted_native_read_is_out_of_the_get_comparison():
     assert gate["figure"] == "2 swarm round(s), 1 control round(s)"
     assert f"control round {R0 + 3} (no native read was attempted)" in gate["detail"]
     assert "A **present** round is one its arm produced a row in" in render_markdown(report)
+
+
+def test_a_round_another_native_cohort_read_in_is_out_of_the_comparison():
+    """A `get_rpc` document names no reader, so a third cohort's GETs are ours.
+
+    The fixture's three foreign native rows are `skipped`; flipping one of
+    round R0's to a success is a third extension that READ in a swarm round, and
+    the file is the same one (every hot-file cohort of a deployment reads
+    `files[round_id mod len]`). Those GETs cannot be separated from the swarm
+    arm's, so the round leaves the comparison — taking the swarm arm to one
+    round and G3 to NOT ASSESSED, instead of a ratio over a numerator that is
+    partly somebody else's.
+    """
+    native = _rows("native-rows.json")
+    for row in native:
+        if row["extension"] == "other" and row["round_id"] == R0:
+            row["status"] = "success"
+            row["error_kind"] = None
+            row["total_ms"] = 50000
+            break
+    report = _report_from(native=native)
+    entry = _round(report, R0)
+    assert entry["foreign_native_readers"] == {"rows": 1, "extensions": ["other"]}
+    assert entry["missing"] is False
+    assert entry["gets_comparable"] is False
+    # The swarm arm's own figures are untouched: only the GET comparison is.
+    assert entry["native"]["attempted"] == 4
+    assert report["arms"][ARM_SWARM]["rounds_present"] == [R0, R0 + 2]
+    assert report["arms"][ARM_SWARM]["rounds_compared"] == [R0 + 2]
+    assert report["arms"][ARM_SWARM]["served_gets_median"] == 240.0
+    assert report["totals"]["rounds_with_foreign_native_readers"] == 1
+    assert report["totals"]["foreign_native_extensions"] == ["other"]
+    gate = _gate(report, "G3")
+    assert gate["status"] == GATE_NOT_ASSESSED
+    assert gate["figure"] == "1 swarm round(s), 2 control round(s)"
+    assert "another native hot-file cohort read in it (other, 1 read(s))" in gate["detail"]
+    markdown = render_markdown(report)
+    assert "1 round(s) were read by another native hot-file cohort" in markdown
+    assert "`other`" in markdown
+
+
+def test_a_foreign_cohort_on_a_control_round_takes_the_denominator_out():
+    """The other direction, which manufactures a PASS rather than a FAIL.
+
+    Extra GETs in the denominator make the ratio smaller, so a run that relieved
+    the nodes of nothing could clear the gate. The round leaves the comparison
+    either way.
+    """
+    native = _rows("native-rows.json")
+    foreign = dict(
+        next(r for r in native if r["extension"] == "other"),
+        round_id=R0 + 1,
+        instance=1,
+        status="success",
+        error_kind=None,
+        total_ms=50000,
+    )
+    report = _report_from(native=[*native, foreign])
+    assert _round(report, R0 + 1)["gets_comparable"] is False
+    assert report["arms"][ARM_CONTROL]["rounds_compared"] == [R0 + 3]
+    assert _gate(report, "G3")["status"] == GATE_NOT_ASSESSED
+
+
+def test_the_deployments_own_hot_file_tier_is_a_foreign_native_reader_too():
+    """A NULL extension is the deployment's own tier, and it reads the same file.
+
+    It is named rather than reported as an empty string, because an operator
+    reading "another cohort read in it ()" cannot act on it.
+    """
+    native = _rows("native-rows.json")
+    for row in native:
+        if row["extension"] is None:
+            row["status"] = "success"
+            row["error_kind"] = None
+            row["total_ms"] = 51000
+    report = _report_from(native=native)
+    assert _round(report, R0)["foreign_native_readers"]["extensions"] == [
+        "(the deployment's own tier)"
+    ]
+    assert report["totals"]["foreign_native_extensions"] == ["(the deployment's own tier)"]
+
+
+def test_a_foreign_browser_cohort_does_not_contaminate_the_comparison():
+    """A browser emits no `get_rpc`, so its reads reach no GET count.
+
+    The fixture's `other` browser row is a SUCCESS on round R0+2 and that round
+    is still compared — which is the whole reason only native rows are carried
+    into the check.
+    """
+    report = _report()
+    assert _round(report, R0 + 2)["foreign_native_readers"] is None
+    assert _round(report, R0 + 2)["gets_comparable"] is True
+    assert report["totals"]["ignored_rows"] == 4
+
+
+def test_a_skipped_foreign_native_row_does_not_contaminate(report):
+    """It launched no `ant`, so it asked the nodes for nothing."""
+    assert all(r["foreign_native_readers"] is None for r in report["rounds"])
+    assert report["arms"][ARM_SWARM]["rounds_compared"] == [R0, R0 + 2]
+
+
+def test_foreign_cohort_notes_warn_about_a_configured_cohort_with_no_rows():
+    """The one gap the rows cannot cover, so it is a warning and not a figure.
+
+    The recorded config deliberately keeps a cohort that has been torn down, so
+    it cannot say WHEN one was running — the rows can. What the rows cannot see
+    is a cohort that read and was never recorded, and that is what this names.
+    """
+    entries = [
+        {"hostname": "sw-1", "extension": "swarm", "round_parity": "even"},
+        {"hostname": "x-1", "extension": "third", "round_parity": "all"},
+    ]
+    notes = foreign_cohort_notes(entries, [], "swarm", "control")
+    assert len(notes) == 1
+    assert "third" in notes[0]
+    assert "record-results" in notes[0]
+    # With an attempted row of its own it is the row-level exclusion's business.
+    assert (
+        foreign_cohort_notes(
+            entries,
+            [{"extension": "third", "status": "success", "round_id": R0}],
+            "swarm",
+            "control",
+        )
+        == []
+    )
+    # And a config naming only the two arms says nothing at all.
+    assert foreign_cohort_notes(_json("hot-file-config.json"), [], "swarm", "control") == []
 
 
 def test_a_swarm_round_with_only_browser_attempts_is_out_of_the_comparison():
@@ -1150,10 +1346,11 @@ class _FakeEs:
     the answers directly would exercise neither.
     """
 
-    def __init__(self, docs, gets, error=None, get_error=None):
+    def __init__(self, docs, gets, error=None, get_error=None, trace_shard_failures=0):
         self.docs = docs
         self.gets = gets
         self.error = error
+        self.trace_shard_failures = trace_shard_failures
         self.get_error = get_error
         self.get_queries = []
         self.trace_host_terms = []
@@ -1217,7 +1414,14 @@ class _FakeEs:
         # A page is what the body ASKED for, as Elasticsearch returns: a fake
         # that returned fewer would end the paging loop early, which is exactly
         # the bug a paging test is meant to catch.
-        return {"hits": {"hits": hits[: body["size"]]}}
+        return {
+            "_shards": {
+                "total": 5,
+                "successful": 5 - self.trace_shard_failures,
+                "failed": self.trace_shard_failures,
+            },
+            "hits": {"hits": hits[: body["size"]]},
+        }
 
 
 def _run(args, repo=None, docs=None, gets=None, es=None, **es_kwargs):
@@ -1430,6 +1634,28 @@ def test_the_command_exits_two_when_elasticsearch_cannot_be_read():
 def test_the_command_exits_two_when_a_rounds_gets_cannot_be_counted():
     """A partial GET answer is not a report: that count is G3's numerator."""
     code, _ = _run(_args(), get_error=RuntimeError("503"))
+    assert code == EXIT_ERROR
+
+
+def test_the_command_exits_two_on_a_timed_out_get_search():
+    """A 200 carrying `timed_out: true` is a short count, not an answer."""
+    gets = _json("get-rpc-responses.json")
+    gets[str(R0 + 2)]["timed_out"] = True
+    code, _ = _run(_args(), gets=gets)
+    assert code == EXIT_ERROR
+
+
+def test_the_command_exits_two_on_a_trace_search_with_failed_shards():
+    """The same for the chunk set: a short page ends the paging loop silently.
+
+    `fetch_trace_docs` stops when a page is shorter than it asked for, so a
+    partly-failed page is indistinguishable from the last one — and the
+    truncated set becomes the filter the fleet's GETs are counted through.
+    """
+    fake = _FakeEs(
+        _json("trace-docs.json"), _json("get-rpc-responses.json"), trace_shard_failures=2
+    )
+    code, _ = _run(_args(), es=fake)
     assert code == EXIT_ERROR
 
 

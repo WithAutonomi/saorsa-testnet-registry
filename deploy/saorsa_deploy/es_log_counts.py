@@ -55,6 +55,44 @@ def node_index_pattern(name: str) -> str:
     return NODE_INDEX_TEMPLATE.format(name=name.lower())
 
 
+class IncompleteSearch(RuntimeError):
+    """A search answered 200 but did not answer completely."""
+
+
+def check_search_complete(response: dict, what: str) -> None:
+    """Refuse a search that answered 200 without answering all of it.
+
+    **Elasticsearch reports a partial answer with a 200.** A query that exceeded
+    its time budget comes back ``"timed_out": true``, and one whose shards did
+    not all reply comes back with ``_shards.failed`` above zero and the
+    successful shards' hits alone — in both cases a count that is quietly short.
+    ``raise_for_status`` sees nothing wrong with either, so a caller that reads
+    the aggregation straight off gets a number with no sign that it is not the
+    whole one. For a count that is divided by another count, or a set that
+    becomes a query filter, short is worse than absent: absent refuses, short
+    passes a gate.
+
+    Both keys ABSENT is treated as complete, which is what a stubbed response in
+    a test is, and what an unusual endpoint that omits them would be. The checks
+    are on the values that assert incompleteness, never on the presence of the
+    keys.
+    """
+    if response.get("timed_out"):
+        raise IncompleteSearch(
+            f"the {what} search timed out in Elasticsearch and returned a "
+            f"partial answer (`timed_out: true`), which is short by an unknown "
+            f"amount rather than wrong in a visible way"
+        )
+    shards = response.get("_shards") or {}
+    failed = shards.get("failed") or 0
+    if failed:
+        raise IncompleteSearch(
+            f"{failed} of {shards.get('total', '?')} shard(s) failed on the "
+            f"{what} search, so it returned only the successful shards' "
+            f"documents"
+        )
+
+
 def collapse_index_date_suffix(index_pattern: str) -> str:
     """Turn telegraf's strftime index pattern into a glob that matches indices.
 

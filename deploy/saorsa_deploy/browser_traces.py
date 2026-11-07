@@ -41,7 +41,7 @@ import statistics
 from collections import defaultdict
 from typing import Any
 
-from saorsa_deploy.es_log_counts import HOST_FIELD
+from saorsa_deploy.es_log_counts import HOST_FIELD, check_search_complete
 
 #: The measurement, and so the object the fields nest under in Elasticsearch.
 TRACE_MEASUREMENT = "browser_trace"
@@ -213,6 +213,16 @@ def fetch_trace_docs(
     The second return value is ``{"unusable": n, "duplicates": n}`` — reported
     by the caller rather than swallowed, because a large duplicate count means
     the forwarder restarted mid-run, which is worth knowing on its own.
+
+    **Every page is checked for completeness before it is read.** Elasticsearch
+    answers a timed-out or partly-failed search with a 200 and the shards that
+    did reply, so a short page looks exactly like a short last page — and this
+    function's own paging loop would then STOP on it (``len(page) <
+    page_size``) and return a truncated set as if it were the whole one. What
+    that set feeds makes it worse than an error: a holder set that decides which
+    peer served a read, and (in `analysis swarm-reads`) the chunk set the
+    fleet's GET counts are filtered through. See
+    :func:`es_log_counts.check_search_complete`.
     """
     if not round_ids:
         return [], {"unusable": 0, "duplicates": 0}
@@ -229,7 +239,9 @@ def fetch_trace_docs(
             search_after=search_after,
             extra_filters=extra_filters,
         )
-        page = run.search(body, target_index)["hits"]["hits"]
+        response = run.search(body, target_index)
+        check_search_complete(response, "browser trace")
+        page = response["hits"]["hits"]
         if not page:
             break
         for hit in page:

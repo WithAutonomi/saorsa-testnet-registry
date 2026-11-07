@@ -48,6 +48,7 @@ from saorsa_deploy.es_log_counts import (
     RPC_LATENCY_TARGET,
     TARGET_FIELD,
     TIMESTAMP_FIELD,
+    check_search_complete,
 )
 
 #: The event name, as it lands in ``tail.message``.
@@ -156,7 +157,13 @@ def parse_get_rpc_response(response: dict) -> dict:
     Every kind in :data:`GET_REQUESTS` appears at zero when it did not occur;
     the outcomes are reported as they came back, since that vocabulary is
     ant-node's and a variant it adds must be visible rather than dropped.
+
+    **A partial answer is refused before anything is read off it.** This count
+    is G3's numerator and denominator, so a short one does not look wrong — it
+    changes a ratio and the gate's verdict with it. See
+    :func:`es_log_counts.check_search_complete`.
     """
+    check_search_complete(response, f"`{GET_RPC_EVENT}`")
     aggs = response.get("aggregations") or {}
     total = (response.get("hits") or {}).get("total") or {}
     count = total.get("value") if isinstance(total, dict) else total

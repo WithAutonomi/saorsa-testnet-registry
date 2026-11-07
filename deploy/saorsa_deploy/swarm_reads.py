@@ -52,7 +52,7 @@ Four rules run through all of it:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from saorsa_deploy.browser_reads import (
     STATUS_FAILURE,
@@ -165,6 +165,21 @@ def arm_of_round(round_id: int) -> str:
     return ARM_CONTROL if abs(int(round_id) % 2) == 1 else ARM_SWARM
 
 
+#: The epoch, for the exact timedelta arithmetic :func:`window_round_ids` needs.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _epoch_micros(moment: datetime) -> int:
+    """A moment as whole microseconds since the epoch, EXACTLY.
+
+    Through ``timedelta`` rather than ``timestamp()``: the latter is a float, so
+    multiplying it up to microseconds can land a microsecond either side, while
+    a ``timedelta`` holds days, seconds and microseconds as integers and the
+    floor division below is exact.
+    """
+    return (as_utc(moment) - _EPOCH) // timedelta(microseconds=1)
+
+
 def window_round_ids(period_secs: int, window_start: datetime, window_end: datetime) -> list[int]:
     """Every round id whose boundary lies in ``[start, end)``.
 
@@ -172,11 +187,23 @@ def window_round_ids(period_secs: int, window_start: datetime, window_end: datet
     round that produced NO row is exactly the one the report has to be able to
     name. Half-open, so two adjacent windows partition a run's rounds exactly
     once between them.
+
+    **Sub-second precision is kept, and that is what makes this agree with
+    :func:`browser_reads.rounds_in_window`.** That function compares whole
+    datetimes, so it is exact; truncating the bounds to whole seconds here made
+    the two disagree whenever a bound carried a fraction. At a 600 s period a
+    start of ``00:10:00.5`` enumerated the ``00:10:00`` round whose rows that
+    function excluded — reported as a round nobody ran — and an END of
+    ``00:10:00.5`` did the reverse, leaving rows in the window whose round the
+    per-round table never listed while the arm summaries still counted them.
     """
     if period_secs <= 0:
         raise SwarmReadsError(f"the round period must be positive; got {period_secs}.")
-    first = -(-int(as_utc(window_start).timestamp()) // period_secs)
-    last = -(-int(as_utc(window_end).timestamp()) // period_secs)
+    period_micros = period_secs * 1_000_000
+    # Ceiling division on both bounds: a round is in when its boundary is at or
+    # after the start and strictly before the end.
+    first = -(-_epoch_micros(window_start) // period_micros)
+    last = -(-_epoch_micros(window_end) // period_micros)
     return list(range(first, last))
 
 
@@ -408,12 +435,88 @@ def _by_round(rows) -> dict[int, list]:
     return out
 
 
+def foreign_native_readers_by_round(rows) -> dict[int, dict]:
+    """Per round, the OTHER native hot-file cohorts that read in it.
+
+    "Other" means any native hot-file row that is neither arm's — a third
+    `kind: clients` extension, or the deployment's own tier (a NULL
+    ``extension``). Their ROWS are ignored, which is right; their READS are not
+    ignorable, and that is the point of this function.
+
+    **A `get_rpc` document carries no reader.** The fleet's GETs are filtered by
+    chunk address and by the round's window and by nothing else, so a third
+    native cohort reading the same file in a swarm round has its GETs counted as
+    the swarm arm's — and every hot-file cohort of a deployment reads the SAME
+    file in a given round, since the index is ``round_id mod len(selection)``.
+    The contamination is therefore unconditional rather than a possibility, and
+    it moves G3 in whichever direction the third cohort happens to read: extra
+    GETs in the numerator turn a passing ratio into a failure, and extra GETs in
+    the denominator manufacture a pass.
+
+    Only **attempted** rows count: a `skipped` row launched no `ant`, so it
+    asked the nodes for nothing. Keyed by round, with the extension names, so
+    the report can say which cohort cost it which round.
+    """
+    out: dict[int, dict] = {}
+    for row in rows:
+        round_id = _field(row, "round_id")
+        if round_id is None or row_status(row) == STATUS_SKIPPED:
+            continue
+        entry = out.setdefault(int(round_id), {"rows": 0, "extensions": set()})
+        entry["rows"] += 1
+        entry["extensions"].add(_field(row, "extension") or "(the deployment's own tier)")
+    return {
+        round_id: {"rows": entry["rows"], "extensions": sorted(entry["extensions"])}
+        for round_id, entry in out.items()
+    }
+
+
+def foreign_cohort_notes(native_entries, other_native, swarm: str, control: str) -> list[str]:
+    """Warn about a third native cohort the RECORDED CONFIG names.
+
+    The rounds a third cohort actually read are taken from its rows, which is
+    the right evidence: they carry a round id, so a cohort torn down before the
+    window has none in it — while the recorded config deliberately KEEPS a
+    cohort that has gone (`merge_hot_file_config`), and so cannot say when one
+    was running.
+
+    That leaves one gap the rows cannot cover: a third cohort that read and
+    whose rows were never recorded. It would contaminate the GET counts
+    invisibly, so a config naming a native cohort that is neither arm, with no
+    attempted row in the window, is WARNED about rather than acted on — the
+    report is still the one the rows describe, and the operator is told the
+    deployment carries a cohort this window saw nothing of.
+    """
+    configured = {
+        entry.get("extension")
+        for entry in native_entries or []
+        if entry.get("extension") not in (swarm, control)
+    }
+    with_rows = {
+        _field(row, "extension") for row in other_native if row_status(row) != STATUS_SKIPPED
+    }
+    quiet = sorted(
+        (name or "(the deployment's own tier)") for name in configured - with_rows if name
+    )
+    if not quiet:
+        return []
+    return [
+        "the recorded config names native hot-file cohort(s) that are neither "
+        "arm and produced no attempted read in this window: "
+        + ", ".join(quiet)
+        + ". Their rows are what the GET comparison excludes rounds on, so a "
+        "cohort that read without being recorded would not be excluded — check "
+        "`deployments record-results` covered it before trusting G3."
+    ]
+
+
 def summarise_rounds(
     round_ids: list[int],
     *,
     swarm_native,
     swarm_browser,
     control_native,
+    other_native=(),
     gets_by_round: dict[int, dict],
     period_secs: int,
 ) -> list[dict]:
@@ -425,18 +528,24 @@ def summarise_rounds(
     none of the figures.
 
     ``gets_comparable`` is the stricter flag the GET medians and G3 use, and it
-    is **not** ``not missing``: the figure it guards is a count of what the NODES
-    served to NATIVE readers, so a round in which this arm attempted no native
-    read measures nothing about it. A control round whose rows are all `skipped`
-    (the hot file was not selected yet) is present and has a row per reader, and
-    its near-zero GET count would otherwise enter the median and count toward
-    G3's two-round minimum — certifying relief from a round where no reader asked
-    the nodes for anything. A swarm round with only browser attempts does the
-    same.
+    is **not** ``not missing``. Two things disqualify a round:
+
+    * **This arm attempted no native read in it.** The figure is a count of what
+      the NODES served to NATIVE readers, so a control round whose rows are all
+      `skipped` (the hot file was not selected yet) is present, with a row per
+      reader, while measuring nothing about it — and its near-zero count would
+      enter the median and count toward G3's two-round minimum. A swarm round
+      with only browser attempts does the same.
+    * **Another native hot-file cohort read in it.** Its GETs are in the round's
+      window and name no reader, so they would be counted as this arm's; see
+      :func:`foreign_native_readers_by_round`. Excluded rather than refused,
+      because every other figure in the report is still that arm's own — only
+      the GET comparison is spoiled, and saying so beats producing nothing.
     """
     swarm_native_by_round = _by_round(swarm_native)
     swarm_browser_by_round = _by_round(swarm_browser)
     control_native_by_round = _by_round(control_native)
+    foreign_by_round = foreign_native_readers_by_round(other_native)
 
     out: list[dict] = []
     for round_id in sorted(round_ids):
@@ -453,6 +562,7 @@ def summarise_rounds(
             )
         gets = gets_by_round.get(round_id)
         native_summary = summarise_cohort(native)
+        foreign = foreign_by_round.get(round_id)
         out.append(
             {
                 "round_id": round_id,
@@ -463,11 +573,34 @@ def summarise_rounds(
                 "native": native_summary,
                 "browser": summarise_cohort(browser, chunk_sources=True),
                 "gets": gets,
-                "gets_comparable": native_summary["attempted"] > 0 and gets is not None,
+                "gets_comparable": (
+                    native_summary["attempted"] > 0 and gets is not None and foreign is None
+                ),
+                "foreign_native_readers": foreign,
                 "off_parity_rows": off_parity,
             }
         )
     return out
+
+
+def _not_compared_reason(entry: dict) -> str:
+    """Why a present round is out of the GET comparison.
+
+    Ordered by what the reader has to act on: a foreign cohort first, because it
+    is a property of the DEPLOYMENT (and the one thing an operator can fix for
+    the next run) rather than of the round.
+    """
+    foreign = entry.get("foreign_native_readers")
+    if foreign:
+        return (
+            "another native hot-file cohort read in it ("
+            + ", ".join(foreign["extensions"])
+            + f", {foreign['rows']} read(s)), and its GETs cannot be told from "
+            "this arm's"
+        )
+    if entry["native"]["attempted"] == 0:
+        return "no native read was attempted"
+    return "the fleet's GETs could not be counted"
 
 
 def summarise_arm(
@@ -504,14 +637,7 @@ def summarise_arm(
         "rounds_missing": [r["round_id"] for r in mine if r["missing"]],
         "rounds_compared": [r["round_id"] for r in compared],
         "rounds_not_compared": [
-            {
-                "round_id": r["round_id"],
-                "reason": (
-                    "no native read was attempted"
-                    if r["native"]["attempted"] == 0
-                    else "the fleet's GETs could not be counted"
-                ),
-            }
+            {"round_id": r["round_id"], "reason": _not_compared_reason(r)}
             for r in present
             if not r["gets_comparable"]
         ],
@@ -974,6 +1100,7 @@ def build_report(
     swarm_native,
     swarm_browser,
     control_native,
+    other_native=(),
     ignored_rows: int,
     config_entries,
     browser_config_entries,
@@ -1003,6 +1130,7 @@ def build_report(
         swarm_native=swarm_native,
         swarm_browser=swarm_browser,
         control_native=control_native,
+        other_native=other_native,
         gets_by_round=gets_by_round,
         period_secs=period_secs,
     )
@@ -1069,6 +1197,21 @@ def build_report(
             "control_native_rows": len(control_native),
             "ignored_rows": ignored_rows,
             "off_parity_rows": sum(r["off_parity_rows"] for r in round_summaries),
+            # Rounds another native hot-file cohort read in, and so out of the
+            # GET comparison. Counted at the top level because it is a property
+            # of the DEPLOYMENT, not of a round: the operator who has to stop it
+            # happening again reads one number, not a table.
+            "rounds_with_foreign_native_readers": sum(
+                1 for r in round_summaries if r["foreign_native_readers"]
+            ),
+            "foreign_native_extensions": sorted(
+                {
+                    name
+                    for r in round_summaries
+                    if r["foreign_native_readers"]
+                    for name in r["foreign_native_readers"]["extensions"]
+                }
+            ),
             "trace_records": len(trace_docs),
         },
         "rounds": round_summaries,
@@ -1250,10 +1393,25 @@ def _render_hot_file_section(report: dict, lines: list[str]) -> None:
         lines.append("")
         lines.append(
             "A **present** round is one its arm produced a row in; one in the "
-            "**GET comparison** also attempted a native read there and had its "
-            "fleet GETs counted. Only the latter are in the served-GET medians "
-            "and G3, because that figure counts what the nodes served to NATIVE "
-            "readers. Excluded: " + ", ".join(excluded) + "."
+            "**GET comparison** also attempted a native read there, had its "
+            "fleet GETs counted, and had no OTHER native hot-file cohort "
+            "reading in it. Only the latter are in the served-GET medians and "
+            "G3, because that figure counts what the nodes served to NATIVE "
+            "readers and a `get_rpc` document names no reader. Excluded: "
+            + ", ".join(excluded)
+            + "."
+        )
+    if totals["rounds_with_foreign_native_readers"]:
+        lines.append("")
+        lines.append(
+            f"**{totals['rounds_with_foreign_native_readers']} round(s) were "
+            f"read by another native hot-file cohort** ("
+            + ", ".join(f"`{name}`" for name in totals["foreign_native_extensions"])
+            + "). Every hot-file cohort of a deployment reads the SAME file in a "
+            "given round, and the fleet's GETs are filtered by chunk and time "
+            "and by nothing else — so those rounds' GETs are not one arm's and "
+            "are out of the comparison. Run the two cohorts alone, or narrow "
+            "the window to rounds they had to themselves."
         )
     lines.append("")
     lines.append(
